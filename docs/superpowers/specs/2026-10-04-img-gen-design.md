@@ -83,18 +83,23 @@ Go backend  ──►  Lattice (http://127.0.0.1:8080)
       "description": "A natural or scenic vista",
       "fields": [
         {"key": "setting", "label": "Setting", "type": "text",
-         "placeholder": "alpine valley at dusk", "hint": "Where the scene happens"},
+         "placeholder": "alpine valley at dusk", "required": true,
+         "hint": "Where the scene happens"},
         {"key": "time_of_day", "label": "Time of day", "type": "select",
          "options": ["dawn", "midday", "golden hour", "dusk", "night"],
          "default": "golden hour"},
         {"key": "weather", "label": "Weather", "type": "select",
          "options": ["clear", "misty", "overcast", "rain", "snow"], "default": "clear"},
+        {"key": "season", "label": "Season", "type": "select",
+         "options": ["spring", "summer", "autumn", "winter"], "default": "autumn"},
         {"key": "object", "label": "Focal point", "type": "text",
          "placeholder": "a lone pine", "required": true},
         {"key": "mood", "label": "Mood", "type": "textarea",
-         "placeholder": "serene, untouched wilderness"}
+         "placeholder": "serene, untouched wilderness"},
+        {"key": "include_wildlife", "label": "Wildlife", "type": "boolean",
+         "true_text": ", with a few birds in the distance", "false_text": ""}
       ],
-      "prompt_template": "A landscape image: {setting}, {time_of_day}, {weather} weather, focal point {object}, mood {mood}.",
+      "prompt_template": "A landscape image: {setting}, {time_of_day}, {weather} weather, {season}, focal point {object}, mood {mood}{include_wildlife}.",
       "sizes": ["1024x576", "768x512", "512x512"]
     },
     "portrait": {
@@ -102,6 +107,8 @@ Go backend  ──►  Lattice (http://127.0.0.1:8080)
       "fields": [
         {"key": "subject", "label": "Subject", "type": "text",
          "placeholder": "an elderly fisherman", "required": true},
+        {"key": "age", "label": "Age", "type": "number",
+         "min": 1, "max": 110, "default": 60, "hint": "Approximate age in years"},
         {"key": "expression", "label": "Expression", "type": "textarea",
          "placeholder": "calm, weathered"},
         {"key": "lighting", "label": "Lighting", "type": "select",
@@ -110,8 +117,32 @@ Go backend  ──►  Lattice (http://127.0.0.1:8080)
         {"key": "setting", "label": "Setting", "type": "text",
          "placeholder": "wooden boat interior"}
       ],
-      "prompt_template": "A portrait of {subject}, {expression} expression, {lighting} lighting, in {setting}.",
+      "prompt_template": "A portrait of {subject}, age {age}, {expression} expression, {lighting} lighting, in {setting}.",
       "sizes": ["512x768", "1024x1536", "512x512"]
+    },
+    "product": {
+      "label": "Product shot",
+      "fields": [
+        {"key": "product", "label": "Product", "type": "text",
+         "placeholder": "a ceramic coffee mug", "required": true},
+        {"key": "material", "label": "Material", "type": "select",
+         "options": ["matte ceramic", "glossy metal", "wood", "glass", "fabric"],
+         "default": "matte ceramic"},
+        {"key": "backdrop", "label": "Backdrop", "type": "select",
+         "options": ["plain white", "dark gradient", "warm wood table", "concrete"],
+         "default": "plain white"},
+        {"key": "lighting", "label": "Lighting", "type": "select",
+         "options": ["soft studio", "dramatic rim", "natural window", "ring light"],
+         "default": "soft studio"},
+        {"key": "camera_angle", "label": "Camera angle (deg)", "type": "number",
+         "min": 0, "max": 90, "default": 30, "hint": "0 = eye level, 90 = top-down"},
+        {"key": "include_shadow", "label": "Soft shadow", "type": "boolean",
+         "true_text": " with a soft contact shadow", "false_text": ""},
+        {"key": "notes", "label": "Extra details", "type": "textarea",
+         "placeholder": "steam rising from the mug"}
+      ],
+      "prompt_template": "A product shot of {product}, {material}, on a {backdrop} backdrop, {lighting} lighting, {camera_angle}° angle{include_shadow}. {notes}",
+      "sizes": ["512x512", "1024x1024"]
     }
   }
 }
@@ -164,7 +195,13 @@ The lattice blocks without granular progress, so stages are coarse:
 `failed`. The UI shows the stage plus elapsed time (and, if the lattice ever
 exposes it, an estimate).
 
-## 8. Storage & disk-write minimisation
+## 8. Storage & SSD-wear minimisation
+
+**Goal:** impose no harmful write wear on the host SSD. Every write that need
+not survive a restart stays in RAM; durable writes are bounded to **two per
+completed job** — and since one generation takes minutes to an hour, the write
+rate is negligible (far below consumer-SSD endurance). No swap, no rewrite
+loops, no temp-file churn.
 
 - **Hot state (RAM only).** Job records live in an in-process, mutex-protected
   store. Status transitions write nothing to disk.

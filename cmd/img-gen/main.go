@@ -138,6 +138,10 @@ func newHandler(cfg config) (http.Handler, error) {
 }
 
 func handleSSE(w http.ResponseWriter, r *http.Request, mgr *queue.Manager, id string) {
+	if _, ok := mgr.Get(id); !ok {
+		writeErr(w, http.StatusNotFound, "job not found")
+		return
+	}
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		writeErr(w, http.StatusInternalServerError, "streaming unsupported")

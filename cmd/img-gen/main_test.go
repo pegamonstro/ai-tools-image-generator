@@ -40,8 +40,8 @@ func newTestHandler(t *testing.T) http.Handler {
 	img := []byte("fake-png-bytes")
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/images/generations":
-			w.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(img) + `"}]}`))
+		case "/generate":
+			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
 		case "/v1/chat/completions":
 			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
 		default:
@@ -52,9 +52,9 @@ func newTestHandler(t *testing.T) http.Handler {
 
 	cfg := config{
 		LatticeURL:    mock.URL,
+		ImageURL:      mock.URL,
 		DataDir:       t.TempDir(),
 		GenresFile:    writeGenres(t),
-		ImageModel:    "flux-dev",
 		EnhanceModel:  "flux-dev",
 		EnhanceSystem: "sys",
 		ImageTimeout:  5 * time.Second,
@@ -70,8 +70,8 @@ func TestEndToEnd(t *testing.T) {
 	img := []byte("fake-png-bytes")
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/images/generations":
-			w.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(img) + `"}]}`))
+		case "/generate":
+			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
 		case "/v1/chat/completions":
 			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
 		default:
@@ -83,9 +83,9 @@ func TestEndToEnd(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := config{
 		LatticeURL:    mock.URL,
+		ImageURL:      mock.URL,
 		DataDir:       dataDir,
 		GenresFile:    writeGenres(t),
-		ImageModel:    "flux-dev",
 		EnhanceModel:  "flux-dev",
 		EnhanceSystem: "sys",
 		ImageTimeout:  5 * time.Second,

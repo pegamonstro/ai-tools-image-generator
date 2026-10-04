@@ -1,7 +1,8 @@
 # img-gen
 
 Browser front-end for generating images through the inference-lattice's FLUX
-model, using genre-keyed editable field sets and an async single-slot queue.
+model (via the local mflux sidecar) and optional LLM prompt enhancement, using
+genre-keyed editable field sets and an async single-slot queue.
 
 ## Build
 
@@ -9,12 +10,15 @@ model, using genre-keyed editable field sets and an async single-slot queue.
 
 ## Run
 
-    LISTEN=:8081 go run ./cmd/img-gen
+    go run ./cmd/img-gen
 
-Env vars: `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`), `DATA_DIR`
-(`./data`), `GENRES_FILE` (`./genres.json`), `IMAGE_MODEL` (`flux-dev`),
-`ENHANCE_MODEL`, `ENHANCE_SYSTEM`, `IMAGE_TIMEOUT_S` (`7200`), `LISTEN`
-(`:8081`).
+Image generation talks to the mflux sidecar (`IMAGE_URL`), prompt enhancement
+talks to the lattice frontend's chat endpoint (`LATTICE_FRONTEND_URL`).
+
+Env vars: `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`), `IMAGE_URL`
+(default `http://127.0.0.1:8899`), `DATA_DIR` (`./data`), `GENRES_FILE`
+(`./genres.json`), `ENHANCE_MODEL` (`local-brain`), `ENHANCE_SYSTEM`,
+`IMAGE_TIMEOUT_S` (`7200`), `LISTEN` (`:8081`).
 
 ## Adding a genre
 

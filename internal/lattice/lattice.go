@@ -8,42 +8,35 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"img-gen/internal/prompting"
 )
 
 type Client struct {
-	BaseURL string
-	Model   string // image model, e.g. "flux-dev"
-	HTTP    *http.Client
+	BaseURL  string // chat/enhance frontend (OpenAI-compatible /v1/chat/completions)
+	ImageURL string // mflux sidecar (POST /generate)
+	HTTP     *http.Client
 }
 
 func New(baseURL string) *Client {
-	return &Client{BaseURL: baseURL, Model: "flux-dev", HTTP: &http.Client{}}
+	return &Client{BaseURL: baseURL, HTTP: &http.Client{}}
 }
 
-type genRequest struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	Size           string `json:"size,omitempty"`
-	N              int    `json:"n"`
-	ResponseFormat string `json:"response_format"`
-}
-
-type genResponse struct {
-	Data []struct {
-		B64JSON string `json:"b64_json"`
-	} `json:"data"`
-}
-
-// Generate requests one image and returns its raw PNG bytes.
+// Generate requests one image from the mflux sidecar and returns its raw PNG
+// bytes. The sidecar takes explicit width/height rather than an OpenAI "size"
+// string, so "1024x576" is split into its dimensions.
 func (c *Client) Generate(ctx context.Context, prompt, size string) ([]byte, error) {
-	body := genRequest{Model: c.Model, Prompt: prompt, Size: size, N: 1, ResponseFormat: "b64_json"}
-	b, err := json.Marshal(body)
+	w, h, err := parseSize(size)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/images/generations", bytes.NewReader(b))
+	body, err := json.Marshal(map[string]any{"prompt": prompt, "width": w, "height": h})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ImageURL+"/generate", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -55,16 +48,35 @@ func (c *Client) Generate(ctx context.Context, prompt, size string) ([]byte, err
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("lattice images: %s: %s", resp.Status, msg)
+		return nil, fmt.Errorf("mflux generate: %s: %s", resp.Status, msg)
 	}
-	var gr genResponse
+	var gr struct {
+		Image string `json:"image"`
+		Error string `json:"error"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 		return nil, err
 	}
-	if len(gr.Data) == 0 {
-		return nil, fmt.Errorf("lattice images: empty data")
+	if gr.Image == "" {
+		if gr.Error != "" {
+			return nil, fmt.Errorf("mflux generate: %s", gr.Error)
+		}
+		return nil, fmt.Errorf("mflux generate: empty image")
 	}
-	return base64.StdEncoding.DecodeString(gr.Data[0].B64JSON)
+	return base64.StdEncoding.DecodeString(gr.Image)
+}
+
+func parseSize(size string) (int, int, error) {
+	wStr, hStr, ok := strings.Cut(size, "x")
+	if !ok {
+		return 0, 0, fmt.Errorf("invalid size %q", size)
+	}
+	w, errW := strconv.Atoi(wStr)
+	h, errH := strconv.Atoi(hStr)
+	if errW != nil || errH != nil || w <= 0 || h <= 0 {
+		return 0, 0, fmt.Errorf("invalid size %q", size)
+	}
+	return w, h, nil
 }
 
 type chatRequest struct {

@@ -29,9 +29,9 @@ var idRe = regexp.MustCompile(`^[a-f0-9]{16}$`)
 
 type config struct {
 	LatticeURL    string
+	ImageURL      string
 	DataDir       string
 	GenresFile    string
-	ImageModel    string
 	EnhanceModel  string
 	EnhanceSystem string
 	ImageTimeout  time.Duration
@@ -40,10 +40,10 @@ type config struct {
 func loadConfig() config {
 	return config{
 		LatticeURL:    envOr("LATTICE_FRONTEND_URL", "http://127.0.0.1:8080"),
+		ImageURL:      envOr("IMAGE_URL", "http://127.0.0.1:8899"),
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
-		ImageModel:    envOr("IMAGE_MODEL", "flux-dev"),
-		EnhanceModel:  envOr("ENHANCE_MODEL", "flux-dev"),
+		EnhanceModel:  envOr("ENHANCE_MODEL", "local-brain"),
 		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality image-generation prompts. Respond with only the prompt text."),
 		ImageTimeout:  time.Duration(envIntOr("IMAGE_TIMEOUT_S", 7200)) * time.Second,
 	}
@@ -59,7 +59,7 @@ func newHandler(cfg config) (http.Handler, error) {
 		return nil, err
 	}
 	lat := lattice.New(cfg.LatticeURL)
-	lat.Model = cfg.ImageModel
+	lat.ImageURL = cfg.ImageURL
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
@@ -201,8 +201,8 @@ func main() {
 		log.Fatalf("startup: %v", err)
 	}
 	addr := envOr("LISTEN", ":8081")
-	log.Printf("img-gen config: lattice=%s data_dir=%s genres=%s image_model=%s enhance_model=%s timeout=%s listen=%s",
-		cfg.LatticeURL, cfg.DataDir, cfg.GenresFile, cfg.ImageModel, cfg.EnhanceModel, cfg.ImageTimeout, addr)
+	log.Printf("img-gen config: lattice=%s image_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s",
+		cfg.LatticeURL, cfg.ImageURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr)
 	log.Printf("img-gen listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, h))
 }

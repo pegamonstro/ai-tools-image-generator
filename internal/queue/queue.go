@@ -22,9 +22,17 @@ type SubmitRequest struct {
 }
 
 type Event struct {
-	JobID  string `json:"job_id"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	JobID  string    `json:"job_id"`
+	Status string    `json:"status"`
+	Error  string    `json:"error,omitempty"`
+	Ts     time.Time `json:"ts"`
+	Log    string    `json:"log,omitempty"`
+}
+
+type LogLine struct {
+	Ts     time.Time
+	Status string
+	Msg    string
 }
 
 type Options struct {
@@ -38,6 +46,7 @@ type Options struct {
 type Manager struct {
 	mu    sync.Mutex
 	jobs  map[string]*storage.Job
+	logs  map[string][]LogLine
 	order []string
 	subs  map[string][]chan Event
 	work  chan string
@@ -47,6 +56,7 @@ type Manager struct {
 func New(opts Options) *Manager {
 	m := &Manager{
 		jobs: map[string]*storage.Job{},
+		logs: map[string][]LogLine{},
 		subs: map[string][]chan Event{},
 		work: make(chan string, 64),
 		opts: opts,
@@ -101,20 +111,28 @@ func (m *Manager) run(id string) {
 	if job == nil {
 		return
 	}
+	m.log(id, "start: genre=%s size=%s enhance=%t", job.Genre, job.Size, job.Enhance)
+
 	g, _ := m.opts.Genres.Genre(job.Genre)
 	resolved := prompting.Resolve(g.Fields, job.Fields)
+	m.log(id, "resolved %d field value(s)", len(resolved))
 
 	var prompt string
 	var err error
 	if job.Enhance {
 		m.setStatus(id, "enhancing", "")
+		m.log(id, "sending enhance request to lattice chat")
+		start := time.Now()
 		prompt, err = prompting.Enhance(context.Background(), m.opts.Chat, m.opts.EnhanceSystem, resolved)
 		if err != nil {
+			m.log(id, "enhance failed after %s: %v", roundDur(time.Since(start)), err)
 			m.finish(id, "failed", err.Error())
 			return
 		}
+		m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), prompt)
 	} else {
 		prompt = prompting.Direct(g.PromptTemplate, resolved)
+		m.log(id, "assembled direct prompt: %q", prompt)
 	}
 
 	m.mu.Lock()
@@ -122,21 +140,33 @@ func (m *Manager) run(id string) {
 	m.mu.Unlock()
 
 	m.setStatus(id, "generating", "")
+	m.log(id, "requesting image from lattice (size=%s)", job.Size)
+	start := time.Now()
 	png, err := m.opts.Generate(context.Background(), prompt, job.Size)
 	if err != nil {
+		m.log(id, "generation failed after %s: %v", roundDur(time.Since(start)), err)
 		m.finish(id, "failed", err.Error())
 		return
 	}
+	m.log(id, "lattice returned %d bytes in %s", len(png), roundDur(time.Since(start)))
+
 	rel, err := m.opts.Store.SaveImage(id, png)
 	if err != nil {
+		m.log(id, "save failed: %v", err)
 		m.finish(id, "failed", err.Error())
 		return
 	}
 	m.mu.Lock()
 	job.ImagePath = rel
 	m.mu.Unlock()
+	m.log(id, "saved image to %s", rel)
 
 	m.finish(id, "done", "")
+}
+
+// roundDur trims a duration to milliseconds for readable log lines.
+func roundDur(d time.Duration) time.Duration {
+	return d.Round(time.Millisecond)
 }
 
 // finish records the terminal state, persists it once, then notifies.
@@ -165,10 +195,28 @@ func (m *Manager) setStatus(id, status, errMsg string) {
 }
 
 func (m *Manager) notify(id, status, errMsg string) {
-	ev := Event{JobID: id, Status: status, Error: errMsg}
+	m.broadcast(Event{JobID: id, Status: status, Error: errMsg, Ts: time.Now()})
+}
+
+// log appends a timestamped line to the job's in-memory buffer and streams it
+// to subscribers, tagging it with the job's current phase.
+func (m *Manager) log(id, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	now := time.Now()
+	m.mu.Lock()
+	status := ""
+	if j := m.jobs[id]; j != nil {
+		status = j.Status
+	}
+	m.logs[id] = append(m.logs[id], LogLine{Ts: now, Status: status, Msg: msg})
+	m.mu.Unlock()
+	m.broadcast(Event{JobID: id, Status: status, Ts: now, Log: msg})
+}
+
+func (m *Manager) broadcast(ev Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, ch := range m.subs[id] {
+	for _, ch := range m.subs[ev.JobID] {
 		select {
 		case ch <- ev:
 		default:
@@ -207,10 +255,15 @@ func (m *Manager) List() []storage.Job {
 }
 
 func (m *Manager) Subscribe(id string) (<-chan Event, func()) {
-	ch := make(chan Event, 16)
+	ch := make(chan Event, 64)
 	m.mu.Lock()
 	if j, ok := m.jobs[id]; ok {
-		ch <- Event{JobID: id, Status: j.Status}
+		// Replay any accumulated log lines first so a late subscriber (e.g. a
+		// page reload mid-generation) catches up, then the current status.
+		for _, l := range m.logs[id] {
+			ch <- Event{JobID: id, Status: l.Status, Ts: l.Ts, Log: l.Msg}
+		}
+		ch <- Event{JobID: id, Status: j.Status, Ts: time.Now()}
 	}
 	m.subs[id] = append(m.subs[id], ch)
 	m.mu.Unlock()

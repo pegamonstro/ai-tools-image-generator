@@ -162,3 +162,43 @@ func TestSubscribeGetsInitialStatus(t *testing.T) {
 	// cleanup at test end does not race the worker goroutine.
 	waitFor(t, m, id, "done")
 }
+
+func TestJobLogsStreamAndReplay(t *testing.T) {
+	m := New(testOpts(t))
+	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512"})
+
+	// Collect events until the terminal status, counting log lines.
+	var logs []string
+	ch, cancel := m.Subscribe(id)
+	for ev := range ch {
+		if ev.Log != "" {
+			logs = append(logs, ev.Log)
+		}
+		if ev.Status == "done" || ev.Status == "failed" {
+			cancel()
+			break
+		}
+	}
+	if len(logs) == 0 {
+		t.Fatal("expected at least one log line during generation")
+	}
+	if logs[0] == "" {
+		t.Fatal("first log line empty")
+	}
+
+	// A fresh subscriber must replay the same accumulated log lines.
+	ch2, cancel2 := m.Subscribe(id)
+	defer cancel2()
+	var replayed []string
+	for ev := range ch2 {
+		if ev.Log != "" {
+			replayed = append(replayed, ev.Log)
+		}
+		if ev.Status == "done" {
+			break
+		}
+	}
+	if len(replayed) < len(logs) {
+		t.Fatalf("replay got %d logs, want >= %d", len(replayed), len(logs))
+	}
+}

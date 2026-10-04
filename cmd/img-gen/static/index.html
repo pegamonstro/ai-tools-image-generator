@@ -4,40 +4,79 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>img-gen</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c6cff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>img-gen</h1>
-    <p class="sub">Local image generation via the inference-lattice</p>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-text">
+        <h1>img-gen</h1>
+        <p class="sub">Local image generation via the inference-lattice</p>
+      </div>
+    </div>
+    <span id="conn" class="conn">● connecting…</span>
   </header>
 
   <main>
-    <section class="panel" id="composer">
-      <div class="row">
-        <label>Genre
-          <select id="genre"></select>
-        </label>
-        <label>Size
-          <select id="size"></select>
-        </label>
-      </div>
-      <div id="fields"></div>
-      <label class="toggle">
-        <input type="checkbox" id="enhance">
-        Enhance prompt with LLM
-      </label>
-      <button id="generate" type="button">Generate</button>
-      <div id="status" class="status" hidden></div>
-    </section>
+    <div class="layout">
+      <section class="panel" id="composer">
+        <div class="panel-head">
+          <h2>Composer</h2>
+          <p class="panel-hint">Choose a genre, shape your scene, then generate.</p>
+        </div>
 
-    <section class="panel" id="result" hidden>
-      <img id="image" alt="generated">
-    </section>
+        <div class="row">
+          <label class="ctrl">Genre
+            <select id="genre"></select>
+          </label>
+          <label class="ctrl">Size
+            <select id="size"></select>
+          </label>
+        </div>
+
+        <div id="fields" class="fields"></div>
+
+        <label class="toggle">
+          <input type="checkbox" id="enhance">
+          <span class="toggle-track" aria-hidden="true"></span>
+          Enhance prompt with LLM
+        </label>
+
+        <div class="actions">
+          <button id="generate" type="button">Generate</button>
+          <span id="status" class="status" hidden></span>
+        </div>
+      </section>
+
+      <div class="side">
+        <section class="panel" id="result" hidden>
+          <div class="panel-head">
+            <h2>Result</h2>
+          </div>
+          <img id="image" alt="generated">
+        </section>
+
+        <section class="panel log-panel">
+          <div class="panel-head">
+            <h2>Activity log</h2>
+            <button id="clear-log" class="ghost" type="button">Clear</button>
+          </div>
+          <div id="log" class="log">
+            <div class="log-empty">No activity yet — generate an image to see live progress.</div>
+          </div>
+        </section>
+      </div>
+    </div>
 
     <section class="panel">
-      <h2>History</h2>
-      <div id="history" class="history"></div>
+      <div class="panel-head">
+        <h2>History</h2>
+      </div>
+      <div id="history" class="history">
+        <div class="log-empty">No generations yet.</div>
+      </div>
     </section>
   </main>
 

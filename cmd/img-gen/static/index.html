@@ -1,1 +1,46 @@
-<html><body>img-gen</body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>img-gen</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>img-gen</h1>
+    <p class="sub">Local image generation via the inference-lattice</p>
+  </header>
+
+  <main>
+    <section class="panel" id="composer">
+      <div class="row">
+        <label>Genre
+          <select id="genre"></select>
+        </label>
+        <label>Size
+          <select id="size"></select>
+        </label>
+      </div>
+      <div id="fields"></div>
+      <label class="toggle">
+        <input type="checkbox" id="enhance">
+        Enhance prompt with LLM
+      </label>
+      <button id="generate" type="button">Generate</button>
+      <div id="status" class="status" hidden></div>
+    </section>
+
+    <section class="panel" id="result" hidden>
+      <img id="image" alt="generated">
+    </section>
+
+    <section class="panel">
+      <h2>History</h2>
+      <div id="history" class="history"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -106,9 +106,10 @@ func TestGenerateBadSize(t *testing.T) {
 func TestGenerateSamplingParams(t *testing.T) {
 	img := []byte("fake-png-bytes")
 	var got struct {
-		Seed     *int64   `json:"seed"`
-		Steps    *int     `json:"steps"`
-		Guidance *float64 `json:"guidance"`
+		Seed           *int64   `json:"seed"`
+		Steps          *int     `json:"steps"`
+		Guidance       *float64 `json:"guidance"`
+		NegativePrompt string   `json:"negative_prompt"`
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&got)
@@ -122,7 +123,7 @@ func TestGenerateSamplingParams(t *testing.T) {
 	seed := int64(42)
 	steps := 30
 	guidance := 3.5
-	sp := storage.SamplingParams{Seed: &seed, Steps: &steps, Guidance: &guidance}
+	sp := storage.SamplingParams{Seed: &seed, Steps: &steps, Guidance: &guidance, NegativePrompt: "blurry, watermark"}
 	_, used, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, sp)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -135,6 +136,9 @@ func TestGenerateSamplingParams(t *testing.T) {
 	}
 	if got.Guidance == nil || *got.Guidance != 3.5 {
 		t.Fatalf("guidance = %v, want 3.5", got.Guidance)
+	}
+	if got.NegativePrompt != "blurry, watermark" {
+		t.Fatalf("negative_prompt = %q, want %q", got.NegativePrompt, "blurry, watermark")
 	}
 	// The sidecar-reported seed (1234) is returned, not the requested one.
 	if used == nil || *used != 1234 {
@@ -156,7 +160,7 @@ func TestGenerateOmitsEmptySamplingParams(t *testing.T) {
 	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	for _, k := range []string{"seed", "steps", "guidance"} {
+	for _, k := range []string{"seed", "steps", "guidance", "negative_prompt"} {
 		if _, ok := got[k]; ok {
 			t.Fatalf("empty sampling params must omit %q, got %+v", k, got)
 		}

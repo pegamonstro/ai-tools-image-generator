@@ -7,6 +7,7 @@ let detailJob = null;
 
 const EDIT_SIZES = ['512x512', '768x512', '1024x576', '1024x1024'];
 let uploaded = { edit: null, inpaint: null, blend: [] }; // base64 strings
+let outpaintImg = null; // decoded Image of the source to expand
 let brushErase = false;
 
 function currentMode() { return $('mode').value; }
@@ -16,6 +17,7 @@ function renderMode() {
   $('gen-controls').hidden = m !== 'generate';
   $('edit-controls').hidden = m !== 'edit';
   $('inpaint-controls').hidden = m !== 'inpaint';
+  $('outpaint-controls').hidden = m !== 'outpaint';
   $('blend-controls').hidden = m !== 'blend';
   $('enhance').closest('.toggle').hidden = false;
   // LoRA + sampling knobs apply to generate/edit only (fill/redux take none).
@@ -127,6 +129,9 @@ async function init() {
     uploaded.blend = [];
     for (const f of e.target.files) uploaded.blend.push(stripDataURL(await readFileAsDataURL(f)));
     renderRefs();
+  };
+  $('outpaint-image').onchange = async (e) => {
+    if (e.target.files[0]) await setupOutpaint(e.target.files[0]);
   };
   renderMode();
   $('generate').onclick = generate;
@@ -246,6 +251,8 @@ function collectSampling() {
   if (steps !== '') sp.steps = parseInt(steps, 10);
   const guidance = $('guidance').value.trim();
   if (guidance !== '') sp.guidance = parseFloat(guidance);
+  const neg = $('negative-prompt').value.trim();
+  if (neg !== '') sp.negative_prompt = neg;
   return sp;
 }
 
@@ -397,6 +404,61 @@ function maskAsBase64() {
   return maskStroke.toDataURL('image/png').split(',')[1];
 }
 
+async function setupOutpaint(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    outpaintImg = img;
+    const pv = $('outpaint-preview');
+    pv.src = url;
+    pv.hidden = false;
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
+// buildOutpaint places the source on a larger canvas and returns the padded
+// image plus a border mask (white = regenerate, black = keep) for the /fill
+// sidecar. New dimensions are rounded up to multiples of 64 for FLUX.
+function buildOutpaint() {
+  const dir = $('outpaint-dir').value;
+  const pad = parseInt($('outpaint-pad').value, 10);
+  const w = outpaintImg.naturalWidth;
+  const h = outpaintImg.naturalHeight;
+  let nw = w, nh = h, ox = 0, oy = 0;
+  switch (dir) {
+    case 'all': nw = w + 2 * pad; nh = h + 2 * pad; ox = pad; oy = pad; break;
+    case 'left': nw = w + pad; ox = pad; break;
+    case 'right': nw = w + pad; break;
+    case 'top': nh = h + pad; oy = pad; break;
+    case 'bottom': nh = h + pad; break;
+    case 'left+right': nw = w + 2 * pad; ox = pad; break;
+    case 'top+bottom': nh = h + 2 * pad; oy = pad; break;
+  }
+  nw = Math.ceil(nw / 64) * 64;
+  nh = Math.ceil(nh / 64) * 64;
+
+  const cv = document.createElement('canvas');
+  cv.width = nw; cv.height = nh;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, nw, nh);
+  ctx.drawImage(outpaintImg, ox, oy, w, h);
+
+  const mc = document.createElement('canvas');
+  mc.width = nw; mc.height = nh;
+  const mctx = mc.getContext('2d');
+  mctx.fillStyle = '#fff';
+  mctx.fillRect(0, 0, nw, nh);
+  mctx.fillStyle = '#000';
+  mctx.fillRect(ox, oy, w, h);
+
+  return {
+    image: cv.toDataURL('image/png').split(',')[1],
+    mask: mc.toDataURL('image/png').split(',')[1],
+  };
+}
+
 function renderRefs() {
   const el = $('refs');
   el.innerHTML = '';
@@ -438,6 +500,10 @@ async function generate() {
     body.image = uploaded.inpaint;
     if (!body.image || !maskStroke) { setStatus('please upload an image and paint a mask', 'err'); return; }
     body.mask = maskAsBase64();
+  } else if (mode === 'outpaint') {
+    body.prompt = $('outpaint-prompt').value;
+    if (!outpaintImg) { setStatus('please upload an image to expand', 'err'); return; }
+    Object.assign(body, buildOutpaint());
   } else if (mode === 'blend') {
     body.prompt = $('blend-prompt').value;
     body.size = $('blend-size').value;

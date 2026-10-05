@@ -33,9 +33,10 @@ type SubmitRequest struct {
 	Model string            `json:"model"` // mflux --model value (path or HF id); "" = sidecar default
 	Loras []storage.LoraRef `json:"loras"` // mflux --lora list; nil = none
 
-	Seed     *int64   `json:"seed,omitempty"`     // fixed seed; nil = random
-	Steps    *int     `json:"steps,omitempty"`    // diffusion steps; nil = sidecar default
-	Guidance *float64 `json:"guidance,omitempty"` // guidance; nil = sidecar default
+	Seed           *int64   `json:"seed,omitempty"`            // fixed seed; nil = random
+	Steps          *int     `json:"steps,omitempty"`           // diffusion steps; nil = sidecar default
+	Guidance       *float64 `json:"guidance,omitempty"`        // guidance; nil = sidecar default
+	NegativePrompt string   `json:"negative_prompt,omitempty"` // things to avoid; "" = none
 }
 
 type Event struct {
@@ -144,12 +145,12 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 		if inputs.Strength == 0 {
 			inputs.Strength = 0.4
 		}
-	case "inpaint":
+	case "inpaint", "outpaint":
 		if strings.TrimSpace(req.Prompt) == "" {
-			return "", fmt.Errorf("prompt is required for inpaint")
+			return "", fmt.Errorf("prompt is required for %s", mode)
 		}
 		if strings.TrimSpace(req.Image) == "" || strings.TrimSpace(req.Mask) == "" {
-			return "", fmt.Errorf("image and mask are required for inpaint")
+			return "", fmt.Errorf("image and mask are required for %s", mode)
 		}
 		inputs.Image = req.Image
 		inputs.Mask = req.Mask
@@ -177,21 +178,22 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 
 	id := newID()
 	job := &storage.Job{
-		ID:        id,
-		Mode:      mode,
-		Genre:     req.Genre,
-		Style:     req.Style,
-		Prompt:    req.Prompt,
-		Fields:    req.Fields,
-		Size:      req.Size,
-		Enhance:   req.Enhance,
-		Model:     req.Model,
-		Loras:     normalizeLoras(req.Loras),
-		Seed:      req.Seed,
-		Steps:     req.Steps,
-		Guidance:  req.Guidance,
-		Status:    "queued",
-		CreatedAt: time.Now(),
+		ID:             id,
+		Mode:           mode,
+		Genre:          req.Genre,
+		Style:          req.Style,
+		Prompt:         req.Prompt,
+		Fields:         req.Fields,
+		Size:           req.Size,
+		Enhance:        req.Enhance,
+		Model:          req.Model,
+		Loras:          normalizeLoras(req.Loras),
+		Seed:           req.Seed,
+		Steps:          req.Steps,
+		Guidance:       req.Guidance,
+		NegativePrompt: req.NegativePrompt,
+		Status:         "queued",
+		CreatedAt:      time.Now(),
 	}
 	m.mu.Lock()
 	m.jobs[id] = job
@@ -300,7 +302,7 @@ func (m *Manager) run(id string) {
 	m.setStatus(id, "generating", "")
 	start := time.Now()
 	spec := storage.ModelSpec{Model: job.Model, Loras: job.Loras}
-	sp := storage.SamplingParams{Seed: job.Seed, Steps: job.Steps, Guidance: job.Guidance}
+	sp := storage.SamplingParams{Seed: job.Seed, Steps: job.Steps, Guidance: job.Guidance, NegativePrompt: job.NegativePrompt}
 
 	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)
 	cancel()

@@ -32,6 +32,7 @@
             <option value="generate">Generate</option>
             <option value="edit">Edit (img2img)</option>
             <option value="inpaint">Inpaint (mask)</option>
+            <option value="outpaint">Outpaint (expand)</option>
             <option value="blend">Blend (multi-reference)</option>
           </select>
         </label>
@@ -61,6 +62,9 @@
         </details>
 
         <div id="sampling-controls">
+          <label class="ctrl">Negative prompt
+            <textarea id="negative-prompt" rows="2" placeholder="things to avoid, e.g. 'blurry, watermark, low quality'"></textarea>
+          </label>
           <div class="row">
             <label class="ctrl">Seed
               <input type="number" id="seed" placeholder="random">
@@ -126,6 +130,39 @@
               <button id="mask-clear" type="button">Clear</button>
             </div>
             <small>Paint white over the region to change; leave the rest black (kept).</small>
+          </div>
+        </div>
+
+        <div id="outpaint-controls" hidden>
+          <label class="ctrl">Prompt
+            <textarea id="outpaint-prompt" rows="3" placeholder="describe what to extend into, e.g. 'a wider desert at dusk'"></textarea>
+          </label>
+          <div class="row">
+            <label class="ctrl">Direction
+              <select id="outpaint-dir">
+                <option value="all">All sides</option>
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+                <option value="top">Top</option>
+                <option value="bottom">Bottom</option>
+                <option value="left+right">Left + right</option>
+                <option value="top+bottom">Top + bottom</option>
+              </select>
+            </label>
+            <label class="ctrl">Expand by
+              <select id="outpaint-pad">
+                <option value="256">256 px</option>
+                <option value="384">384 px</option>
+                <option value="512">512 px</option>
+                <option value="768">768 px</option>
+              </select>
+            </label>
+          </div>
+          <div class="picker">
+            <label class="upload-btn" for="outpaint-image">Choose image…</label>
+            <input type="file" id="outpaint-image" accept="image/*" hidden>
+            <small>Upload the image to expand outward from.</small>
+            <img id="outpaint-preview" alt="uploaded image" hidden>
           </div>
         </div>
 

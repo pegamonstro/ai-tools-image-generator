@@ -439,3 +439,24 @@ func TestInpaintJobCompletes(t *testing.T) {
 		t.Fatalf("mode = %q", j.Mode)
 	}
 }
+
+func TestOutpaintJobCompletes(t *testing.T) {
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Mode: "outpaint", Prompt: "extend the scene", Image: "aW1n", Mask: "bWFzaw=="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Mode != "outpaint" {
+		t.Fatalf("mode = %q", j.Mode)
+	}
+}
+
+func TestSubmitOutpaintMissingMask(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "outpaint", Prompt: "x", Image: "aW1n"}); err == nil {
+		t.Fatal("expected error for outpaint without mask")
+	}
+}

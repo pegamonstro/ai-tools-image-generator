@@ -26,32 +26,34 @@ type ModelSpec struct {
 // SamplingParams are optional generation knobs forwarded to the mflux sidecar.
 // A nil pointer means "leave to the sidecar default".
 type SamplingParams struct {
-	Seed     *int64   `json:"seed,omitempty"`     // fixed seed; nil = random
-	Steps    *int     `json:"steps,omitempty"`    // diffusion steps; nil = sidecar default
-	Guidance *float64 `json:"guidance,omitempty"` // classifier-free guidance; nil = sidecar default
+	Seed           *int64   `json:"seed,omitempty"`            // fixed seed; nil = random
+	Steps          *int     `json:"steps,omitempty"`           // diffusion steps; nil = sidecar default
+	Guidance       *float64 `json:"guidance,omitempty"`        // classifier-free guidance; nil = sidecar default
+	NegativePrompt string   `json:"negative_prompt,omitempty"` // things to avoid; "" = none
 }
 
 type Job struct {
-	ID         string            `json:"id"`
-	Genre      string            `json:"genre"`
-	Mode       string            `json:"mode,omitempty"`
-	Style      string            `json:"style,omitempty"`
-	Prompt     string            `json:"prompt"`
-	Fields     map[string]string `json:"fields"`
-	Size       string            `json:"size"`
-	Enhance    bool              `json:"enhance"`
-	Model      string            `json:"model,omitempty"`
-	Loras      []LoraRef         `json:"loras,omitempty"`
-	Seed       *int64            `json:"seed,omitempty"`     // seed actually used (sidecar response); nil for inpaint/blend
-	Steps      *int              `json:"steps,omitempty"`     // requested diffusion steps (nil = default)
-	Guidance   *float64          `json:"guidance,omitempty"`  // requested guidance (nil = default)
-	Status     string            `json:"status"`
-	Step       int               `json:"-"` // in-flight diffusion step (transient, not persisted)
-	Total      int               `json:"-"` // total diffusion steps (transient, not persisted)
-	CreatedAt  time.Time         `json:"created_at"`
-	FinishedAt *time.Time        `json:"finished_at,omitempty"`
-	Error      string            `json:"error,omitempty"`
-	ImagePath  string            `json:"image_path,omitempty"`
+	ID             string            `json:"id"`
+	Genre          string            `json:"genre"`
+	Mode           string            `json:"mode,omitempty"`
+	Style          string            `json:"style,omitempty"`
+	Prompt         string            `json:"prompt"`
+	Fields         map[string]string `json:"fields"`
+	Size           string            `json:"size"`
+	Enhance        bool              `json:"enhance"`
+	Model          string            `json:"model,omitempty"`
+	Loras          []LoraRef         `json:"loras,omitempty"`
+	Seed           *int64            `json:"seed,omitempty"`            // seed actually used (sidecar response); nil for inpaint/blend
+	Steps          *int              `json:"steps,omitempty"`           // requested diffusion steps (nil = default)
+	Guidance       *float64          `json:"guidance,omitempty"`        // requested guidance (nil = default)
+	NegativePrompt string            `json:"negative_prompt,omitempty"` // requested negative prompt ("" = none)
+	Status         string            `json:"status"`
+	Step           int               `json:"-"` // in-flight diffusion step (transient, not persisted)
+	Total          int               `json:"-"` // total diffusion steps (transient, not persisted)
+	CreatedAt      time.Time         `json:"created_at"`
+	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	ImagePath      string            `json:"image_path,omitempty"`
 }
 
 type Store struct {

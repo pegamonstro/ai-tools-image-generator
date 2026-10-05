@@ -91,6 +91,9 @@ func applyGenParams(body map[string]any, sp storage.SamplingParams) {
 	if sp.Guidance != nil {
 		body["guidance"] = *sp.Guidance
 	}
+	if sp.NegativePrompt != "" {
+		body["negative_prompt"] = sp.NegativePrompt
+	}
 }
 
 // Inpaint repaints only the masked region of imageB64. maskB64 is a same-sized
@@ -134,7 +137,7 @@ type statusResp struct {
 // URL selection postImage uses (fill/redux may live on a different host).
 func (c *Client) sidecarForMode(mode string) string {
 	switch mode {
-	case "inpaint":
+	case "inpaint", "outpaint":
 		if c.FillURL != "" {
 			return c.FillURL
 		}

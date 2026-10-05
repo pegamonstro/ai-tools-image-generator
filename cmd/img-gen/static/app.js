@@ -2,6 +2,7 @@
 
 let genres = null;
 let models = { models: [], loras: [] };
+let presets = { presets: [] };
 let activeJobId = null;
 let detailJob = null;
 
@@ -108,6 +109,7 @@ async function init() {
   renderGenreSelect();
   renderStyleSelect();
   loadModels();
+  loadPresets();
   $('add-lora').onclick = addLoraRow;
   $('mode').onchange = () => { renderMode(); };
   populateSizes($('edit-size'), EDIT_SIZES);
@@ -188,6 +190,31 @@ async function loadModels() {
   }
   renderModelSelect();
   renderLoraSelect();
+}
+
+async function loadPresets() {
+  try {
+    presets = await jsonFetch('/api/presets');
+  } catch (e) {
+    appendLog(new Date(), 'failed', 'could not load presets: ' + e.message);
+    return;
+  }
+  renderPresetSelect();
+}
+
+function renderPresetSelect() {
+  const sel = $('preset');
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'None';
+  sel.appendChild(none);
+  for (const p of (presets.presets || [])) {
+    const o = document.createElement('option');
+    o.value = p.key;
+    o.textContent = p.label;
+    sel.appendChild(o);
+  }
 }
 
 function renderModelSelect() {
@@ -491,7 +518,7 @@ function renderRefs() {
 
 async function generate() {
   const mode = currentMode();
-  const body = { mode, enhance: $('enhance').checked, style: $('style').value };
+  const body = { mode, enhance: $('enhance').checked, style: $('style').value, preset: $('preset').value };
   if (mode === 'generate' || mode === 'edit') {
     Object.assign(body, collectModelSpec());
     Object.assign(body, collectSampling());

@@ -29,8 +29,13 @@ type Catalog struct {
 	Presets []Preset `json:"presets"`
 }
 
+// Load reads a catalog JSON file. A missing file yields an empty catalog
+// (no presets configured), not an error — mirroring models.Load.
 func Load(path string) (*Catalog, error) {
 	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return &Catalog{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

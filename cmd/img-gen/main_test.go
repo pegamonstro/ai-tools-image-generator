@@ -47,6 +47,18 @@ func writeModels(t *testing.T) string {
 	return p
 }
 
+func writePresets(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "presets.json")
+	content := `{
+  "presets": [{"key": "aria", "label": "Aria", "trigger": "aria, silver hair"}]
+}`
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // newTestHandler builds a handler backed by a fast mock lattice server.
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
@@ -201,6 +213,7 @@ func TestModelsAndExport(t *testing.T) {
 		DataDir:       t.TempDir(),
 		GenresFile:    writeGenres(t),
 		ModelsFile:    writeModels(t),
+		PresetsFile:   writePresets(t),
 		EnhanceModel:  "flux-dev",
 		EnhanceSystem: "sys",
 		ImageTimeout:  5 * time.Second,
@@ -234,6 +247,23 @@ func TestModelsAndExport(t *testing.T) {
 	}
 	if len(cat.Loras) != 1 || cat.Loras[0].Value != "shauray/flux-uncensored-lora" {
 		t.Fatalf("loras = %+v", cat.Loras)
+	}
+
+	// /api/presets returns the preset catalog.
+	r2, err := http.Get(srv.URL + "/api/presets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pcat struct {
+		Presets []struct {
+			Key   string `json:"key"`
+			Label string `json:"label"`
+		} `json:"presets"`
+	}
+	json.NewDecoder(r2.Body).Decode(&pcat)
+	r2.Body.Close()
+	if len(pcat.Presets) != 1 || pcat.Presets[0].Key != "aria" || pcat.Presets[0].Label != "Aria" {
+		t.Fatalf("presets = %+v", pcat.Presets)
 	}
 
 	// Generate one image, then export it to a temp dir.

@@ -114,6 +114,10 @@ func newHandler(cfg config) (http.Handler, error) {
 		writeJSON(w, modelCatalog)
 	})
 
+	mux.HandleFunc("/api/presets", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, presetCatalog)
+	})
+
 	mux.HandleFunc("/api/jobs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:

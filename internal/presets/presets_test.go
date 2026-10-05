@@ -38,9 +38,13 @@ func TestLoadAndByKey(t *testing.T) {
 	}
 }
 
-func TestLoadMissingFile(t *testing.T) {
-	if _, err := Load(filepath.Join(t.TempDir(), "nope.json")); err == nil {
-		t.Fatal("want error for missing file")
+func TestLoadMissingFileYieldsEmpty(t *testing.T) {
+	c, err := Load(filepath.Join(t.TempDir(), "nope.json"))
+	if err != nil {
+		t.Fatalf("missing file should not error: %v", err)
+	}
+	if len(c.Presets) != 0 {
+		t.Fatalf("want empty catalog, got %+v", c.Presets)
 	}
 }
 

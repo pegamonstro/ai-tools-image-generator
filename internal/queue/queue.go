@@ -25,6 +25,7 @@ type SubmitRequest struct {
 	Preset  string            `json:"preset"` // character-preset key (empty = none)
 
 	Mode      string    `json:"mode"`      // "generate"(default) | "edit" | "inpaint" | "blend"
+	Batch     int       `json:"batch"`     // >1 fans out to N jobs (handled by SubmitBatch)
 	Prompt    string    `json:"prompt"`    // free-text prompt (non-generate modes)
 	Image     string    `json:"image"`     // base64: edit/inpaint source
 	Mask      string    `json:"mask"`      // base64: inpaint mask
@@ -114,6 +115,38 @@ func New(opts Options) *Manager {
 }
 
 func (m *Manager) Submit(req SubmitRequest) (string, error) {
+	return m.submitOne(req, "")
+}
+
+// SubmitBatch fans one request out to N jobs sharing a batch ID. When a seed
+// is locked, it is varied as seed+i so each image in the batch differs.
+func (m *Manager) SubmitBatch(req SubmitRequest) ([]string, error) {
+	n := req.Batch
+	if n < 1 {
+		n = 1
+	}
+	if n > 8 {
+		n = 8 // cap: the sidecar is single-flight and serial
+	}
+	batchID := newID()
+	base := req.Seed
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		r := req
+		if base != nil {
+			s := *base + int64(i)
+			r.Seed = &s
+		}
+		id, err := m.submitOne(r, batchID)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 	mode := req.Mode
 	if mode == "" {
 		mode = "generate"
@@ -221,6 +254,7 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 		Genre:          req.Genre,
 		Style:          req.Style,
 		Preset:         req.Preset,
+		BatchID:        batchID,
 		Prompt:         req.Prompt,
 		Fields:         req.Fields,
 		Size:           req.Size,

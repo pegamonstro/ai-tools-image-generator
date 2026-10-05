@@ -126,6 +126,15 @@ func newHandler(cfg config) (http.Handler, error) {
 				writeErr(w, http.StatusBadRequest, "bad body")
 				return
 			}
+			if req.Batch > 1 {
+				ids, err := mgr.SubmitBatch(req)
+				if err != nil {
+					writeErr(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				writeJSON(w, map[string][]string{"job_ids": ids})
+				return
+			}
 			id, err := mgr.Submit(req)
 			if err != nil {
 				writeErr(w, http.StatusBadRequest, err.Error())

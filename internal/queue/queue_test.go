@@ -546,6 +546,56 @@ func TestSubmitExplicitFieldsOverridePreset(t *testing.T) {
 	}
 }
 
+func TestSubmitBatchFansOut(t *testing.T) {
+	m := New(testOpts(t))
+	seed := int64(42)
+	ids, err := m.SubmitBatch(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"},
+		Size: "512x512", Batch: 3, Seed: &seed,
+	})
+	if err != nil || len(ids) != 3 {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+	if ids[0] == ids[1] || ids[1] == ids[2] {
+		t.Fatal("batch ids must be distinct")
+	}
+	j0, _ := m.Get(ids[0])
+	j1, _ := m.Get(ids[1])
+	if j0.BatchID == "" || j0.BatchID != j1.BatchID {
+		t.Fatalf("batch ids must match: %q vs %q", j0.BatchID, j1.BatchID)
+	}
+	if j1.Seed == nil || *j1.Seed != 43 {
+		t.Fatalf("seed should vary across batch: %v", j1.Seed)
+	}
+	// A single submit leaves BatchID empty.
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := m.Get(id); j.BatchID != "" {
+		t.Fatalf("single submit must have empty batch id, got %q", j.BatchID)
+	}
+	// Drain the workers so the TempDir cleanup at test end doesn't race.
+	for _, bid := range ids {
+		waitFor(t, m, bid, "done")
+	}
+	waitFor(t, m, id, "done")
+}
+
+func TestSubmitBatchCapsAtEight(t *testing.T) {
+	m := New(testOpts(t))
+	ids, err := m.SubmitBatch(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"},
+		Size: "512x512", Batch: 20,
+	})
+	if err != nil || len(ids) != 8 {
+		t.Fatalf("want capped to 8, got %d (err=%v)", len(ids), err)
+	}
+	for _, id := range ids {
+		waitFor(t, m, id, "done")
+	}
+}
+
 func TestSubmitRejectsUnknownPreset(t *testing.T) {
 	m := New(testOpts(t))
 	m.opts.Presets = &presets.Catalog{}

@@ -3,6 +3,40 @@
 let genres = null;
 let activeJobId = null;
 
+const EDIT_SIZES = ['512x512', '768x512', '1024x576', '1024x1024'];
+let uploaded = { edit: null, inpaint: null, blend: [] }; // base64 strings
+let brushErase = false;
+
+function currentMode() { return $('mode').value; }
+
+function renderMode() {
+  const m = currentMode();
+  $('gen-controls').hidden = m !== 'generate';
+  $('edit-controls').hidden = m !== 'edit';
+  $('inpaint-controls').hidden = m !== 'inpaint';
+  $('blend-controls').hidden = m !== 'blend';
+  $('enhance').closest('.toggle').hidden = false;
+}
+
+function populateSizes(sel, sizes) {
+  sel.innerHTML = '';
+  for (const s of sizes) {
+    const o = document.createElement('option');
+    o.value = s; o.textContent = s;
+    sel.appendChild(o);
+  }
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+function stripDataURL(d) { return d.split(',')[1]; }
+
 function $(id) { return document.getElementById(id); }
 function logEl() { return $('log'); }
 
@@ -60,6 +94,24 @@ async function init() {
   }
   setConn('● connected', 'ok');
   renderGenreSelect();
+  $('mode').onchange = () => { renderMode(); };
+  populateSizes($('edit-size'), EDIT_SIZES);
+  populateSizes($('blend-size'), EDIT_SIZES);
+  $('edit-image').onchange = async (e) => {
+    if (e.target.files[0]) uploaded.edit = stripDataURL(await readFileAsDataURL(e.target.files[0]));
+  };
+  $('inpaint-image').onchange = async (e) => {
+    if (e.target.files[0]) {
+      uploaded.inpaint = stripDataURL(await readFileAsDataURL(e.target.files[0]));
+      await setupMask(e.target.files[0]);
+    }
+  };
+  $('blend-image').onchange = async (e) => {
+    uploaded.blend = [];
+    for (const f of e.target.files) uploaded.blend.push(stripDataURL(await readFileAsDataURL(f)));
+    renderRefs();
+  };
+  renderMode();
   $('generate').onclick = generate;
   $('clear-log').onclick = () => { logEl().innerHTML = ''; };
   loadHistory();
@@ -154,13 +206,113 @@ function collectFields() {
   return out;
 }
 
-async function generate() {
-  const body = {
-    genre: $('genre').value,
-    fields: collectFields(),
-    size: $('size').value,
-    enhance: $('enhance').checked,
+let maskStroke = null; // offscreen canvas holding only black bg + painted strokes
+let guideImg = null;
+
+async function setupMask(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const cv = $('mask-canvas');
+    cv.width = img.naturalWidth;
+    cv.height = img.naturalHeight;
+
+    maskStroke = document.createElement('canvas');
+    maskStroke.width = cv.width;
+    maskStroke.height = cv.height;
+    const sctx = maskStroke.getContext('2d');
+    sctx.fillStyle = '#000';
+    sctx.fillRect(0, 0, cv.width, cv.height);
+
+    redrawMask(img);
+    $('mask-wrap').hidden = false;
+    URL.revokeObjectURL(url);
   };
+  img.src = url;
+
+  $('mask-eraser').onclick = () => { brushErase = !brushErase; $('mask-eraser').textContent = brushErase ? 'Brush' : 'Eraser'; };
+  $('mask-clear').onclick = () => {
+    const sctx = maskStroke.getContext('2d');
+    sctx.fillStyle = '#000';
+    sctx.fillRect(0, 0, maskStroke.width, maskStroke.height);
+    redrawMask(null);
+  };
+  const cv = $('mask-canvas');
+  cv.onmousedown = (e) => { cv._drawing = true; paintMask(e); };
+  cv.onmousemove = (e) => { if (cv._drawing) paintMask(e); };
+  cv.onmouseup = cv.onmouseleave = () => { cv._drawing = false; };
+}
+
+function redrawMask(img) {
+  guideImg = img;
+  const cv = $('mask-canvas');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (img) { ctx.globalAlpha = 0.4; ctx.drawImage(img, 0, 0); ctx.globalAlpha = 1.0; }
+  ctx.drawImage(maskStroke, 0, 0);
+}
+
+function paintMask(e) {
+  const cv = $('mask-canvas');
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (cv.width / r.width);
+  const y = (e.clientY - r.top) * (cv.height / r.height);
+  const sctx = maskStroke.getContext('2d');
+  sctx.fillStyle = brushErase ? '#000' : '#fff';
+  sctx.beginPath();
+  sctx.arc(x, y, $('brush').value, 0, Math.PI * 2);
+  sctx.fill();
+  redrawMask(guideImg);
+}
+
+function maskAsBase64() {
+  return maskStroke.toDataURL('image/png').split(',')[1];
+}
+
+function renderRefs() {
+  const el = $('refs');
+  el.innerHTML = '';
+  uploaded.blend.forEach((b64, i) => {
+    const row = document.createElement('div');
+    row.className = 'ref';
+    const label = document.createElement('span');
+    label.textContent = 'Ref ' + (i + 1);
+    const w = document.createElement('input');
+    w.type = 'range'; w.min = '0'; w.max = '1'; w.step = '0.05'; w.value = '1';
+    w.dataset.idx = i;
+    const rm = document.createElement('button');
+    rm.type = 'button'; rm.textContent = '×';
+    rm.onclick = () => { uploaded.blend.splice(i, 1); renderRefs(); };
+    row.appendChild(label); row.appendChild(w); row.appendChild(rm);
+    el.appendChild(row);
+  });
+}
+
+async function generate() {
+  const mode = currentMode();
+  const body = { mode, enhance: $('enhance').checked };
+  if (mode === 'generate') {
+    body.genre = $('genre').value;
+    body.fields = collectFields();
+    body.size = $('size').value;
+  } else if (mode === 'edit') {
+    body.prompt = $('prompt').value;
+    body.size = $('edit-size').value;
+    body.image = uploaded.edit;
+    body.strength = parseFloat($('strength').value);
+    if (!body.image) { setStatus('please upload an image', 'err'); return; }
+  } else if (mode === 'inpaint') {
+    body.prompt = $('inpaint-prompt').value;
+    body.image = uploaded.inpaint;
+    body.mask = maskAsBase64();
+    if (!body.image || !body.mask) { setStatus('please upload an image and paint a mask', 'err'); return; }
+  } else if (mode === 'blend') {
+    body.prompt = $('blend-prompt').value;
+    body.size = $('blend-size').value;
+    body.images = uploaded.blend;
+    body.strengths = Array.from(document.querySelectorAll('#refs input[type=range]')).map(w => parseFloat(w.value));
+    if (!body.images.length) { setStatus('please upload at least one reference image', 'err'); return; }
+  }
   $('generate').disabled = true;
   setStatus('Submitting…', 'pending');
   try {
@@ -236,7 +388,7 @@ async function loadHistory() {
     head.className = 'card-head';
     const title = document.createElement('div');
     title.className = 'card-title';
-    title.textContent = j.genre;
+    title.textContent = j.mode && j.mode !== 'generate' ? j.mode : j.genre;
     head.appendChild(title);
     const badge = document.createElement('span');
     badge.className = 'badge ' + j.status;

@@ -24,19 +24,78 @@
       <section class="panel" id="composer">
         <div class="panel-head">
           <h2>Composer</h2>
-          <p class="panel-hint">Choose a genre, shape your scene, then generate.</p>
+          <p class="panel-hint">Generate, edit, inpaint, or blend an image.</p>
         </div>
 
-        <div class="row">
-          <label class="ctrl">Genre
-            <select id="genre"></select>
+        <label class="ctrl">Mode
+          <select id="mode">
+            <option value="generate">Generate</option>
+            <option value="edit">Edit (img2img)</option>
+            <option value="inpaint">Inpaint (mask)</option>
+            <option value="blend">Blend (multi-reference)</option>
+          </select>
+        </label>
+
+        <div id="gen-controls">
+          <div class="row">
+            <label class="ctrl">Genre
+              <select id="genre"></select>
+            </label>
+            <label class="ctrl">Size
+              <select id="size"></select>
+            </label>
+          </div>
+          <div id="fields" class="fields"></div>
+        </div>
+
+        <div id="edit-controls" hidden>
+          <label class="ctrl">Prompt
+            <textarea id="prompt" rows="3" placeholder="describe the change, e.g. 'make it snow at night'"></textarea>
           </label>
           <label class="ctrl">Size
-            <select id="size"></select>
+            <select id="edit-size"></select>
+          </label>
+          <div id="image-picker" class="picker">
+            <input type="file" id="edit-image" accept="image/*">
+            <small>Upload the image to edit.</small>
+          </div>
+          <label class="ctrl">Strength <span id="strength-val">0.4</span>
+            <input type="range" id="strength" min="0" max="1" step="0.05" value="0.4">
           </label>
         </div>
 
-        <div id="fields" class="fields"></div>
+        <div id="inpaint-controls" hidden>
+          <label class="ctrl">Prompt
+            <textarea id="inpaint-prompt" rows="3" placeholder="describe what should appear in the painted region"></textarea>
+          </label>
+          <div class="picker">
+            <input type="file" id="inpaint-image" accept="image/*">
+            <small>Upload the image to edit.</small>
+          </div>
+          <div id="mask-wrap" hidden>
+            <canvas id="mask-canvas"></canvas>
+            <div class="mask-tools">
+              <label>Brush <input type="range" id="brush" min="4" max="120" value="30"></label>
+              <button id="mask-eraser" type="button">Eraser</button>
+              <button id="mask-clear" type="button">Clear</button>
+            </div>
+            <small>Paint white over the region to change; leave the rest black (kept).</small>
+          </div>
+        </div>
+
+        <div id="blend-controls" hidden>
+          <label class="ctrl">Prompt
+            <textarea id="blend-prompt" rows="3" placeholder="describe the result, e.g. 'a portrait in the style of these images'"></textarea>
+          </label>
+          <label class="ctrl">Size
+            <select id="blend-size"></select>
+          </label>
+          <div class="picker">
+            <input type="file" id="blend-image" accept="image/*" multiple>
+            <small>Upload one or more reference images.</small>
+          </div>
+          <div id="refs"></div>
+        </div>
 
         <label class="toggle">
           <input type="checkbox" id="enhance">

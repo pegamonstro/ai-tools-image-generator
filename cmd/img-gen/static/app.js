@@ -519,6 +519,7 @@ function renderRefs() {
 async function generate() {
   const mode = currentMode();
   const body = { mode, enhance: $('enhance').checked, style: $('style').value, preset: $('preset').value };
+  body.batch = Math.max(1, Math.min(8, parseInt($('batch').value, 10) || 1));
   if (mode === 'generate' || mode === 'edit') {
     Object.assign(body, collectModelSpec());
     Object.assign(body, collectSampling());
@@ -555,12 +556,17 @@ async function generate() {
   $('generate').disabled = true;
   setStatus('Submitting…', 'pending');
   try {
-    const { job_id } = await jsonFetch('/api/jobs', {
+    const res = await jsonFetch('/api/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    subscribe(job_id);
+    if (res.job_ids) {
+      res.job_ids.forEach(subscribe);
+      setStatus('queued ' + res.job_ids.length + ' images', 'pending');
+    } else {
+      subscribe(res.job_id);
+    }
   } catch (e) {
     setStatus('error: ' + e.message, 'err');
     $('generate').disabled = false;

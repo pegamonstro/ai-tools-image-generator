@@ -139,6 +139,30 @@ func TestInpaint(t *testing.T) {
 	}
 }
 
+func TestInpaintUsesFillURL(t *testing.T) {
+	img := []byte("fake-png")
+	fillSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fill" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer fillSrv.Close()
+
+	// A server that must NOT receive the /fill request when FillURL is set.
+	otherSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Inpaint hit ImageURL (%s) instead of FillURL", r.URL.Path)
+	}))
+	defer otherSrv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = otherSrv.URL
+	c.FillURL = fillSrv.URL
+	if _, err := c.Inpaint(context.Background(), "add a cat", "aW1n", "bWFzaw=="); err != nil {
+		t.Fatalf("Inpaint: %v", err)
+	}
+}
+
 func TestBlend(t *testing.T) {
 	img := []byte("fake-png")
 	var got struct {

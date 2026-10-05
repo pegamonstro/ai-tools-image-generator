@@ -17,6 +17,7 @@ import (
 type Client struct {
 	BaseURL  string // chat/enhance frontend (OpenAI-compatible /v1/chat/completions)
 	ImageURL string // mflux sidecar (POST /generate)
+	FillURL  string // optional separate mflux sidecar for /fill (inpainting); defaults to ImageURL
 	HTTP     *http.Client
 }
 
@@ -87,7 +88,11 @@ func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []str
 // postImage sends one sidecar request and decodes the returned base64 PNG.
 func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byte, error) {
 	name := strings.TrimPrefix(path, "/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ImageURL+path, bytes.NewReader(body))
+	base := c.ImageURL
+	if path == "/fill" && c.FillURL != "" {
+		base = c.FillURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

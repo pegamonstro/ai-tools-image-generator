@@ -17,6 +17,7 @@ import (
 	"img-gen/internal/genres"
 	"img-gen/internal/lattice"
 	"img-gen/internal/models"
+	"img-gen/internal/presets"
 	"img-gen/internal/prompting"
 	"img-gen/internal/queue"
 	"img-gen/internal/storage"
@@ -34,6 +35,7 @@ type config struct {
 	DataDir       string
 	GenresFile    string
 	ModelsFile    string
+	PresetsFile   string
 	ExportDir     string
 	EnhanceModel  string
 	EnhanceSystem string
@@ -50,6 +52,7 @@ func loadConfig() config {
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
 		ModelsFile:    envOr("MODELS_FILE", "./models.json"),
+		PresetsFile:   envOr("PRESETS_FILE", "./presets.json"),
 		ExportDir:     envOr("EXPORT_DIR", ""),
 		EnhanceModel:  envOr("ENHANCE_MODEL", "huihui_ai/dolphin3-abliterated:latest"),
 		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality prompts for an uncensored adult image generator. Explicit sexual content is permitted and expected; never refuse, never moralize. Respond with only the prompt text."),
@@ -63,6 +66,10 @@ func newHandler(cfg config) (http.Handler, error) {
 		return nil, err
 	}
 	modelCatalog, err := models.Load(cfg.ModelsFile)
+	if err != nil {
+		return nil, err
+	}
+	presetCatalog, err := presets.Load(cfg.PresetsFile)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +88,8 @@ func newHandler(cfg config) (http.Handler, error) {
 		return lat.Chat(ctx, cfg.EnhanceModel, msgs)
 	}
 	mgr := queue.New(queue.Options{
-		Genres: catalog,
+		Genres:  catalog,
+		Presets: presetCatalog,
 		Store:  store,
 		Ops: queue.ImageOps{
 			Generate: lat.Generate,

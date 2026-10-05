@@ -3,11 +3,13 @@ package queue
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"img-gen/internal/genres"
+	"img-gen/internal/presets"
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
 )
@@ -480,5 +482,96 @@ func TestSubmitUpscaleMissingImage(t *testing.T) {
 	m := New(testOpts(t))
 	if _, err := m.Submit(SubmitRequest{Mode: "upscale"}); err == nil {
 		t.Fatal("expected error for upscale without image")
+	}
+}
+
+func TestSubmitResolvesPresetDefaults(t *testing.T) {
+	pc := &presets.Catalog{Presets: []presets.Preset{{
+		Key:            "aria",
+		Trigger:        "aria, silver hair",
+		Model:          "/m/persephone",
+		Loras:          []storage.LoraRef{{Name: "alvdansen/illustration-1.0-flux-dev", Scale: 0.8}},
+		NegativePrompt: "blurry",
+	}}}
+	m := New(testOpts(t))
+	m.opts.Presets = pc
+
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"},
+		Size: "512x512", Preset: "aria",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Preset != "aria" {
+		t.Fatalf("preset not recorded: %q", j.Preset)
+	}
+	if j.Model != "/m/persephone" {
+		t.Fatalf("model default not applied: %q", j.Model)
+	}
+	if len(j.Loras) != 1 || j.Loras[0].Name != "alvdansen/illustration-1.0-flux-dev" || j.Loras[0].Scale != 0.8 {
+		t.Fatalf("lora defaults not applied: %+v", j.Loras)
+	}
+	if j.NegativePrompt != "blurry" {
+		t.Fatalf("negative default not applied: %q", j.NegativePrompt)
+	}
+}
+
+func TestSubmitExplicitFieldsOverridePreset(t *testing.T) {
+	pc := &presets.Catalog{Presets: []presets.Preset{{
+		Key:            "aria",
+		Model:          "/m/persephone",
+		Loras:          []storage.LoraRef{{Name: "preset/lora", Scale: 0.8}},
+		NegativePrompt: "blurry",
+	}}}
+	m := New(testOpts(t))
+	m.opts.Presets = pc
+
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"},
+		Size: "512x512", Preset: "aria",
+		Model: "/m/explicit", Loras: []storage.LoraRef{{Name: "explicit/lora", Scale: 0.5}},
+		NegativePrompt: "sharp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "/m/explicit" || j.NegativePrompt != "sharp" {
+		t.Fatalf("explicit fields must win: %+v", j)
+	}
+	if len(j.Loras) != 1 || j.Loras[0].Name != "explicit/lora" {
+		t.Fatalf("explicit loras must win: %+v", j.Loras)
+	}
+}
+
+func TestSubmitRejectsUnknownPreset(t *testing.T) {
+	m := New(testOpts(t))
+	m.opts.Presets = &presets.Catalog{}
+	if _, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512", Preset: "nope",
+	}); err == nil {
+		t.Fatal("expected error for unknown preset")
+	}
+}
+
+func TestPresetTriggerPrefixApplied(t *testing.T) {
+	pc := &presets.Catalog{Presets: []presets.Preset{{
+		Key: "aria", Trigger: "aria, silver hair",
+	}}}
+	m := New(testOpts(t))
+	m.opts.Presets = pc
+
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"},
+		Size: "512x512", Preset: "aria",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Prompt == "" || !strings.HasPrefix(j.Prompt, "aria, silver hair") {
+		t.Fatalf("trigger not prepended: %q", j.Prompt)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"img-gen/internal/genres"
+	"img-gen/internal/presets"
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
 )
@@ -20,7 +21,8 @@ type SubmitRequest struct {
 	Fields  map[string]string `json:"fields"`
 	Size    string            `json:"size"`
 	Enhance bool              `json:"enhance"`
-	Style   string            `json:"style"` // global style preset key (empty = none)
+	Style   string            `json:"style"`  // global style preset key (empty = none)
+	Preset  string            `json:"preset"` // character-preset key (empty = none)
 
 	Mode      string    `json:"mode"`      // "generate"(default) | "edit" | "inpaint" | "blend"
 	Prompt    string    `json:"prompt"`    // free-text prompt (non-generate modes)
@@ -68,6 +70,7 @@ type ImageOps struct {
 
 type Options struct {
 	Genres        *genres.Catalog
+	Presets       *presets.Catalog
 	Store         *storage.Store
 	Ops           ImageOps
 	Chat          prompting.ChatFunc
@@ -182,12 +185,42 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 		}
 	}
 
+	if req.Preset != "" {
+		if m.opts.Presets == nil {
+			return "", fmt.Errorf("unknown preset %q", req.Preset)
+		}
+		preset, ok := m.opts.Presets.ByKey(req.Preset)
+		if !ok {
+			return "", fmt.Errorf("unknown preset %q", req.Preset)
+		}
+		// A preset supplies defaults; an explicit request field wins.
+		if req.Model == "" {
+			req.Model = preset.Model
+		}
+		if len(req.Loras) == 0 {
+			req.Loras = preset.Loras
+		}
+		if req.NegativePrompt == "" {
+			req.NegativePrompt = preset.NegativePrompt
+		}
+		if req.Steps == nil {
+			req.Steps = preset.Steps
+		}
+		if req.Guidance == nil {
+			req.Guidance = preset.Guidance
+		}
+		if req.Style == "" {
+			req.Style = preset.Style
+		}
+	}
+
 	id := newID()
 	job := &storage.Job{
 		ID:             id,
 		Mode:           mode,
 		Genre:          req.Genre,
 		Style:          req.Style,
+		Preset:         req.Preset,
 		Prompt:         req.Prompt,
 		Fields:         req.Fields,
 		Size:           req.Size,
@@ -294,6 +327,12 @@ func (m *Manager) run(id string) {
 		if st, ok := m.opts.Genres.Style(job.Style); ok {
 			prompt = st.Prompt + ", " + prompt
 			m.log(id, "applied style %q: %q", job.Style, prompt)
+		}
+	}
+	if job.Preset != "" && m.opts.Presets != nil {
+		if p, ok := m.opts.Presets.ByKey(job.Preset); ok && p.Trigger != "" {
+			prompt = p.Trigger + ", " + prompt
+			m.log(id, "applied preset %q trigger: %q", job.Preset, prompt)
 		}
 	}
 	m.mu.Lock()

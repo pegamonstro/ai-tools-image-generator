@@ -37,6 +37,7 @@ type Job struct {
 	Genre          string            `json:"genre"`
 	Mode           string            `json:"mode,omitempty"`
 	Style          string            `json:"style,omitempty"`
+	Preset         string            `json:"preset,omitempty"` // character-preset key; "" = none
 	Prompt         string            `json:"prompt"`
 	Fields         map[string]string `json:"fields"`
 	Size           string            `json:"size"`

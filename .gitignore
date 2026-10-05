@@ -4,3 +4,7 @@ models.json
 presets.json
 /img-gen
 /bin/
+training/datasets/
+training/out/
+training/*.safetensors
+training/*.train.json

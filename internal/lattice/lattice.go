@@ -36,7 +36,57 @@ func (c *Client) Generate(ctx context.Context, prompt, size string) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ImageURL+"/generate", bytes.NewReader(body))
+	return c.postImage(ctx, "/generate", body)
+}
+
+// Edit requests an image-to-image edit: it keeps the source image's content
+// while applying the prompt. imageB64 is the source image (base64); strength is
+// the denoise strength in [0,1] (higher departs further from the source).
+func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, strength float64) ([]byte, error) {
+	w, h, err := parseSize(size)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string]any{
+		"prompt": prompt, "width": w, "height": h,
+		"init_image": imageB64, "strength": strength,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return c.postImage(ctx, "/edit", body)
+}
+
+// Inpaint repaints only the masked region of imageB64. maskB64 is a same-sized
+// mask (white = regenerate, black = keep); output size matches the source.
+func (c *Client) Inpaint(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error) {
+	body, err := json.Marshal(map[string]any{"prompt": prompt, "image": imageB64, "mask": maskB64})
+	if err != nil {
+		return nil, err
+	}
+	return c.postImage(ctx, "/fill", body)
+}
+
+// Blend generates a new image from a prompt plus reference images (base64) and
+// per-reference strengths.
+func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error) {
+	w, h, err := parseSize(size)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string]any{
+		"prompt": prompt, "width": w, "height": h,
+		"images": imagesB64, "strengths": strengths,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return c.postImage(ctx, "/redux", body)
+}
+
+// postImage sends one sidecar request and decodes the returned base64 PNG.
+func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ImageURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +98,7 @@ func (c *Client) Generate(ctx context.Context, prompt, size string) ([]byte, err
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("mflux generate: %s: %s", resp.Status, msg)
+		return nil, fmt.Errorf("mflux %s: %s: %s", path, resp.Status, msg)
 	}
 	var gr struct {
 		Image string `json:"image"`
@@ -59,9 +109,9 @@ func (c *Client) Generate(ctx context.Context, prompt, size string) ([]byte, err
 	}
 	if gr.Image == "" {
 		if gr.Error != "" {
-			return nil, fmt.Errorf("mflux generate: %s", gr.Error)
+			return nil, fmt.Errorf("mflux %s: %s", path, gr.Error)
 		}
-		return nil, fmt.Errorf("mflux generate: empty image")
+		return nil, fmt.Errorf("mflux %s: empty image", path)
 	}
 	return base64.StdEncoding.DecodeString(gr.Image)
 }

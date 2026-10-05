@@ -3,10 +3,25 @@ package storage
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
+
+// LoraRef is one LoRA in mflux terms: a --lora value (HF id or local path)
+// plus its scale.
+type LoraRef struct {
+	Name  string  `json:"name"`
+	Scale float64 `json:"scale"`
+}
+
+// ModelSpec is the per-request model + LoRA selection forwarded to the sidecar.
+type ModelSpec struct {
+	Model string    // mflux --model value; "" = sidecar default
+	Loras []LoraRef // mflux --lora list; nil = none
+}
 
 type Job struct {
 	ID         string            `json:"id"`
@@ -17,6 +32,8 @@ type Job struct {
 	Fields     map[string]string `json:"fields"`
 	Size       string            `json:"size"`
 	Enhance    bool              `json:"enhance"`
+	Model      string            `json:"model,omitempty"`
+	Loras      []LoraRef         `json:"loras,omitempty"`
 	Status     string            `json:"status"`
 	CreatedAt  time.Time         `json:"created_at"`
 	FinishedAt *time.Time        `json:"finished_at,omitempty"`
@@ -34,6 +51,33 @@ func New(dir string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{dir: dir}, nil
+}
+
+var idRe = regexp.MustCompile(`^[a-f0-9]{16}$`)
+
+// ValidImageID reports whether id is a well-formed stored-image id (the same
+// 16-hex shape /api/images/ accepts).
+func ValidImageID(id string) bool { return idRe.MatchString(id) }
+
+// CopyImage copies a stored image to destDir, returning the destination path.
+// id is validated so only our own images/*.png are ever read.
+func (s *Store) CopyImage(id, destDir string) (string, error) {
+	if !ValidImageID(id) {
+		return "", fmt.Errorf("invalid image id %q", id)
+	}
+	src := filepath.Join(s.dir, "images", id+".png")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", err
+	}
+	dst := filepath.Join(destDir, id+".png")
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(dst, b, 0o644); err != nil {
+		return "", err
+	}
+	return dst, nil
 }
 
 // SaveImage writes the PNG once and returns its relative path under dir.

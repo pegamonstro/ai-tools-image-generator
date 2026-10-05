@@ -80,3 +80,31 @@ func TestJobModeRoundTrip(t *testing.T) {
 		t.Fatalf("jobs = %+v", jobs)
 	}
 }
+
+func TestCopyImage(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "0123456789abcdef" // 16 hex chars
+	if _, err := s.SaveImage(id, []byte{0x89, 'P', 'N', 'G'}); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := s.CopyImage(id, filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatalf("CopyImage: %v", err)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("copied file missing: %v", err)
+	}
+}
+
+func TestCopyImageRejectsBadID(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CopyImage("../../etc/passwd", t.TempDir()); err == nil {
+		t.Fatal("want error for invalid id")
+	}
+}

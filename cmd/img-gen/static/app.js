@@ -304,8 +304,8 @@ async function generate() {
   } else if (mode === 'inpaint') {
     body.prompt = $('inpaint-prompt').value;
     body.image = uploaded.inpaint;
+    if (!body.image || !maskStroke) { setStatus('please upload an image and paint a mask', 'err'); return; }
     body.mask = maskAsBase64();
-    if (!body.image || !body.mask) { setStatus('please upload an image and paint a mask', 'err'); return; }
   } else if (mode === 'blend') {
     body.prompt = $('blend-prompt').value;
     body.size = $('blend-size').value;

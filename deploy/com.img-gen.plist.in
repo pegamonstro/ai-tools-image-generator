@@ -22,6 +22,10 @@
              the (private) host/IP never lands in a tracked file. -->
         <key>IMAGE_URL</key>
         <string>__IMAGE_URL__</string>
+        <!-- Route upscaling to the esrgan sidecar (a distinct host:port). Falls
+             back to IMAGE_URL when empty; leave a placeholder for the same reason. -->
+        <key>UPSCALE_URL</key>
+        <string>__UPSCALE_URL__</string>
     </dict>
 
     <key>RunAtLoad</key>

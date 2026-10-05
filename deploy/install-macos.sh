@@ -20,6 +20,10 @@ LOG_DIR="$HOME/Library/Logs/img-gen"
 DOMAIN="gui/$UID"
 
 IMAGE_URL="${IMAGE_URL:?set IMAGE_URL to the mflux sidecar URL, e.g. IMAGE_URL=http://<m6>:8899 ./deploy/install-macos.sh}"
+# Optional: the esrgan sidecar for "Upscale (4x)". Falls back to IMAGE_URL when
+# unset, but the sidecar is a different port so pass it explicitly:
+#   UPSCALE_URL=http://<m6>:8901 ./deploy/install-macos.sh
+UPSCALE_URL="${UPSCALE_URL:-}"
 
 if [[ ! -x "$BIN" ]]; then
   echo "error: $BIN is missing or not executable." >&2
@@ -48,6 +52,7 @@ mkdir -p "$LOG_DIR" "$(dirname "$DEST")"
 sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__LOG_DIR__|$LOG_DIR|g" \
     -e "s|__IMAGE_URL__|$IMAGE_URL|g" \
+    -e "s|__UPSCALE_URL__|$UPSCALE_URL|g" \
     "$TEMPLATE" > "$DEST"
 
 launchctl bootstrap "$DOMAIN" "$DEST"

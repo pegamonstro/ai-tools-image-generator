@@ -1,5 +1,6 @@
 data/
 .playwright-mcp/
 models.json
+presets.json
 /img-gen
 /bin/

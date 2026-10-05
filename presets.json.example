@@ -1,0 +1,15 @@
+{
+  "presets": [
+    {
+      "key": "aria",
+      "label": "Aria",
+      "trigger": "aria, long silver hair, violet eyes",
+      "loras": [
+        { "name": "alvdansen/illustration-1.0-flux-dev", "scale": 0.8 }
+      ],
+      "negative_prompt": "blurry, deformed hands",
+      "steps": 24,
+      "guidance": 3.5
+    }
+  ]
+}

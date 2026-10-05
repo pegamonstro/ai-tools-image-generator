@@ -18,7 +18,8 @@ talks to the lattice frontend's chat endpoint (`LATTICE_FRONTEND_URL`).
 Env vars: `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`), `IMAGE_URL`
 (default `http://127.0.0.1:8899`), `DATA_DIR` (`./data`), `GENRES_FILE`
 (`./genres.json`), `MODELS_FILE` (`./models.json`), `EXPORT_DIR` (defaults to
-`~/Downloads/img-gen`), `ENHANCE_MODEL` (`local-brain`), `ENHANCE_SYSTEM`,
+`~/Downloads/img-gen`), `ENHANCE_MODEL` (`huihui_ai/dolphin3-abliterated:latest`),
+`ENHANCE_SYSTEM`,
 `IMAGE_TIMEOUT_S` (`7200`), `LISTEN` (`:8099`).
 
 ## Adding a genre

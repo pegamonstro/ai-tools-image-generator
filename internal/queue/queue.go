@@ -29,6 +29,9 @@ type SubmitRequest struct {
 	Strength  float64   `json:"strength"`  // edit denoise strength (0..1)
 	Images    []string  `json:"images"`    // base64: blend references
 	Strengths []float64 `json:"strengths"` // blend per-reference weights
+
+	Model string            `json:"model"` // mflux --model value (path or HF id); "" = sidecar default
+	Loras []storage.LoraRef `json:"loras"` // mflux --lora list; nil = none
 }
 
 type Event struct {
@@ -46,8 +49,8 @@ type LogLine struct {
 }
 
 type ImageOps struct {
-	Generate func(ctx context.Context, prompt, size string) ([]byte, error)
-	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64) ([]byte, error)
+	Generate func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error)
+	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec) ([]byte, error)
 	Inpaint  func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
 	Blend    func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
 }
@@ -169,6 +172,8 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 		Fields:    req.Fields,
 		Size:      req.Size,
 		Enhance:   req.Enhance,
+		Model:     req.Model,
+		Loras:     normalizeLoras(req.Loras),
 		Status:    "queued",
 		CreatedAt: time.Now(),
 	}
@@ -202,6 +207,24 @@ func normalizeStrengths(ws []float64, n int) []float64 {
 		} else {
 			out[i] = 1.0
 		}
+	}
+	return out
+}
+
+// normalizeLoras defaults a missing scale to 1.0 and clamps to [0,1].
+func normalizeLoras(refs []storage.LoraRef) []storage.LoraRef {
+	out := make([]storage.LoraRef, len(refs))
+	for i, r := range refs {
+		if r.Scale == 0 {
+			r.Scale = 1.0
+		}
+		if r.Scale < 0 {
+			r.Scale = 0
+		}
+		if r.Scale > 1 {
+			r.Scale = 1
+		}
+		out[i] = r
 	}
 	return out
 }
@@ -246,11 +269,12 @@ func (m *Manager) run(id string) {
 
 	m.setStatus(id, "generating", "")
 	start := time.Now()
+	spec := storage.ModelSpec{Model: job.Model, Loras: job.Loras}
 	var png []byte
 	switch job.Mode {
 	case "edit":
 		m.log(id, "requesting edit (strength=%.2f)", inputs.Strength)
-		png, err = m.opts.Ops.Edit(context.Background(), prompt, job.Size, inputs.Image, inputs.Strength)
+		png, err = m.opts.Ops.Edit(context.Background(), prompt, job.Size, inputs.Image, inputs.Strength, spec)
 	case "inpaint":
 		m.log(id, "requesting inpaint")
 		png, err = m.opts.Ops.Inpaint(context.Background(), prompt, inputs.Image, inputs.Mask)
@@ -259,7 +283,7 @@ func (m *Manager) run(id string) {
 		png, err = m.opts.Ops.Blend(context.Background(), prompt, job.Size, inputs.Images, inputs.Strengths)
 	default:
 		m.log(id, "requesting image from lattice (size=%s)", job.Size)
-		png, err = m.opts.Ops.Generate(context.Background(), prompt, job.Size)
+		png, err = m.opts.Ops.Generate(context.Background(), prompt, job.Size, spec)
 	}
 	if err != nil {
 		m.log(id, "generation failed after %s: %v", roundDur(time.Since(start)), err)

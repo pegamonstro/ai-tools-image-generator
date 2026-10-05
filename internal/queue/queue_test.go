@@ -41,7 +41,9 @@ func testOpts(t *testing.T) Options {
 		Genres: testCatalog(),
 		Store:  s,
 		Ops: ImageOps{
-			Generate: func(ctx context.Context, prompt, size string) ([]byte, error) { return []byte("PNG"), nil },
+			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+				return []byte("PNG"), nil
+			},
 		},
 		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
 	}
@@ -116,7 +118,7 @@ func TestEnhanceJobCompletes(t *testing.T) {
 
 func TestGenerateErrorFailsJob(t *testing.T) {
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string) ([]byte, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
 		return nil, fmt.Errorf("lattice down")
 	}
 	m := New(opts)
@@ -131,7 +133,7 @@ func TestSingleSlotSerializes(t *testing.T) {
 	var active int32
 	release := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string) ([]byte, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
 		n := atomic.AddInt32(&active, 1)
 		if n > 1 {
 			t.Errorf("two generations ran concurrently")
@@ -210,10 +212,16 @@ func TestJobLogsStreamAndReplay(t *testing.T) {
 
 func editOps() ImageOps {
 	return ImageOps{
-		Generate: func(ctx context.Context, prompt, size string) ([]byte, error) { return []byte("PNG"), nil },
-		Edit:     func(ctx context.Context, prompt, size, img string, strength float64) ([]byte, error) { return []byte("PNG"), nil },
-		Inpaint:  func(ctx context.Context, prompt, img, mask string) ([]byte, error) { return []byte("PNG"), nil },
-		Blend:    func(ctx context.Context, prompt, size string, imgs []string, ws []float64) ([]byte, error) { return []byte("PNG"), nil },
+		Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+			return []byte("PNG"), nil
+		},
+		Edit: func(ctx context.Context, prompt, size, img string, strength float64, spec storage.ModelSpec) ([]byte, error) {
+			return []byte("PNG"), nil
+		},
+		Inpaint: func(ctx context.Context, prompt, img, mask string) ([]byte, error) { return []byte("PNG"), nil },
+		Blend: func(ctx context.Context, prompt, size string, imgs []string, ws []float64) ([]byte, error) {
+			return []byte("PNG"), nil
+		},
 	}
 }
 
@@ -236,6 +244,25 @@ func TestStylePrefixApplied(t *testing.T) {
 	}
 	if j.Style != "watercolor" {
 		t.Fatalf("style = %q", j.Style)
+	}
+}
+
+func TestSubmitRecordsModelAndLoras(t *testing.T) {
+	m := New(testOpts(t))
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+		Model: "/m/dev",
+		Loras: []storage.LoraRef{{Name: "shauray/flux-uncensored-lora"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "/m/dev" {
+		t.Fatalf("model = %q", j.Model)
+	}
+	if len(j.Loras) != 1 || j.Loras[0].Name != "shauray/flux-uncensored-lora" || j.Loras[0].Scale != 1.0 {
+		t.Fatalf("loras = %+v (want default scale 1.0)", j.Loras)
 	}
 }
 
@@ -286,7 +313,7 @@ func TestEditJobDispatchCallsEdit(t *testing.T) {
 	var gotStrength float64
 	opts := testOpts(t)
 	opts.Ops = editOps()
-	opts.Ops.Edit = func(ctx context.Context, prompt, size, img string, strength float64) ([]byte, error) {
+	opts.Ops.Edit = func(ctx context.Context, prompt, size, img string, strength float64, spec storage.ModelSpec) ([]byte, error) {
 		called = true
 		gotStrength = strength
 		return []byte("PNG"), nil

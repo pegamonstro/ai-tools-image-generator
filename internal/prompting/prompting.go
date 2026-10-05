@@ -84,3 +84,13 @@ func Enhance(ctx context.Context, chat ChatFunc, system string, values FieldValu
 		{Role: "user", Content: string(b)},
 	})
 }
+
+// EnhancePrompt asks the chat model to polish a free-text image prompt (used by
+// the edit/inpaint/blend modes, which take a raw prompt rather than structured
+// genre fields).
+func EnhancePrompt(ctx context.Context, chat ChatFunc, system, prompt string) (string, error) {
+	return chat(ctx, []Message{
+		{Role: "system", Content: system},
+		{Role: "user", Content: prompt},
+	})
+}

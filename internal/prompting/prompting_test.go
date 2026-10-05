@@ -67,3 +67,22 @@ func TestEnhancePropagatesError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestEnhancePrompt(t *testing.T) {
+	var gotSystem, gotUser string
+	chat := func(ctx context.Context, msgs []Message) (string, error) {
+		gotSystem = msgs[0].Content
+		gotUser = msgs[1].Content
+		return "polished prompt", nil
+	}
+	got, err := EnhancePrompt(context.Background(), chat, "SYSTEM", "make it snow")
+	if err != nil {
+		t.Fatalf("EnhancePrompt: %v", err)
+	}
+	if got != "polished prompt" {
+		t.Fatalf("got %q", got)
+	}
+	if gotSystem != "SYSTEM" || gotUser != "make it snow" {
+		t.Fatalf("system=%q user=%q", gotSystem, gotUser)
+	}
+}

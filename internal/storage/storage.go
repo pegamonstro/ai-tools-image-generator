@@ -50,8 +50,8 @@ type Job struct {
 	Guidance       *float64          `json:"guidance,omitempty"`        // requested guidance (nil = default)
 	NegativePrompt string            `json:"negative_prompt,omitempty"` // requested negative prompt ("" = none)
 	Status         string            `json:"status"`
-	Step           int               `json:"-"` // in-flight diffusion step (transient, not persisted)
-	Total          int               `json:"-"` // total diffusion steps (transient, not persisted)
+	Step           int               `json:"step,omitempty"`  // in-flight diffusion step; zeroed at finish (transient)
+	Total          int               `json:"total,omitempty"` // total diffusion steps; zeroed at finish (transient)
 	CreatedAt      time.Time         `json:"created_at"`
 	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
 	Error          string            `json:"error,omitempty"`

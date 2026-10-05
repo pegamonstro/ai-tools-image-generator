@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,5 +107,28 @@ func TestCopyImageRejectsBadID(t *testing.T) {
 	}
 	if _, err := s.CopyImage("../../etc/passwd", t.TempDir()); err == nil {
 		t.Fatal("want error for invalid id")
+	}
+}
+
+func TestJobProgressJSON(t *testing.T) {
+	inFlight, _ := json.Marshal(Job{ID: "1", Status: "generating", Step: 2, Total: 8})
+	var in map[string]any
+	if err := json.Unmarshal(inFlight, &in); err != nil {
+		t.Fatal(err)
+	}
+	if in["step"] != float64(2) || in["total"] != float64(8) {
+		t.Fatalf("in-flight job JSON = %s", inFlight)
+	}
+
+	terminal, _ := json.Marshal(Job{ID: "1", Status: "done"})
+	var term map[string]any
+	if err := json.Unmarshal(terminal, &term); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := term["step"]; ok {
+		t.Fatalf("terminal job JSON has step: %s", terminal)
+	}
+	if _, ok := term["total"]; ok {
+		t.Fatalf("terminal job JSON has total: %s", terminal)
 	}
 }

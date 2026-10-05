@@ -42,6 +42,16 @@ type SubmitRequest struct {
 	NegativePrompt string   `json:"negative_prompt,omitempty"` // things to avoid; "" = none
 }
 
+// ValidationError is a submit-time rejection carrying the v1 error-envelope
+// code alongside the legacy human message. Msg strings are the pre-existing
+// submit error strings and must not change: legacy /api/* echoes them.
+type ValidationError struct {
+	Code string // envelope code, e.g. "unknown_genre"
+	Msg  string // human message, identical to the legacy plain-text error
+}
+
+func (e *ValidationError) Error() string { return e.Msg }
+
 type Event struct {
 	JobID  string    `json:"job_id"`
 	Status string    `json:"status"`
@@ -60,14 +70,14 @@ type LogLine struct {
 }
 
 type ImageOps struct {
-	Generate func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
-	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
-	Inpaint  func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
-	Blend    func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
-	Upscale  func(ctx context.Context, imageB64 string) ([]byte, error)
+	Generate   func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
+	Edit       func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
+	Inpaint    func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
+	Blend      func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
+	Upscale    func(ctx context.Context, imageB64 string) ([]byte, error)
 	Controlnet func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
-	Progress func(ctx context.Context, mode string) (step, total int, err error)
-	Cancel   func(ctx context.Context, mode string) error
+	Progress   func(ctx context.Context, mode string) (step, total int, err error)
+	Cancel     func(ctx context.Context, mode string) error
 }
 
 type Options struct {
@@ -158,25 +168,25 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 	case "generate":
 		g, ok := m.opts.Genres.Genre(req.Genre)
 		if !ok {
-			return "", fmt.Errorf("unknown genre %q", req.Genre)
+			return "", &ValidationError{Code: "unknown_genre", Msg: fmt.Sprintf("unknown genre %q", req.Genre)}
 		}
 		for _, f := range g.Fields {
 			if f.Required && strings.TrimSpace(req.Fields[f.Key]) == "" {
-				return "", fmt.Errorf("field %q is required", f.Key)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("field %q is required", f.Key)}
 			}
 		}
 		if !contains(g.Sizes, req.Size) {
-			return "", fmt.Errorf("size %q not allowed for genre %q", req.Size, req.Genre)
+			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("size %q not allowed for genre %q", req.Size, req.Genre)}
 		}
 	case "edit":
 		if strings.TrimSpace(req.Prompt) == "" {
-			return "", fmt.Errorf("prompt is required for edit")
+			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for edit"}
 		}
 		if strings.TrimSpace(req.Image) == "" {
-			return "", fmt.Errorf("image is required for edit")
+			return "", &ValidationError{Code: "validation_error", Msg: "image is required for edit"}
 		}
 		if !validSize(req.Size) {
-			return "", fmt.Errorf("invalid size %q", req.Size)
+			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q", req.Size)}
 		}
 		inputs.Image = req.Image
 		inputs.Strength = req.Strength
@@ -185,39 +195,39 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		}
 	case "inpaint", "outpaint":
 		if strings.TrimSpace(req.Prompt) == "" {
-			return "", fmt.Errorf("prompt is required for %s", mode)
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("prompt is required for %s", mode)}
 		}
 		if strings.TrimSpace(req.Image) == "" || strings.TrimSpace(req.Mask) == "" {
-			return "", fmt.Errorf("image and mask are required for %s", mode)
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("image and mask are required for %s", mode)}
 		}
 		inputs.Image = req.Image
 		inputs.Mask = req.Mask
 	case "blend":
 		if strings.TrimSpace(req.Prompt) == "" {
-			return "", fmt.Errorf("prompt is required for blend")
+			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for blend"}
 		}
 		if len(req.Images) == 0 {
-			return "", fmt.Errorf("at least one reference image is required for blend")
+			return "", &ValidationError{Code: "validation_error", Msg: "at least one reference image is required for blend"}
 		}
 		if !validSize(req.Size) {
-			return "", fmt.Errorf("invalid size %q", req.Size)
+			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q", req.Size)}
 		}
 		inputs.Images = req.Images
 		inputs.Strengths = normalizeStrengths(req.Strengths, len(req.Images))
 	case "upscale":
 		if strings.TrimSpace(req.Image) == "" {
-			return "", fmt.Errorf("image is required for upscale")
+			return "", &ValidationError{Code: "validation_error", Msg: "image is required for upscale"}
 		}
 		inputs.Image = req.Image
 	case "pose":
 		if strings.TrimSpace(req.Prompt) == "" {
-			return "", fmt.Errorf("prompt is required for pose")
+			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for pose"}
 		}
 		if strings.TrimSpace(req.Image) == "" {
-			return "", fmt.Errorf("a reference image is required for pose")
+			return "", &ValidationError{Code: "validation_error", Msg: "a reference image is required for pose"}
 		}
 		if !validSize(req.Size) {
-			return "", fmt.Errorf("invalid size %q", req.Size)
+			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q", req.Size)}
 		}
 		inputs.Image = req.Image
 		inputs.Strength = req.Strength
@@ -225,22 +235,22 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 			inputs.Strength = 0.7
 		}
 	default:
-		return "", fmt.Errorf("unknown mode %q", mode)
+		return "", &ValidationError{Code: "unknown_mode", Msg: fmt.Sprintf("unknown mode %q", mode)}
 	}
 
 	if req.Style != "" {
 		if _, ok := m.opts.Genres.Style(req.Style); !ok {
-			return "", fmt.Errorf("unknown style %q", req.Style)
+			return "", &ValidationError{Code: "unknown_style", Msg: fmt.Sprintf("unknown style %q", req.Style)}
 		}
 	}
 
 	if req.Preset != "" {
 		if m.opts.Presets == nil {
-			return "", fmt.Errorf("unknown preset %q", req.Preset)
+			return "", &ValidationError{Code: "unknown_preset", Msg: fmt.Sprintf("unknown preset %q", req.Preset)}
 		}
 		preset, ok := m.opts.Presets.ByKey(req.Preset)
 		if !ok {
-			return "", fmt.Errorf("unknown preset %q", req.Preset)
+			return "", &ValidationError{Code: "unknown_preset", Msg: fmt.Sprintf("unknown preset %q", req.Preset)}
 		}
 		// A preset supplies defaults; an explicit request field wins.
 		if req.Model == "" {
@@ -544,6 +554,29 @@ func (m *Manager) Cancel(id string) error {
 	return nil
 }
 
+// Wait polls the job until it reaches a terminal status or timeout elapses.
+// It returns the last observed job and whether it was terminal.
+func (m *Manager) Wait(id string, timeout time.Duration) (storage.Job, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		j, ok := m.Get(id)
+		if !ok {
+			return storage.Job{}, false
+		}
+		if isTerminal(j.Status) {
+			return j, true
+		}
+		if time.Now().After(deadline) {
+			return j, false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func isTerminal(status string) bool {
+	return status == "done" || status == "failed" || status == "cancelled"
+}
+
 // resolveGeneratePrompt builds the prompt for a genre/fields job (direct or
 // enhanced). It is the pre-existing prompt path, factored out of run.
 func (m *Manager) resolveGeneratePrompt(id string, job *storage.Job) (string, error) {
@@ -607,6 +640,10 @@ func (m *Manager) finish(id, status, errMsg string) {
 	job.Status = status
 	job.Error = errMsg
 	job.FinishedAt = &now
+	// Progress counters are transient; a terminal job reports none so
+	// persisted history stays uniform.
+	job.Step = 0
+	job.Total = 0
 	j := *job
 	m.mu.Unlock()
 

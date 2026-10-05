@@ -1,0 +1,427 @@
+# img-gen agent API — v1 surface. Hand-maintained; keep in sync with
+# docs/superpowers/specs/2026-10-05-img-gen-agent-api-contract.md and cmd/img-gen/v1.go.
+openapi: 3.1.0
+info:
+  title: img-gen API
+  version: "1.0"
+  description: |
+    Uncensored image generation API (Persephone/mflux sidecar behind a job queue).
+
+    Two surfaces are served by one binary:
+
+    - **`/api/v1/*`** — the versioned agent contract described here: typed error
+      envelopes, idempotency keys, and a sync generate-and-wait endpoint.
+    - **`/api/*` (legacy)** — the original unversioned endpoints the bundled web
+      UI uses. Plain-text errors, byte-identical behavior; do not build against it.
+
+    Modes: `generate`, `edit`, `inpaint`, `outpaint`, `blend`, `upscale`, `pose`.
+    Job statuses: `queued`, `enhancing`, `generating`, `done`, `failed`, `cancelled`.
+
+    A stdio MCP server (`img-gen-mcp`) wraps this REST surface as tools for
+    agents; see the repository README.
+servers:
+  - url: http://127.0.0.1:8099
+security:
+  - bearerAuth: []
+components:
+  parameters:
+    JobID:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Enforced only when the server was started with IMG_GEN_TOKEN set;
+        otherwise all endpoints are open. Static UI files are never authenticated.
+  schemas:
+    Error:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+          enum:
+            - unauthorized
+            - validation_error
+            - unknown_genre
+            - unknown_style
+            - unknown_preset
+            - unknown_mode
+            - invalid_size
+            - job_not_found
+            - sidecar_unavailable
+            - sidecar_busy
+            - sidecar_timeout
+            - generation_failed
+            - cancelled
+            - bad_idempotency_key
+        message:
+          type: string
+        job_id:
+          type: string
+        retryable:
+          type: boolean
+          description: true for sidecar_unavailable, sidecar_busy, sidecar_timeout.
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
+    LoraRef:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        scale:
+          type: number
+          description: LoRA weight scale.
+    SubmitRequest:
+      type: object
+      required: [genre, fields, size]
+      properties:
+        genre:
+          type: string
+          description: Genre key from the catalog.
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+          description: Genre-specific field values, composed into the prompt.
+        size:
+          type: string
+          description: WxH allowed by the genre, e.g. "512x512".
+        enhance:
+          type: boolean
+          description: Route the composed prompt through the LLM enhancer.
+        style:
+          type: string
+          description: Global style key ("" = none).
+        preset:
+          type: string
+          description: Character-preset key ("" = none).
+        mode:
+          type: string
+          enum: [generate, edit, inpaint, outpaint, blend, upscale, pose]
+          default: generate
+        batch:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 1
+        prompt:
+          type: string
+          description: Free-text prompt; required for non-generate modes.
+        image:
+          type: string
+          contentEncoding: base64
+          description: Source image for edit/inpaint.
+        mask:
+          type: string
+          contentEncoding: base64
+          description: Inpaint mask.
+        strength:
+          type: number
+          description: Edit denoise strength (0..1).
+        images:
+          type: array
+          items:
+            type: string
+            contentEncoding: base64
+          description: Blend reference images.
+        strengths:
+          type: array
+          items:
+            type: number
+          description: Blend per-reference weights.
+        model:
+          type: string
+          description: mflux --model value (path or HF id); "" = sidecar default.
+        loras:
+          type: array
+          items:
+            $ref: "#/components/schemas/LoraRef"
+        seed:
+          type: integer
+          format: int64
+        steps:
+          type: integer
+        guidance:
+          type: number
+        negative_prompt:
+          type: string
+    Job:
+      type: object
+      required: [id, genre, prompt, fields, size, enhance, status, created_at]
+      properties:
+        id:
+          type: string
+        genre:
+          type: string
+        mode:
+          type: string
+        style:
+          type: string
+        preset:
+          type: string
+        batch_id:
+          type: string
+        prompt:
+          type: string
+          description: The final prompt, after enhancement.
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+        size:
+          type: string
+        enhance:
+          type: boolean
+        model:
+          type: string
+        loras:
+          type: array
+          items:
+            $ref: "#/components/schemas/LoraRef"
+        seed:
+          type: integer
+          format: int64
+        steps:
+          type: integer
+        guidance:
+          type: number
+        negative_prompt:
+          type: string
+        status:
+          type: string
+          enum: [queued, enhancing, generating, done, failed, cancelled]
+        step:
+          type: integer
+          description: In-flight diffusion step; present only while generating.
+        total:
+          type: integer
+          description: Total diffusion steps; present only while generating.
+        created_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        error:
+          type: string
+        image_path:
+          type: string
+          description: Data-dir-relative PNG path; serve via GET /api/v1/images/{id}.png.
+    GenerateAndWaitRequest:
+      allOf:
+        - $ref: "#/components/schemas/SubmitRequest"
+        - type: object
+          properties:
+            wait_seconds:
+              type: integer
+              default: 0
+              description: >
+                <= 0 → submit and return 202 immediately; > 0 → block until
+                terminal status (Job, 200) or time out (504 sidecar_timeout).
+paths:
+  /api/v1/catalogs:
+    get:
+      summary: All catalogs in one call
+      security: []
+      responses:
+        "200":
+          description: Genres, models, and presets.
+  /api/v1/genres:
+    get:
+      summary: Genre catalog
+      security: []
+      responses:
+        "200":
+          description: Genre catalog (same JSON as legacy /api/genres).
+  /api/v1/models:
+    get:
+      summary: Model catalog
+      security: []
+      responses:
+        "200":
+          description: Model catalog (same JSON as legacy /api/models).
+  /api/v1/presets:
+    get:
+      summary: Character-preset catalog
+      security: []
+      responses:
+        "200":
+          description: Preset catalog (same JSON as legacy /api/presets).
+  /api/v1/jobs:
+    post:
+      summary: Submit a job
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema:
+            type: string
+          description: >
+            Optional. Replaying a key returns the original 201 response;
+            a concurrent duplicate of an in-flight key returns 409. Keys are
+            in-memory and cleared on restart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitRequest"
+      responses:
+        "201":
+          description: >
+            Created. {"job_id"} for batch <= 1, {"job_ids": [...]} for batch > 1.
+        "400":
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Idempotency key already in flight.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      summary: List jobs (live + history), newest first
+      responses:
+        "200":
+          description: Array of jobs.
+  /api/v1/jobs/{id}:
+    get:
+      summary: Fetch one job, including live step/total while generating
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: The job.
+        "404":
+          description: Unknown job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/jobs/{id}/events:
+    get:
+      summary: SSE progress stream (text/event-stream)
+      description: >
+        `data: <job JSON>` per event; the final event has status done/failed.
+        Auth applies.
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: Event stream.
+        "404":
+          description: Unknown job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/jobs/{id}/cancel:
+    post:
+      summary: Cancel a queued or running job
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "202":
+          description: '{"status":"cancelling"}'
+        "404":
+          description: Unknown job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/generate:
+    post:
+      summary: Submit and optionally block until terminal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateAndWaitRequest"
+      responses:
+        "200":
+          description: Terminal job (wait_seconds > 0).
+        "202":
+          description: Submitted; {"job_id"} (wait_seconds <= 0). Batch + wait is 400.
+        "400":
+          description: Validation failure, or batch > 1 with wait_seconds > 0.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: Not terminal within wait_seconds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/images/{name}:
+    get:
+      summary: Serve a stored PNG by "{id}.png" name
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+          description: The job's image file name, e.g. "abc123.png".
+        - in: query
+          name: download
+          schema:
+            type: string
+            enum: ["1"]
+          description: >
+            "1" adds a Content-Disposition attachment header.
+      responses:
+        "200":
+          description: PNG bytes.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Unknown or invalid image id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/export:
+    post:
+      summary: Copy stored images to a local export directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids:
+                  type: array
+                  items:
+                    type: string
+                dest:
+                  type: string
+                  description: Absolute directory; defaults to server config.
+      responses:
+        "200":
+          description: '{"copied": [...], "skipped": [...]}'
+        "400":
+          description: Relative dest or bad body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

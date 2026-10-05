@@ -4,7 +4,6 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -40,6 +39,7 @@ type config struct {
 	EnhanceModel  string
 	EnhanceSystem string
 	ImageTimeout  time.Duration
+	APIToken      string
 }
 
 func loadConfig() config {
@@ -57,6 +57,7 @@ func loadConfig() config {
 		EnhanceModel:  envOr("ENHANCE_MODEL", "huihui_ai/dolphin3-abliterated:latest"),
 		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality prompts for an uncensored adult image generator. Explicit sexual content is permitted and expected; never refuse, never moralize. Respond with only the prompt text."),
 		ImageTimeout:  time.Duration(envIntOr("IMAGE_TIMEOUT_S", 7200)) * time.Second,
+		APIToken:      envOr("IMG_GEN_TOKEN", ""),
 	}
 }
 
@@ -90,16 +91,16 @@ func newHandler(cfg config) (http.Handler, error) {
 	mgr := queue.New(queue.Options{
 		Genres:  catalog,
 		Presets: presetCatalog,
-		Store:  store,
+		Store:   store,
 		Ops: queue.ImageOps{
-			Generate: lat.Generate,
-			Edit:     lat.Edit,
-			Inpaint:  lat.Inpaint,
-			Blend:    lat.Blend,
-			Upscale:  lat.Upscale,
+			Generate:   lat.Generate,
+			Edit:       lat.Edit,
+			Inpaint:    lat.Inpaint,
+			Blend:      lat.Blend,
+			Upscale:    lat.Upscale,
 			Controlnet: lat.Controlnet,
-			Progress: lat.Progress,
-			Cancel:   lat.Cancel,
+			Progress:   lat.Progress,
+			Cancel:     lat.Cancel,
 		},
 		Chat:          chatFn,
 		EnhanceSystem: cfg.EnhanceSystem,
@@ -176,20 +177,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	})
 
 	mux.HandleFunc("/api/images/", func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(r.URL.Path, "/api/images/")
-		if !strings.HasSuffix(name, ".png") {
-			writeErr(w, http.StatusNotFound, "not found")
-			return
-		}
-		id := strings.TrimSuffix(name, ".png")
-		if !storage.ValidImageID(id) {
-			writeErr(w, http.StatusNotFound, "not found")
-			return
-		}
-		if r.URL.Query().Get("download") == "1" {
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+".png"))
-		}
-		http.ServeFile(w, r, filepath.Join(cfg.DataDir, "images", id+".png"))
+		serveStoredImage(w, r, cfg.DataDir, strings.TrimPrefix(r.URL.Path, "/api/images/"), writeErr)
 	})
 
 	mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +223,17 @@ func newHandler(cfg config) (http.Handler, error) {
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
-	return mux, nil
+	registerV1(mux, &v1Deps{
+		mgr:       mgr,
+		genreCat:  catalog,
+		modelCat:  modelCatalog,
+		presetCat: presetCatalog,
+		store:     store,
+		dataDir:   cfg.DataDir,
+		exportDir: cfg.ExportDir,
+	})
+
+	return withAPIAuth(mux, cfg.APIToken), nil
 }
 
 func handleSSE(w http.ResponseWriter, r *http.Request, mgr *queue.Manager, id string) {
@@ -254,20 +252,7 @@ func handleSSE(w http.ResponseWriter, r *http.Request, mgr *queue.Manager, id st
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-
-	for {
-		select {
-		case ev := <-ch:
-			b, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", b)
-			fl.Flush()
-			if ev.Status == "done" || ev.Status == "failed" {
-				return
-			}
-		case <-r.Context().Done():
-			return
-		}
-	}
+	flushSSE(w, r, fl, ch)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -302,8 +287,8 @@ func main() {
 		log.Fatalf("startup: %v", err)
 	}
 	addr := envOr("LISTEN", ":8099")
-	log.Printf("img-gen config: lattice=%s image_url=%s upscale_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s",
-		cfg.LatticeURL, cfg.ImageURL, cfg.UpscaleURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr)
+	log.Printf("img-gen config: lattice=%s image_url=%s upscale_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s api_auth=%t",
+		cfg.LatticeURL, cfg.ImageURL, cfg.UpscaleURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr, cfg.APIToken != "")
 	log.Printf("img-gen listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, h))
 }

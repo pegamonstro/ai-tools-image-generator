@@ -5,13 +5,23 @@ let models = { models: [], loras: [] };
 let presets = { presets: [] };
 let activeJobId = null;
 let detailJob = null;
+let lastImageId = null;
 
 const EDIT_SIZES = ['512x512', '768x512', '1024x576', '1024x1024'];
 let uploaded = { edit: null, inpaint: null, blend: [], upscale: null, pose: null }; // base64 strings
 let outpaintImg = null; // decoded Image of the source to expand
 let brushErase = false;
 
-function currentMode() { return $('mode').value; }
+function currentMode() {
+  const active = document.querySelector('#mode-grid .chip[aria-pressed="true"]');
+  return active ? active.dataset.mode : 'generate';
+}
+
+function setMode(m) {
+  document.querySelectorAll('#mode-grid .chip').forEach(c =>
+    c.setAttribute('aria-pressed', String(c.dataset.mode === m)));
+  renderMode();
+}
 
 function renderMode() {
   const m = currentMode();
@@ -54,10 +64,45 @@ function stripDataURL(d) { return d.split(',')[1]; }
 function $(id) { return document.getElementById(id); }
 function logEl() { return $('log'); }
 
+// envelopeMessage digs the human message out of a {…,"error":{"message":…}}
+// response so the later /api/v1 error contract lands without touching callers.
+function envelopeMessage(text) {
+  try {
+    const j = JSON.parse(text);
+    if (j && j.error) return j.error.message || j.error.code || text;
+  } catch (_) { /* plain-text error */ }
+  return text;
+}
+
 async function jsonFetch(url, opts) {
   const r = await fetch(url, opts);
-  if (!r.ok) throw new Error((await r.text().catch(() => '')) || r.statusText);
-  return r.json();
+  const text = await r.text().catch(() => '');
+  if (!r.ok) throw new Error(envelopeMessage(text) || r.statusText);
+  return text ? JSON.parse(text) : {};
+}
+
+// humanizeError turns backend errors into one calm line. Raw text still goes
+// to the Activity log; cards and the status line only ever see scrubbed text.
+function humanizeError(e) {
+  const raw = (e && e.message ? e.message : String(e)) || 'Something went wrong.';
+  const line = raw.split('\n')[0].trim();
+  const lower = line.toLowerCase();
+  if (line.includes('409') && lower.includes('already in progress')) {
+    return 'Generator busy — this runs when the current job finishes.';
+  }
+  if (/broken pipe|eof|connection refused|dial tcp|no such host/.test(lower)) {
+    return 'Generator unreachable — check that the sidecar is running.';
+  }
+  if (line.includes('429')) return 'Inference queue full.';
+  if (line.includes('404')) return 'Endpoint unavailable.';
+  if (line.includes('500') || lower.includes('internal server error')) {
+    return 'The generator hit an internal error — try again (raw details in the Activity log).';
+  }
+  const scrubbed = line
+    .replace(/https?:\/\/\S+/g, '…')
+    .replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g, '…')
+    .replace(/\/Users\/\S+/g, '…');
+  return scrubbed.length > 120 ? scrubbed.slice(0, 117) + '…' : scrubbed;
 }
 
 function setConn(state, cls) {
@@ -72,6 +117,13 @@ function setStatus(msg, cls) {
   el.hidden = false;
   el.textContent = msg;
   el.className = 'status ' + (cls || '');
+}
+
+// showStatus surfaces a humanized one-liner in the result card and the raw
+// message in the Activity log (status may be a plain string, not an Error).
+function showStatus(msg, cls, raw) {
+  if (msg) setStatus(msg, cls);
+  if (raw) appendLog(new Date(), cls === 'err' ? 'failed' : 'info', raw);
 }
 
 function fmtTime(ts) {
@@ -101,18 +153,20 @@ async function init() {
   try {
     genres = await jsonFetch('/api/genres');
   } catch (e) {
-    setConn('● error', 'err');
+    setConn('error', 'err');
     appendLog(new Date(), 'failed', 'could not load genres: ' + e.message);
-    setStatus('Failed to load the app: ' + e.message, 'err');
+    setStatus('Could not load the app: ' + humanizeError(e), 'err');
     return;
   }
-  setConn('● connected', 'ok');
+  setConn('connected', 'ok');
   renderGenreSelect();
   renderStyleSelect();
   loadModels();
   loadPresets();
   $('add-lora').onclick = addLoraRow;
-  $('mode').onchange = () => { renderMode(); };
+  document.querySelectorAll('#mode-grid .chip').forEach(c => {
+    c.onclick = () => setMode(c.dataset.mode);
+  });
   populateSizes($('edit-size'), EDIT_SIZES);
   populateSizes($('blend-size'), EDIT_SIZES);
   populateSizes($('pose-size'), EDIT_SIZES);
@@ -158,10 +212,12 @@ async function init() {
     }
   };
   $('pose-strength').oninput = () => { $('pose-strength-val').textContent = $('pose-strength').value; };
+  $('strength').oninput = () => { $('strength-val').textContent = $('strength').value; };
+  $('composer').onsubmit = (e) => e.preventDefault();
   renderMode();
   $('generate').onclick = generate;
   $('cancel').onclick = () => cancelJob();
-  $('clear-log').onclick = () => { logEl().innerHTML = ''; };
+  $('clear-log').onclick = () => { logEl().innerHTML = '<div class="log-empty">No activity yet.</div>'; };
   loadHistory();
 }
 
@@ -234,7 +290,7 @@ function renderModelSelect() {
   sel.innerHTML = '';
   const none = document.createElement('option');
   none.value = '';
-  none.textContent = 'Sidecar default';
+  none.textContent = 'Default';
   sel.appendChild(none);
   for (const m of (models.models || [])) {
     const o = document.createElement('option');
@@ -268,7 +324,7 @@ function addLoraRow() {
   scale.type = 'range'; scale.min = '0'; scale.max = '1'; scale.step = '0.05'; scale.value = '1';
   scale.className = 'lora-scale';
   const rm = document.createElement('button');
-  rm.type = 'button'; rm.textContent = '×'; rm.className = 'ghost';
+  rm.type = 'button'; rm.textContent = '×'; rm.className = 'ghost'; rm.setAttribute('aria-label', 'Remove LoRA');
   rm.onclick = () => row.remove();
   row.appendChild(sel); row.appendChild(scale); row.appendChild(rm);
   $('lora-list').appendChild(row);
@@ -512,7 +568,7 @@ function buildOutpaint() {
 function renderRefs() {
   const el = $('refs');
   el.innerHTML = '';
-  uploaded.blend.forEach((b64, i) => {
+  uploaded.blend.forEach((_, i) => {
     const row = document.createElement('div');
     row.className = 'ref';
     const label = document.createElement('span');
@@ -521,7 +577,7 @@ function renderRefs() {
     w.type = 'range'; w.min = '0'; w.max = '1'; w.step = '0.05'; w.value = '1';
     w.dataset.idx = i;
     const rm = document.createElement('button');
-    rm.type = 'button'; rm.textContent = '×';
+    rm.type = 'button'; rm.textContent = '×'; rm.className = 'ghost'; rm.setAttribute('aria-label', 'Remove reference');
     rm.onclick = () => { uploaded.blend.splice(i, 1); renderRefs(); };
     row.appendChild(label); row.appendChild(w); row.appendChild(rm);
     el.appendChild(row);
@@ -545,31 +601,31 @@ async function generate() {
     body.size = $('edit-size').value;
     body.image = uploaded.edit;
     body.strength = parseFloat($('strength').value);
-    if (!body.image) { setStatus('please upload an image', 'err'); return; }
+    if (!body.image) { showStatus('Upload an image to edit first.', 'err'); return; }
   } else if (mode === 'inpaint') {
     body.prompt = $('inpaint-prompt').value;
     body.image = uploaded.inpaint;
-    if (!body.image || !maskStroke) { setStatus('please upload an image and paint a mask', 'err'); return; }
+    if (!body.image || !maskStroke) { showStatus('Upload an image and paint a mask first.', 'err'); return; }
     body.mask = maskAsBase64();
   } else if (mode === 'outpaint') {
     body.prompt = $('outpaint-prompt').value;
-    if (!outpaintImg) { setStatus('please upload an image to expand', 'err'); return; }
+    if (!outpaintImg) { showStatus('Upload an image to expand first.', 'err'); return; }
     Object.assign(body, buildOutpaint());
   } else if (mode === 'pose') {
     body.prompt = $('pose-prompt').value;
     body.size = $('pose-size').value;
     body.image = uploaded.pose;
     body.strength = parseFloat($('pose-strength').value);
-    if (!body.image) { setStatus('please upload a reference image', 'err'); return; }
+    if (!body.image) { showStatus('Upload a pose reference first.', 'err'); return; }
   } else if (mode === 'blend') {
     body.prompt = $('blend-prompt').value;
     body.size = $('blend-size').value;
     body.images = uploaded.blend;
     body.strengths = Array.from(document.querySelectorAll('#refs input[type=range]')).map(w => parseFloat(w.value));
-    if (!body.images.length) { setStatus('please upload at least one reference image', 'err'); return; }
+    if (!body.images.length) { showStatus('Upload at least one reference image.', 'err'); return; }
   } else if (mode === 'upscale') {
     body.image = uploaded.upscale;
-    if (!body.image) { setStatus('please upload an image to upscale', 'err'); return; }
+    if (!body.image) { showStatus('Upload an image to upscale first.', 'err'); return; }
   }
   $('generate').disabled = true;
   setStatus('Submitting…', 'pending');
@@ -581,19 +637,19 @@ async function generate() {
     });
     if (res.job_ids) {
       res.job_ids.forEach(subscribe);
-      setStatus('queued ' + res.job_ids.length + ' images', 'pending');
+      setStatus('Queued ' + res.job_ids.length + ' images.', 'pending');
     } else {
       subscribe(res.job_id);
     }
   } catch (e) {
-    setStatus('error: ' + e.message, 'err');
+    showStatus(humanizeError(e), 'err', e.message);
     $('generate').disabled = false;
   }
 }
 
 function subscribe(id) {
   activeJobId = id;
-  setStatus('queued', 'pending');
+  setStatus('Queued.', 'pending');
   appendLog(new Date(), 'queued', 'job ' + id + ' submitted');
   stream(id);
 }
@@ -611,7 +667,7 @@ function stream(id) {
         $('seed').value = String(ev.seed);
       }
       showProgress(false);
-      setStatus('complete', 'ok');
+      setStatus('Complete.', 'ok');
       showImage(id);
       loadHistory();
       es.close();
@@ -619,44 +675,56 @@ function stream(id) {
       $('generate').disabled = false;
     } else if (ev.status === 'failed') {
       showProgress(false);
-      setStatus('failed' + (ev.error ? ': ' + ev.error : ''), 'err');
+      showStatus(ev.error ? humanizeError(new Error(ev.error)) : 'Generation failed.', 'err', ev.error);
       loadHistory();
       es.close();
       activeJobId = null;
       $('generate').disabled = false;
     } else if (ev.status === 'cancelled') {
       showProgress(false);
-      setStatus('cancelled', 'warn');
+      setStatus('Cancelled.', 'warn');
       loadHistory();
       es.close();
       activeJobId = null;
       $('generate').disabled = false;
     } else if (ev.status) {
-      setStatus(ev.status, 'pending');
-      showProgress(true, ev.status === 'generating' ? 'generating…' : ev.status + '…');
+      setStatus(ev.status === 'generating' ? 'Generating…' : ev.status + '…', 'pending');
+      showProgress(true, ev.status);
     }
   };
   es.onerror = () => { /* generation can take a long time; keep the stream open */ };
 }
 
 function showImage(id) {
-  $('result').hidden = false;
+  lastImageId = id;
+  $('empty-state').hidden = true;
   $('image').hidden = false;
   $('image').src = '/api/images/' + id + '.png';
 }
 
-// showProgress reveals the Result panel's progress bar (and hides any previous
-// image) during a job, or restores the image when the job ends.
+// showProgress toggles the inline progress bar inside the Result card. The
+// bar shimmers while queued/enhancing and fills by step count while
+// generating; when the job ends the previous image (or the empty state)
+// returns.
 function showProgress(show, label) {
   const wrap = $('progress-wrap');
   if (show) {
-    $('result').hidden = false;
+    $('empty-state').hidden = true;
     $('image').hidden = true;
     wrap.hidden = false;
-    if (label) $('progress-text').textContent = label;
+    wrap.classList.toggle('indeterminate', label === 'queued' || label === 'enhancing');
+    $('progress-text').textContent = label && label !== 'generating' ? label + '…' : 'generating…';
   } else {
     wrap.hidden = true;
-    $('image').hidden = false;
+    wrap.classList.remove('indeterminate');
+    if (lastImageId) {
+      $('image').hidden = false;
+      $('image').src = '/api/images/' + lastImageId + '.png';
+      $('empty-state').hidden = true;
+    } else {
+      $('image').hidden = true;
+      $('empty-state').hidden = false;
+    }
   }
 }
 
@@ -665,7 +733,6 @@ function showProgress(show, label) {
 function updateProgress(id, step, total) {
   const pct = total > 0 ? Math.round((step / total) * 100) : 0;
   if (id === activeJobId) {
-    $('progress-fill').style.width = pct + '%';
     $('progress-text').textContent = `step ${step} of ${total} (${pct}%)`;
   }
   const card = document.querySelector('.card[data-id="' + id + '"]');
@@ -678,12 +745,109 @@ function updateProgress(id, step, total) {
 async function cancelJob(id) {
   id = id || activeJobId;
   if (!id) return;
-  setStatus('cancelling…', 'pending');
+  setStatus('Cancelling…', 'pending');
   try {
     await jsonFetch('/api/jobs/' + id + '/cancel', { method: 'POST' });
   } catch (e) {
-    setStatus('cancel error: ' + e.message, 'err');
+    showStatus(humanizeError(e), 'err', e.message);
   }
+}
+
+const CARD_ACTIONS = (j) => [
+  { label: 'View', fn: () => openDetail(j) },
+  { label: 'Use as edit source', fn: () => useHistoryAsEdit(j.id) },
+  { label: 'Upscale 4×', fn: () => useHistoryAsUpscale(j.id) },
+  { label: 'Save to folder', fn: () => exportImage(j.id) },
+  { label: 'Download', href: '/api/images/' + j.id + '.png?download=1' },
+];
+
+function historyCard(j) {
+  const card = document.createElement('div');
+  card.className = 'card ' + j.status;
+  card.dataset.id = j.id;
+  const inflight = j.status === 'queued' || j.status === 'enhancing' || j.status === 'generating';
+
+  if (inflight) {
+    const ph = document.createElement('div');
+    ph.className = 'card-thumb placeholder';
+    ph.textContent = j.status + '…';
+    card.appendChild(ph);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-inflight';
+    const prog = document.createElement('div');
+    prog.className = 'progress-bar';
+    const fill = document.createElement('div');
+    fill.className = 'progress-fill';
+    prog.appendChild(fill);
+    wrapper.appendChild(prog);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'danger';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => cancelJob(j.id);
+    wrapper.appendChild(cancelBtn);
+    card.appendChild(wrapper);
+    return card;
+  }
+
+  if (j.image_path) {
+    const thumb = document.createElement('img');
+    thumb.className = 'card-thumb';
+    thumb.src = '/api/images/' + j.id + '.png';
+    thumb.loading = 'lazy';
+    thumb.alt = j.mode || j.genre || 'image';
+    thumb.onclick = () => openDetail(j);
+    card.appendChild(thumb);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'card-overlay';
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + j.status;
+    badge.textContent = j.status;
+    overlay.appendChild(badge);
+
+    const menu = document.createElement('details');
+    menu.className = 'card-menu';
+    const sum = document.createElement('summary');
+    sum.textContent = '⋯';
+    sum.setAttribute('aria-label', 'More actions');
+    menu.appendChild(sum);
+    const pop = document.createElement('div');
+    pop.className = 'menu-pop';
+    for (const it of CARD_ACTIONS(j)) {
+      if (it.href) {
+        const a = document.createElement('a');
+        a.href = it.href;
+        a.download = '';
+        a.textContent = it.label;
+        a.onclick = () => { menu.open = false; };
+        pop.appendChild(a);
+      } else {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = it.label;
+        b.onclick = () => { menu.open = false; it.fn(); };
+        pop.appendChild(b);
+      }
+    }
+    menu.appendChild(pop);
+    overlay.appendChild(menu);
+    card.appendChild(overlay);
+    return card;
+  }
+
+  // Terminal without an image: failed or cancelled — show a human one-liner.
+  const ph = document.createElement('div');
+  ph.className = 'card-thumb placeholder';
+  ph.textContent = j.status === 'failed' ? 'Failed' : 'Cancelled';
+  card.appendChild(ph);
+  if (j.error) {
+    const err = document.createElement('div');
+    err.className = 'card-error';
+    err.textContent = humanizeError(new Error(j.error));
+    card.appendChild(err);
+  }
+  return card;
 }
 
 async function loadHistory() {
@@ -702,77 +866,7 @@ async function loadHistory() {
     empty.textContent = 'No generations yet.';
     el.appendChild(empty);
   }
-  for (const j of jobs) {
-    const card = document.createElement('div');
-    card.className = 'card ' + j.status;
-    card.dataset.id = j.id;
-    const inflight = j.status === 'queued' || j.status === 'enhancing' || j.status === 'generating';
-    const head = document.createElement('div');
-    head.className = 'card-head';
-    const title = document.createElement('div');
-    title.className = 'card-title';
-    title.textContent = j.mode && j.mode !== 'generate' ? j.mode : j.genre;
-    head.appendChild(title);
-    const badge = document.createElement('span');
-    badge.className = 'badge ' + j.status;
-    badge.textContent = j.status;
-    head.appendChild(badge);
-    card.appendChild(head);
-    if (j.image_path) {
-      const img = document.createElement('img');
-      img.src = '/api/images/' + j.id + '.png';
-      img.loading = 'lazy';
-      card.appendChild(img);
-    } else if (j.error) {
-      const err = document.createElement('div');
-      err.className = 'card-error';
-      err.textContent = j.error;
-      card.appendChild(err);
-    }
-
-    const meta = document.createElement('div');
-    meta.className = 'card-meta';
-    meta.textContent = [j.model, (j.loras && j.loras.length ? j.loras.map(l => l.name).join(', ') : ''), j.style, (j.seed != null ? 'seed ' + j.seed : '')].filter(Boolean).join(' · ');
-    if (meta.textContent) card.appendChild(meta);
-
-    if (inflight) {
-      const prog = document.createElement('div');
-      prog.className = 'progress-bar';
-      const fill = document.createElement('div');
-      fill.className = 'progress-fill';
-      prog.appendChild(fill);
-      card.appendChild(prog);
-
-      const cancelBtn = document.createElement('button');
-      cancelBtn.type = 'button';
-      cancelBtn.className = 'danger';
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.onclick = () => cancelJob(j.id);
-      card.appendChild(cancelBtn);
-    }
-
-    const acts = document.createElement('div');
-    acts.className = 'card-actions';
-    const view = document.createElement('button');
-    view.type = 'button';
-    view.textContent = 'View';
-    view.onclick = () => openDetail(j);
-    acts.appendChild(view);
-    if (j.image_path) {
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.textContent = 'Edit';
-      editBtn.onclick = () => useHistoryAsEdit(j.id);
-      acts.appendChild(editBtn);
-      const upBtn = document.createElement('button');
-      upBtn.type = 'button';
-      upBtn.textContent = 'Upscale';
-      upBtn.onclick = () => useHistoryAsUpscale(j.id);
-      acts.appendChild(upBtn);
-    }
-    card.appendChild(acts);
-    el.appendChild(card);
-  }
+  for (const j of jobs) el.appendChild(historyCard(j));
   // Re-attach to any job still in flight so its live log keeps streaming.
   for (const j of jobs) {
     const inflight = j.status === 'queued' || j.status === 'enhancing' || j.status === 'generating';
@@ -784,7 +878,7 @@ async function loadHistory() {
 
 function resume(id) {
   activeJobId = id;
-  setStatus('resumed ' + id, 'pending');
+  setStatus('Resumed ' + id + '.', 'pending');
   stream(id);
 }
 
@@ -795,6 +889,19 @@ function blobToBase64(blob) {
     r.onerror = () => reject(r.error);
     r.readAsDataURL(blob);
   });
+}
+
+function metaRow(key, val) {
+  const k = document.createElement('span');
+  k.className = 'meta-key';
+  k.textContent = key;
+  const v = document.createElement('span');
+  v.className = 'meta-val';
+  v.textContent = val;
+  const row = document.createElement('div');
+  row.style.display = 'contents';
+  row.appendChild(k); row.appendChild(v);
+  return row;
 }
 
 function openDetail(j) {
@@ -808,7 +915,19 @@ function openDetail(j) {
     $('detail-img').removeAttribute('src');
     $('detail-download').removeAttribute('href');
   }
-  $('detail-meta').textContent = [j.prompt, j.model, (j.loras || []).map(l => l.name).join(', '), j.style, j.size, (j.seed != null ? 'seed: ' + j.seed : ''), j.created_at].filter(Boolean).join('\n');
+  const meta = $('detail-meta');
+  meta.innerHTML = '';
+  const rows = [];
+  if (j.prompt) rows.push(['Prompt', j.prompt]);
+  if (j.model) rows.push(['Model', j.model]);
+  if (j.loras && j.loras.length) rows.push(['LoRAs', j.loras.map(l => l.name).join(', ')]);
+  if (j.style) rows.push(['Style', j.style]);
+  if (j.genre) rows.push(['Genre', j.genre]);
+  if (j.size) rows.push(['Size', j.size]);
+  if (j.seed != null) rows.push(['Seed', j.seed]);
+  if (j.created_at) rows.push(['Created', new Date(j.created_at).toLocaleString()]);
+  for (const [k, v] of rows) meta.appendChild(metaRow(k, String(v)));
+
   $('detail-edit').hidden = !j.image_path;
   $('detail-save').hidden = !j.image_path;
   $('detail-download').hidden = !j.image_path;
@@ -821,15 +940,14 @@ async function useHistoryAsEdit(id) {
     if (!resp.ok) throw new Error('image not found');
     uploaded.edit = await blobToBase64(await resp.blob());
   } catch (e) {
-    setStatus('error: ' + e.message, 'err');
+    showStatus(humanizeError(e), 'err', e.message);
     return;
   }
   const pv = $('edit-preview');
   pv.src = '/api/images/' + id + '.png';
   pv.hidden = false;
-  $('mode').value = 'edit';
-  renderMode();
-  setStatus('loaded image ' + id + ' for editing', 'pending');
+  setMode('edit');
+  setStatus('Loaded image ' + id + ' for editing.', 'pending');
 }
 
 async function useHistoryAsUpscale(id) {
@@ -839,33 +957,32 @@ async function useHistoryAsUpscale(id) {
     if (!resp.ok) throw new Error('image not found');
     uploaded.upscale = await blobToBase64(await resp.blob());
   } catch (e) {
-    setStatus('error: ' + e.message, 'err');
+    showStatus(humanizeError(e), 'err', e.message);
     return;
   }
   const pv = $('upscale-preview');
   pv.src = '/api/images/' + id + '.png';
   pv.hidden = false;
-  $('mode').value = 'upscale';
-  renderMode();
-  setStatus('loaded image ' + id + ' for upscaling', 'pending');
+  setMode('upscale');
+  setStatus('Loaded image ' + id + ' for upscaling.', 'pending');
 }
 
-async function saveToFolder() {
-  if (!detailJob) return;
+async function exportImage(id) {
   try {
     const r = await jsonFetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [detailJob.id] }),
+      body: JSON.stringify({ ids: [id] }),
     });
-    setStatus('saved: ' + (r.copied[0] || 'skipped'), r.copied.length ? 'ok' : 'err');
+    const dest = r.copied[0] || 'skipped';
+    setStatus('Saved: ' + dest, r.copied.length ? 'ok' : 'err');
   } catch (e) {
-    setStatus('error: ' + e.message, 'err');
+    showStatus(humanizeError(e), 'err', e.message);
   }
 }
 
 $('detail-close').onclick = () => { $('detail').hidden = true; };
 $('detail-edit').onclick = () => useHistoryAsEdit(detailJob.id);
-$('detail-save').onclick = saveToFolder;
+$('detail-save').onclick = () => { if (detailJob) exportImage(detailJob.id); };
 
 init();

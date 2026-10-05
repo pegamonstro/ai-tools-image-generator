@@ -4,133 +4,80 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>img-gen</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c6cff'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%238b7bff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
-      <div class="brand-text">
-        <h1>img-gen</h1>
-        <p class="sub">Local image generation via the inference-lattice</p>
-      </div>
+      <h1>img-gen</h1>
     </div>
-    <span id="conn" class="conn">● connecting…</span>
+    <span id="conn" class="conn">connecting…</span>
   </header>
 
   <main>
     <div class="layout">
-      <section class="panel" id="composer">
-        <div class="panel-head">
-          <h2>Composer</h2>
-          <p class="panel-hint">Generate, edit, inpaint, or blend an image.</p>
-        </div>
-
-        <label class="ctrl">Mode
-          <select id="mode">
-            <option value="generate">Generate</option>
-            <option value="edit">Edit (img2img)</option>
-            <option value="inpaint">Inpaint (mask)</option>
-            <option value="outpaint">Outpaint (expand)</option>
-            <option value="pose">Pose (ControlNet)</option>
-            <option value="blend">Blend (multi-reference)</option>
-            <option value="upscale">Upscale (4x)</option>
-          </select>
-        </label>
-
-        <label class="ctrl">Style
-          <select id="style"></select>
-        </label>
-
-        <label class="ctrl">Preset
-          <select id="preset"></select>
-        </label>
-
-        <label class="ctrl">Model
-          <select id="model"></select>
-        </label>
-
-        <div class="ctrl" id="lora-wrap">
-          <span>LoRAs</span>
-          <div id="lora-list"></div>
-          <button id="add-lora" type="button" class="ghost">+ Add LoRA</button>
-        </div>
-
-        <details class="advanced">
-          <summary>Advanced — local path or HuggingFace id</summary>
-          <label class="ctrl">Model override
-            <input type="text" id="model-raw" placeholder="/path/to/model or org/model">
-          </label>
-          <label class="ctrl">Custom LoRA (HF id / path)
-            <input type="text" id="lora-raw" placeholder="org/lora or /path/to/lora">
-          </label>
-          <label class="ctrl">Batch count
-            <input type="number" id="batch" min="1" max="8" value="1">
-          </label>
-        </details>
-
-        <div id="sampling-controls">
-          <label class="ctrl">Negative prompt
-            <textarea id="negative-prompt" rows="2" placeholder="things to avoid, e.g. 'blurry, watermark, low quality'"></textarea>
-          </label>
-          <div class="row">
-            <label class="ctrl">Seed
-              <input type="number" id="seed" placeholder="random">
-            </label>
-            <label class="ctrl">Steps
-              <input type="number" id="steps" placeholder="default" min="1" max="200">
-            </label>
-            <label class="ctrl">Guidance
-              <input type="number" id="guidance" placeholder="default" min="0" max="20" step="0.1">
-            </label>
+      <section class="side">
+        <section id="result" class="panel result-panel">
+          <h2 class="sec-label">Result</h2>
+          <div id="empty-state" class="empty">
+            <p class="empty-title">No image yet</p>
+            <p class="empty-sub">Describe something and press Generate.</p>
           </div>
-          <label class="toggle">
-            <input type="checkbox" id="lock-seed">
-            <span class="toggle-track" aria-hidden="true"></span>
-            Lock seed (reuse last seed)
-          </label>
-        </div>
-
-        <div id="gen-controls">
-          <div class="row">
-            <label class="ctrl">Genre
-              <select id="genre"></select>
-            </label>
-            <label class="ctrl">Size
-              <select id="size"></select>
-            </label>
+          <img id="image" alt="generated" hidden>
+          <div id="progress-wrap" hidden>
+            <div class="progress-bar"><div id="progress-fill"></div></div>
+            <div class="progress-meta">
+              <span id="progress-text">queued…</span>
+              <button id="cancel" class="danger" type="button">Cancel</button>
+            </div>
           </div>
-          <div id="fields" class="fields"></div>
+          <div id="status" class="status" hidden></div>
+        </section>
+
+        <section class="panel log-panel">
+          <div class="panel-head">
+            <h2>Activity</h2>
+            <button id="clear-log" class="ghost" type="button">Clear</button>
+          </div>
+          <div id="log" class="log">
+            <div class="log-empty">No activity yet.</div>
+          </div>
+        </section>
+      </section>
+
+      <form id="composer" class="panel composer">
+        <div id="mode-grid" class="mode-grid" role="group" aria-label="Generation mode">
+          <button type="button" class="chip" data-mode="generate" aria-pressed="true">Generate</button>
+          <button type="button" class="chip" data-mode="edit" aria-pressed="false">Edit</button>
+          <button type="button" class="chip" data-mode="inpaint" aria-pressed="false">Inpaint</button>
+          <button type="button" class="chip" data-mode="outpaint" aria-pressed="false">Outpaint</button>
+          <button type="button" class="chip" data-mode="blend" aria-pressed="false">Blend</button>
+          <button type="button" class="chip" data-mode="upscale" aria-pressed="false">Upscale</button>
+          <button type="button" class="chip" data-mode="pose" aria-pressed="false">Pose</button>
         </div>
 
-        <div id="edit-controls" hidden>
+        <div id="edit-controls" class="mode-section" hidden>
+          <h2 class="sec-label">Source</h2>
+          <label class="upload-btn" for="edit-image">Choose image…</label>
+          <input type="file" id="edit-image" accept="image/*" hidden>
+          <img id="edit-preview" class="preview" alt="uploaded image" hidden>
           <label class="ctrl">Prompt
             <textarea id="prompt" rows="3" placeholder="describe the change, e.g. 'make it snow at night'"></textarea>
           </label>
           <label class="ctrl">Size
             <select id="edit-size"></select>
           </label>
-          <div id="image-picker" class="picker">
-            <label class="upload-btn" for="edit-image">Choose image…</label>
-            <input type="file" id="edit-image" accept="image/*" hidden>
-            <small>Upload the image to edit.</small>
-            <img id="edit-preview" alt="uploaded image" hidden>
-          </div>
-          <label class="ctrl">Strength <span id="strength-val">0.4</span>
+          <label class="ctrl">Strength <span id="strength-val" class="val">0.4</span>
             <input type="range" id="strength" min="0" max="1" step="0.05" value="0.4">
           </label>
         </div>
 
-        <div id="inpaint-controls" hidden>
-          <label class="ctrl">Prompt
-            <textarea id="inpaint-prompt" rows="3" placeholder="describe what should appear in the painted region"></textarea>
-          </label>
-          <div class="picker">
-            <label class="upload-btn" for="inpaint-image">Choose image…</label>
-            <input type="file" id="inpaint-image" accept="image/*" hidden>
-            <small>Upload the image to edit.</small>
-          </div>
+        <div id="inpaint-controls" class="mode-section" hidden>
+          <h2 class="sec-label">Source</h2>
+          <label class="upload-btn" for="inpaint-image">Choose image…</label>
+          <input type="file" id="inpaint-image" accept="image/*" hidden>
           <div id="mask-wrap" hidden>
             <canvas id="mask-canvas"></canvas>
             <div class="mask-tools">
@@ -138,11 +85,18 @@
               <button id="mask-eraser" type="button">Eraser</button>
               <button id="mask-clear" type="button">Clear</button>
             </div>
-            <small>Paint white over the region to change; leave the rest black (kept).</small>
+            <small class="hint">Paint white over the region to change; leave the rest black (kept).</small>
           </div>
+          <label class="ctrl">Prompt
+            <textarea id="inpaint-prompt" rows="3" placeholder="describe what should appear in the painted region"></textarea>
+          </label>
         </div>
 
-        <div id="outpaint-controls" hidden>
+        <div id="outpaint-controls" class="mode-section" hidden>
+          <h2 class="sec-label">Source</h2>
+          <label class="upload-btn" for="outpaint-image">Choose image…</label>
+          <input type="file" id="outpaint-image" accept="image/*" hidden>
+          <img id="outpaint-preview" class="preview" alt="uploaded image" hidden>
           <label class="ctrl">Prompt
             <textarea id="outpaint-prompt" rows="3" placeholder="describe what to extend into, e.g. 'a wider desert at dusk'"></textarea>
           </label>
@@ -167,98 +121,132 @@
               </select>
             </label>
           </div>
-          <div class="picker">
-            <label class="upload-btn" for="outpaint-image">Choose image…</label>
-            <input type="file" id="outpaint-image" accept="image/*" hidden>
-            <small>Upload the image to expand outward from.</small>
-            <img id="outpaint-preview" alt="uploaded image" hidden>
-          </div>
         </div>
 
-        <div id="pose-controls" hidden>
-          <label class="ctrl">Prompt
-            <textarea id="pose-prompt" rows="3" placeholder="describe the subject, e.g. 'a woman in a chair, photorealistic'"></textarea>
-          </label>
-          <label class="ctrl">Size
-            <select id="pose-size"></select>
-          </label>
-          <div class="picker">
-            <label class="upload-btn" for="pose-image">Choose reference…</label>
-            <input type="file" id="pose-image" accept="image/*" hidden>
-            <small>Upload the pose/edge reference image to follow.</small>
-            <img id="pose-preview" alt="uploaded image" hidden>
-          </div>
-          <label class="ctrl">Strength <span id="pose-strength-val">0.7</span>
-            <input type="range" id="pose-strength" min="0" max="1" step="0.05" value="0.7">
-          </label>
-        </div>
-
-        <div id="upscale-controls" hidden>
-          <div class="picker">
-            <label class="upload-btn" for="upscale-image">Choose image…</label>
-            <input type="file" id="upscale-image" accept="image/*" hidden>
-            <small>Upscale 4× and enhance detail with Real-ESRGAN.</small>
-            <img id="upscale-preview" alt="uploaded image" hidden>
-          </div>
-        </div>
-
-        <div id="blend-controls" hidden>
+        <div id="blend-controls" class="mode-section" hidden>
+          <h2 class="sec-label">Source</h2>
+          <label class="upload-btn" for="blend-image">Choose images…</label>
+          <input type="file" id="blend-image" accept="image/*" multiple hidden>
+          <div id="refs"></div>
           <label class="ctrl">Prompt
             <textarea id="blend-prompt" rows="3" placeholder="describe the result, e.g. 'a portrait in the style of these images'"></textarea>
           </label>
           <label class="ctrl">Size
             <select id="blend-size"></select>
           </label>
-          <div class="picker">
-            <label class="upload-btn" for="blend-image">Choose images…</label>
-            <input type="file" id="blend-image" accept="image/*" multiple hidden>
-            <small>Upload one or more reference images.</small>
-          </div>
-          <div id="refs"></div>
         </div>
 
-        <label class="toggle">
-          <input type="checkbox" id="enhance">
-          <span class="toggle-track" aria-hidden="true"></span>
-          Enhance prompt with LLM
-        </label>
+        <div id="upscale-controls" class="mode-section" hidden>
+          <h2 class="sec-label">Source</h2>
+          <label class="upload-btn" for="upscale-image">Choose image…</label>
+          <input type="file" id="upscale-image" accept="image/*" hidden>
+          <img id="upscale-preview" class="preview" alt="uploaded image" hidden>
+          <small class="hint">Upscale 4× and enhance detail with Real-ESRGAN.</small>
+        </div>
+
+        <div id="pose-controls" class="mode-section" hidden>
+          <h2 class="sec-label">Source</h2>
+          <label class="upload-btn" for="pose-image">Choose reference…</label>
+          <input type="file" id="pose-image" accept="image/*" hidden>
+          <img id="pose-preview" class="preview" alt="uploaded image" hidden>
+          <label class="ctrl">Prompt
+            <textarea id="pose-prompt" rows="3" placeholder="describe the subject, e.g. 'a woman in a chair, photorealistic'"></textarea>
+          </label>
+          <label class="ctrl">Size
+            <select id="pose-size"></select>
+          </label>
+          <label class="ctrl">Strength <span id="pose-strength-val" class="val">0.7</span>
+            <input type="range" id="pose-strength" min="0" max="1" step="0.05" value="0.7">
+          </label>
+        </div>
+
+        <div id="gen-controls" class="csec">
+          <h2 class="sec-label">Subject</h2>
+          <div class="row">
+            <label class="ctrl">Genre
+              <select id="genre"></select>
+            </label>
+            <label class="ctrl">Size
+              <select id="size"></select>
+            </label>
+          </div>
+          <div id="fields" class="fields"></div>
+        </div>
+
+        <div class="csec">
+          <h2 class="sec-label">Look</h2>
+          <div class="row">
+            <label class="ctrl">Style
+              <select id="style"></select>
+            </label>
+            <label class="ctrl">Character
+              <select id="preset"></select>
+            </label>
+          </div>
+          <label class="ctrl">Model
+            <select id="model"></select>
+          </label>
+          <div class="ctrl">
+            <span>LoRAs</span>
+            <div id="lora-list"></div>
+            <button id="add-lora" type="button" class="ghost small">+ Add LoRA</button>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="enhance">
+            <span class="toggle-track" aria-hidden="true"></span>
+            Enhance prompt with LLM
+          </label>
+        </div>
+
+        <details id="sampling-controls" class="csec details">
+          <summary>Sampling</summary>
+          <div class="details-body">
+            <label class="ctrl">Negative prompt
+              <textarea id="negative-prompt" rows="2" placeholder="things to avoid, e.g. 'blurry, watermark, low quality'"></textarea>
+            </label>
+            <div class="row">
+              <label class="ctrl">Seed
+                <input type="number" id="seed" placeholder="random">
+              </label>
+              <label class="ctrl">Steps
+                <input type="number" id="steps" placeholder="default" min="1" max="200">
+              </label>
+              <label class="ctrl">Guidance
+                <input type="number" id="guidance" placeholder="default" min="0" max="20" step="0.1">
+              </label>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="lock-seed">
+              <span class="toggle-track" aria-hidden="true"></span>
+              Lock seed (reuse last seed)
+            </label>
+          </div>
+        </details>
+
+        <details class="csec details">
+          <summary>Advanced</summary>
+          <div class="details-body">
+            <label class="ctrl">Model override
+              <input type="text" id="model-raw" placeholder="/path/to/model or org/model">
+            </label>
+            <label class="ctrl">Custom LoRA (HF id / path)
+              <input type="text" id="lora-raw" placeholder="org/lora or /path/to/lora">
+            </label>
+            <label class="ctrl">Batch count
+              <input type="number" id="batch" min="1" max="8" value="1">
+            </label>
+          </div>
+        </details>
 
         <div class="actions">
-          <button id="generate" type="button">Generate</button>
-          <span id="status" class="status" hidden></span>
+          <button id="generate" class="primary block" type="button">Generate</button>
         </div>
-      </section>
-
-      <div class="side">
-        <section class="panel" id="result" hidden>
-          <div class="panel-head">
-            <h2>Result</h2>
-          </div>
-          <div id="progress-wrap" hidden>
-            <div class="progress-bar"><div id="progress-fill"></div></div>
-            <div class="progress-meta">
-              <span id="progress-text">queued…</span>
-              <button id="cancel" class="danger" type="button">Cancel</button>
-            </div>
-          </div>
-          <img id="image" alt="generated">
-        </section>
-
-        <section class="panel log-panel">
-          <div class="panel-head">
-            <h2>Activity log</h2>
-            <button id="clear-log" class="ghost" type="button">Clear</button>
-          </div>
-          <div id="log" class="log">
-            <div class="log-empty">No activity yet — generate an image to see live progress.</div>
-          </div>
-        </section>
-      </div>
+      </form>
     </div>
 
-    <section class="panel">
+    <section class="panel history-panel">
       <div class="panel-head">
-        <h2>History</h2>
+        <h2>Gallery</h2>
       </div>
       <div id="history" class="history">
         <div class="log-empty">No generations yet.</div>
@@ -268,13 +256,13 @@
 
   <div id="detail" class="modal" hidden>
     <div class="modal-body">
-      <button id="detail-close" class="ghost" type="button">×</button>
-      <img id="detail-img" alt="image">
-      <div id="detail-meta" class="detail-meta"></div>
-      <div class="actions">
-        <button id="detail-edit" type="button">Edit this image</button>
-        <a id="detail-download" class="button" download>Download</a>
+      <button id="detail-close" class="icon-btn" type="button" aria-label="Close">×</button>
+      <img id="detail-img" alt="image" hidden>
+      <div id="detail-meta" class="meta-table"></div>
+      <div class="modal-actions">
+        <button id="detail-edit" type="button">Use as edit source</button>
         <button id="detail-save" type="button">Save to folder</button>
+        <a id="detail-download" class="primary-link" download>Download</a>
       </div>
     </div>
   </div>

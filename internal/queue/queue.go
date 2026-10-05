@@ -61,6 +61,7 @@ type ImageOps struct {
 	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
 	Inpaint  func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
 	Blend    func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
+	Upscale  func(ctx context.Context, imageB64 string) ([]byte, error)
 	Progress func(ctx context.Context, mode string) (step, total int, err error)
 	Cancel   func(ctx context.Context, mode string) error
 }
@@ -166,6 +167,11 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 		}
 		inputs.Images = req.Images
 		inputs.Strengths = normalizeStrengths(req.Strengths, len(req.Images))
+	case "upscale":
+		if strings.TrimSpace(req.Image) == "" {
+			return "", fmt.Errorf("image is required for upscale")
+		}
+		inputs.Image = req.Image
 	default:
 		return "", fmt.Errorf("unknown mode %q", mode)
 	}
@@ -366,6 +372,9 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 		case "blend":
 			m.log(id, "requesting blend (%d reference image(s))", len(inputs.Images))
 			png, err = m.opts.Ops.Blend(ctx, prompt, job.Size, inputs.Images, inputs.Strengths)
+		case "upscale":
+			m.log(id, "requesting upscale")
+			png, err = m.opts.Ops.Upscale(ctx, inputs.Image)
 		default:
 			m.log(id, "requesting image from lattice (size=%s)", job.Size)
 			png, seed, err = m.opts.Ops.Generate(ctx, prompt, job.Size, spec, sp)

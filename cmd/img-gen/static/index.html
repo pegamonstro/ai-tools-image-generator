@@ -34,6 +34,7 @@
             <option value="inpaint">Inpaint (mask)</option>
             <option value="outpaint">Outpaint (expand)</option>
             <option value="blend">Blend (multi-reference)</option>
+            <option value="upscale">Upscale (4x)</option>
           </select>
         </label>
 
@@ -163,6 +164,15 @@
             <input type="file" id="outpaint-image" accept="image/*" hidden>
             <small>Upload the image to expand outward from.</small>
             <img id="outpaint-preview" alt="uploaded image" hidden>
+          </div>
+        </div>
+
+        <div id="upscale-controls" hidden>
+          <div class="picker">
+            <label class="upload-btn" for="upscale-image">Choose image…</label>
+            <input type="file" id="upscale-image" accept="image/*" hidden>
+            <small>Upscale 4× and enhance detail with Real-ESRGAN.</small>
+            <img id="upscale-preview" alt="uploaded image" hidden>
           </div>
         </div>
 

@@ -30,6 +30,7 @@ type config struct {
 	ImageURL      string
 	FillURL       string
 	ReduxURL      string
+	UpscaleURL    string
 	DataDir       string
 	GenresFile    string
 	ModelsFile    string
@@ -45,6 +46,7 @@ func loadConfig() config {
 		ImageURL:      envOr("IMAGE_URL", "http://127.0.0.1:8899"),
 		FillURL:       envOr("FILL_URL", ""),
 		ReduxURL:      envOr("REDUX_URL", ""),
+		UpscaleURL:    envOr("UPSCALE_URL", ""),
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
 		ModelsFile:    envOr("MODELS_FILE", "./models.json"),
@@ -72,6 +74,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat.ImageURL = cfg.ImageURL
 	lat.FillURL = cfg.FillURL
 	lat.ReduxURL = cfg.ReduxURL
+	lat.UpscaleURL = cfg.UpscaleURL
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
@@ -85,6 +88,7 @@ func newHandler(cfg config) (http.Handler, error) {
 			Edit:     lat.Edit,
 			Inpaint:  lat.Inpaint,
 			Blend:    lat.Blend,
+			Upscale:  lat.Upscale,
 			Progress: lat.Progress,
 			Cancel:   lat.Cancel,
 		},

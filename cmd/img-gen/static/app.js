@@ -6,7 +6,7 @@ let activeJobId = null;
 let detailJob = null;
 
 const EDIT_SIZES = ['512x512', '768x512', '1024x576', '1024x1024'];
-let uploaded = { edit: null, inpaint: null, blend: [] }; // base64 strings
+let uploaded = { edit: null, inpaint: null, blend: [], upscale: null }; // base64 strings
 let outpaintImg = null; // decoded Image of the source to expand
 let brushErase = false;
 
@@ -19,7 +19,9 @@ function renderMode() {
   $('inpaint-controls').hidden = m !== 'inpaint';
   $('outpaint-controls').hidden = m !== 'outpaint';
   $('blend-controls').hidden = m !== 'blend';
-  $('enhance').closest('.toggle').hidden = false;
+  $('upscale-controls').hidden = m !== 'upscale';
+  // Upscale is a promptless deterministic pass; there is nothing to enhance.
+  $('enhance').closest('.toggle').hidden = m === 'upscale';
   // LoRA + sampling knobs apply to generate/edit only (fill/redux take none).
   const genLike = (m === 'generate' || m === 'edit');
   $('lora-list').querySelectorAll('select, input').forEach(el => { el.disabled = !genLike; });
@@ -132,6 +134,15 @@ async function init() {
   };
   $('outpaint-image').onchange = async (e) => {
     if (e.target.files[0]) await setupOutpaint(e.target.files[0]);
+  };
+  $('upscale-image').onchange = async (e) => {
+    if (e.target.files[0]) {
+      const url = await readFileAsDataURL(e.target.files[0]);
+      uploaded.upscale = stripDataURL(url);
+      const pv = $('upscale-preview');
+      pv.src = url;
+      pv.hidden = false;
+    }
   };
   renderMode();
   $('generate').onclick = generate;
@@ -510,6 +521,9 @@ async function generate() {
     body.images = uploaded.blend;
     body.strengths = Array.from(document.querySelectorAll('#refs input[type=range]')).map(w => parseFloat(w.value));
     if (!body.images.length) { setStatus('please upload at least one reference image', 'err'); return; }
+  } else if (mode === 'upscale') {
+    body.image = uploaded.upscale;
+    if (!body.image) { setStatus('please upload an image to upscale', 'err'); return; }
   }
   $('generate').disabled = true;
   setStatus('Submitting…', 'pending');
@@ -699,6 +713,11 @@ async function loadHistory() {
       editBtn.textContent = 'Edit';
       editBtn.onclick = () => useHistoryAsEdit(j.id);
       acts.appendChild(editBtn);
+      const upBtn = document.createElement('button');
+      upBtn.type = 'button';
+      upBtn.textContent = 'Upscale';
+      upBtn.onclick = () => useHistoryAsUpscale(j.id);
+      acts.appendChild(upBtn);
     }
     card.appendChild(acts);
     el.appendChild(card);
@@ -760,6 +779,24 @@ async function useHistoryAsEdit(id) {
   $('mode').value = 'edit';
   renderMode();
   setStatus('loaded image ' + id + ' for editing', 'pending');
+}
+
+async function useHistoryAsUpscale(id) {
+  $('detail').hidden = true;
+  try {
+    const resp = await fetch('/api/images/' + id + '.png');
+    if (!resp.ok) throw new Error('image not found');
+    uploaded.upscale = await blobToBase64(await resp.blob());
+  } catch (e) {
+    setStatus('error: ' + e.message, 'err');
+    return;
+  }
+  const pv = $('upscale-preview');
+  pv.src = '/api/images/' + id + '.png';
+  pv.hidden = false;
+  $('mode').value = 'upscale';
+  renderMode();
+  setStatus('loaded image ' + id + ' for upscaling', 'pending');
 }
 
 async function saveToFolder() {

@@ -319,6 +319,7 @@ func editOps() ImageOps {
 		Blend: func(ctx context.Context, prompt, size string, imgs []string, ws []float64) ([]byte, error) {
 			return []byte("PNG"), nil
 		},
+		Upscale: func(ctx context.Context, img string) ([]byte, error) { return []byte("PNG"), nil },
 	}
 }
 
@@ -458,5 +459,26 @@ func TestSubmitOutpaintMissingMask(t *testing.T) {
 	m := New(testOpts(t))
 	if _, err := m.Submit(SubmitRequest{Mode: "outpaint", Prompt: "x", Image: "aW1n"}); err == nil {
 		t.Fatal("expected error for outpaint without mask")
+	}
+}
+
+func TestUpscaleJobCompletes(t *testing.T) {
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Mode: "upscale", Image: "aW1n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Mode != "upscale" {
+		t.Fatalf("mode = %q", j.Mode)
+	}
+}
+
+func TestSubmitUpscaleMissingImage(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "upscale"}); err == nil {
+		t.Fatal("expected error for upscale without image")
 	}
 }

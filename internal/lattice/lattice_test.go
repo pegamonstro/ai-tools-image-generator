@@ -303,6 +303,53 @@ func TestBlendUsesReduxURL(t *testing.T) {
 	}
 }
 
+func TestUpscale(t *testing.T) {
+	img := []byte("fake-png")
+	var got struct {
+		Image string `json:"image"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/upscale" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	if _, err := c.Upscale(context.Background(), "aW1n"); err != nil {
+		t.Fatalf("Upscale: %v", err)
+	}
+	if got.Image != "aW1n" {
+		t.Fatalf("body = %+v", got)
+	}
+}
+
+func TestUpscaleUsesUpscaleURL(t *testing.T) {
+	img := []byte("fake-png")
+	upSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/upscale" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer upSrv.Close()
+
+	otherSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Upscale hit ImageURL (%s) instead of UpscaleURL", r.URL.Path)
+	}))
+	defer otherSrv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = otherSrv.URL
+	c.UpscaleURL = upSrv.URL
+	if _, err := c.Upscale(context.Background(), "aW1n"); err != nil {
+		t.Fatalf("Upscale: %v", err)
+	}
+}
+
 func TestBlend(t *testing.T) {
 	img := []byte("fake-png")
 	var got struct {

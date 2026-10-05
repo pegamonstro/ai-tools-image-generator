@@ -17,11 +17,12 @@ import (
 )
 
 type Client struct {
-	BaseURL  string // chat/enhance frontend (OpenAI-compatible /v1/chat/completions)
-	ImageURL string // mflux sidecar (POST /generate)
-	FillURL  string // optional separate mflux sidecar for /fill (inpainting); defaults to ImageURL
-	ReduxURL string // optional separate mflux sidecar for /redux (multi-reference); defaults to ImageURL
-	HTTP     *http.Client
+	BaseURL    string // chat/enhance frontend (OpenAI-compatible /v1/chat/completions)
+	ImageURL   string // mflux sidecar (POST /generate)
+	FillURL    string // optional separate mflux sidecar for /fill (inpainting); defaults to ImageURL
+	ReduxURL   string // optional separate mflux sidecar for /redux (multi-reference); defaults to ImageURL
+	UpscaleURL string // optional Real-ESRGAN sidecar for /upscale; defaults to ImageURL
+	HTTP       *http.Client
 }
 
 func New(baseURL string) *Client {
@@ -125,6 +126,18 @@ func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []str
 	return png, err
 }
 
+// Upscale runs imageB64 through the Real-ESRGAN sidecar and returns the 4x
+// super-resolved PNG. It is promptless (a deterministic model pass), so it does
+// not use postImage's seed handling.
+func (c *Client) Upscale(ctx context.Context, imageB64 string) ([]byte, error) {
+	body, err := json.Marshal(map[string]any{"image": imageB64})
+	if err != nil {
+		return nil, err
+	}
+	png, _, err := c.postImage(ctx, "/upscale", body)
+	return png, err
+}
+
 // statusResp is the sidecar's GET /status payload.
 type statusResp struct {
 	State     string `json:"state"`
@@ -144,6 +157,10 @@ func (c *Client) sidecarForMode(mode string) string {
 	case "blend":
 		if c.ReduxURL != "" {
 			return c.ReduxURL
+		}
+	case "upscale":
+		if c.UpscaleURL != "" {
+			return c.UpscaleURL
 		}
 	}
 	return c.ImageURL
@@ -207,6 +224,8 @@ func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byt
 		base = c.FillURL
 	} else if path == "/redux" && c.ReduxURL != "" {
 		base = c.ReduxURL
+	} else if path == "/upscale" && c.UpscaleURL != "" {
+		base = c.UpscaleURL
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {

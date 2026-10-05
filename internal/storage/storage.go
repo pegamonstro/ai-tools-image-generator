@@ -11,6 +11,7 @@ import (
 type Job struct {
 	ID         string            `json:"id"`
 	Genre      string            `json:"genre"`
+	Mode       string            `json:"mode,omitempty"`
 	Prompt     string            `json:"prompt"`
 	Fields     map[string]string `json:"fields"`
 	Size       string            `json:"size"`

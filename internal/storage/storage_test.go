@@ -62,3 +62,21 @@ func TestLoadHistoryMissingFile(t *testing.T) {
 		t.Fatalf("want nil for missing file, got %v", got)
 	}
 }
+
+func TestJobModeRoundTrip(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.AppendHistory(Job{ID: "abc", Mode: "edit", Prompt: "make it snow", Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Mode != "edit" {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+}

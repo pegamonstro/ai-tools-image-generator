@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.img-gen</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO_ROOT__/bin/img-gen</string>
+    </array>
+
+    <!-- launchd does not expand shell variables: paths must be absolute, and
+         absolute macOS paths contain a username that must not be committed.
+         install-macos.sh fills these placeholders in with sed. -->
+    <key>WorkingDirectory</key>
+    <string>__REPO_ROOT__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Route generation to the mflux sidecar. Left as a placeholder so
+             the (private) host/IP never lands in a tracked file. -->
+        <key>IMAGE_URL</key>
+        <string>__IMAGE_URL__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/img-gen.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/img-gen.err.log</string>
+</dict>
+</plist>

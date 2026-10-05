@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"img-gen/internal/prompting"
+	"img-gen/internal/storage"
 )
 
 type Client struct {
@@ -29,34 +30,49 @@ func New(baseURL string) *Client {
 // Generate requests one image from the mflux sidecar and returns its raw PNG
 // bytes. The sidecar takes explicit width/height rather than an OpenAI "size"
 // string, so "1024x576" is split into its dimensions.
-func (c *Client) Generate(ctx context.Context, prompt, size string) ([]byte, error) {
+func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
 	w, h, err := parseSize(size)
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(map[string]any{"prompt": prompt, "width": w, "height": h})
+	body := map[string]any{"prompt": prompt, "width": w, "height": h}
+	applyModelSpec(body, spec)
+	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	return c.postImage(ctx, "/generate", body)
+	return c.postImage(ctx, "/generate", b)
 }
 
 // Edit requests an image-to-image edit: it keeps the source image's content
 // while applying the prompt. imageB64 is the source image (base64); strength is
 // the denoise strength in [0,1] (higher departs further from the source).
-func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, strength float64) ([]byte, error) {
+func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec) ([]byte, error) {
 	w, h, err := parseSize(size)
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"prompt": prompt, "width": w, "height": h,
 		"init_image": imageB64, "strength": strength,
-	})
+	}
+	applyModelSpec(body, spec)
+	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	return c.postImage(ctx, "/edit", body)
+	return c.postImage(ctx, "/edit", b)
+}
+
+// applyModelSpec injects the optional model/LoRA selection into a request body,
+// leaving the fields absent when unset so the sidecar uses its defaults.
+func applyModelSpec(body map[string]any, spec storage.ModelSpec) {
+	if spec.Model != "" {
+		body["model"] = spec.Model
+	}
+	if len(spec.Loras) > 0 {
+		body["loras"] = spec.Loras
+	}
 }
 
 // Inpaint repaints only the masked region of imageB64. maskB64 is a same-sized

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"img-gen/internal/storage"
 )
 
 func TestGenerate(t *testing.T) {
@@ -33,7 +35,7 @@ func TestGenerate(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	got, err := c.Generate(context.Background(), "a prompt", "512x512")
+	got, err := c.Generate(context.Background(), "a prompt", "512x512", storage.ModelSpec{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -42,10 +44,61 @@ func TestGenerate(t *testing.T) {
 	}
 }
 
+func TestGenerateModelSpec(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	var got struct {
+		Model string            `json:"model"`
+		Loras []storage.LoraRef `json:"loras"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	spec := storage.ModelSpec{
+		Model: "/m/dev",
+		Loras: []storage.LoraRef{{Name: "shauray/flux-uncensored-lora", Scale: 0.8}},
+	}
+	if _, err := c.Generate(context.Background(), "a cat", "512x512", spec); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got.Model != "/m/dev" {
+		t.Fatalf("model = %q", got.Model)
+	}
+	if len(got.Loras) != 1 || got.Loras[0].Name != "shauray/flux-uncensored-lora" || got.Loras[0].Scale != 0.8 {
+		t.Fatalf("loras = %+v", got.Loras)
+	}
+}
+
+func TestGenerateOmitsEmptySpec(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	if _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, ok := got["model"]; ok {
+		t.Fatalf("empty spec must omit model, got %+v", got)
+	}
+	if _, ok := got["loras"]; ok {
+		t.Fatalf("empty spec must omit loras, got %+v", got)
+	}
+}
+
 func TestGenerateBadSize(t *testing.T) {
 	c := New("http://unused")
 	c.ImageURL = "http://unused"
-	if _, err := c.Generate(context.Background(), "p", "bogus"); err == nil {
+	if _, err := c.Generate(context.Background(), "p", "bogus", storage.ModelSpec{}); err == nil {
 		t.Fatal("expected error for malformed size")
 	}
 }
@@ -77,7 +130,7 @@ func TestGenerateNon200(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	if _, err := c.Generate(context.Background(), "p", "512x512"); err == nil {
+	if _, err := c.Generate(context.Background(), "p", "512x512", storage.ModelSpec{}); err == nil {
 		t.Fatal("expected error on 500")
 	}
 }
@@ -102,7 +155,7 @@ func TestEdit(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	out, err := c.Edit(context.Background(), "make it snow", "512x512", "aW1n", 0.6)
+	out, err := c.Edit(context.Background(), "make it snow", "512x512", "aW1n", 0.6, storage.ModelSpec{})
 	if err != nil {
 		t.Fatalf("Edit: %v", err)
 	}

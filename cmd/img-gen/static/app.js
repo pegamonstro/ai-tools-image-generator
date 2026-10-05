@@ -94,6 +94,7 @@ async function init() {
   }
   setConn('● connected', 'ok');
   renderGenreSelect();
+  renderStyleSelect();
   $('mode').onchange = () => { renderMode(); };
   populateSizes($('edit-size'), EDIT_SIZES);
   populateSizes($('blend-size'), EDIT_SIZES);
@@ -128,6 +129,21 @@ function renderGenreSelect() {
   }
   sel.onchange = renderForm;
   renderForm();
+}
+
+function renderStyleSelect() {
+  const sel = $('style');
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'None';
+  sel.appendChild(none);
+  for (const s of (genres.styles || [])) {
+    const o = document.createElement('option');
+    o.value = s.key;
+    o.textContent = s.label;
+    sel.appendChild(o);
+  }
 }
 
 function renderForm() {
@@ -290,7 +306,7 @@ function renderRefs() {
 
 async function generate() {
   const mode = currentMode();
-  const body = { mode, enhance: $('enhance').checked };
+  const body = { mode, enhance: $('enhance').checked, style: $('style').value };
   if (mode === 'generate') {
     body.genre = $('genre').value;
     body.fields = collectFields();

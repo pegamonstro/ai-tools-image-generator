@@ -25,6 +25,9 @@ func testCatalog() *genres.Catalog {
 				Sizes:          []string{"512x512"},
 			},
 		},
+		Styles: []genres.Style{
+			{Key: "watercolor", Label: "Watercolor", Prompt: "watercolor painting, soft washes"},
+		},
 	}
 }
 
@@ -211,6 +214,28 @@ func editOps() ImageOps {
 		Edit:     func(ctx context.Context, prompt, size, img string, strength float64) ([]byte, error) { return []byte("PNG"), nil },
 		Inpaint:  func(ctx context.Context, prompt, img, mask string) ([]byte, error) { return []byte("PNG"), nil },
 		Blend:    func(ctx context.Context, prompt, size string, imgs []string, ws []float64) ([]byte, error) { return []byte("PNG"), nil },
+	}
+}
+
+func TestSubmitUnknownStyle(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512", Style: "nope"}); err == nil {
+		t.Fatal("expected error for unknown style")
+	}
+}
+
+func TestStylePrefixApplied(t *testing.T) {
+	m := New(testOpts(t))
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512", Style: "watercolor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Prompt != "watercolor painting, soft washes, A landscape: a valley." {
+		t.Fatalf("prompt = %q", j.Prompt)
+	}
+	if j.Style != "watercolor" {
+		t.Fatalf("style = %q", j.Style)
 	}
 }
 

@@ -41,9 +41,19 @@ type Genre struct {
 	Sizes          []string `json:"sizes"`
 }
 
+// Style is a global prompt modifier applied across every mode. Prompt is a
+// fragment prepended to the resolved prompt (e.g. "watercolor painting, soft
+// washes"), so a style is plain prompt engineering rather than a LoRA.
+type Style struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Prompt string `json:"prompt"`
+}
+
 type Catalog struct {
 	Version int              `json:"version"`
 	Genres  map[string]Genre `json:"genres"`
+	Styles  []Style          `json:"styles,omitempty"`
 }
 
 func Load(path string) (*Catalog, error) {
@@ -103,10 +113,29 @@ func (c *Catalog) Validate() error {
 			}
 		}
 	}
+	seenStyles := map[string]bool{}
+	for _, s := range c.Styles {
+		if strings.TrimSpace(s.Key) == "" || strings.TrimSpace(s.Label) == "" || strings.TrimSpace(s.Prompt) == "" {
+			return fmt.Errorf("style with empty key, label, or prompt")
+		}
+		if seenStyles[s.Key] {
+			return fmt.Errorf("duplicate style key %q", s.Key)
+		}
+		seenStyles[s.Key] = true
+	}
 	return nil
 }
 
 func (c *Catalog) Genre(name string) (Genre, bool) {
 	g, ok := c.Genres[name]
 	return g, ok
+}
+
+func (c *Catalog) Style(key string) (Style, bool) {
+	for _, s := range c.Styles {
+		if s.Key == key {
+			return s, true
+		}
+	}
+	return Style{}, false
 }

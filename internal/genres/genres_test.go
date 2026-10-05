@@ -73,3 +73,35 @@ func TestLoadRejectsSelectWithoutOptions(t *testing.T) {
 		t.Fatal("expected error for select without options")
 	}
 }
+
+func TestLoadStyles(t *testing.T) {
+	p := writeTemp(t, `{"version":1,"styles":[{"key":"watercolor","label":"Watercolor","prompt":"watercolor painting"}],"genres":{"x":{"label":"X","fields":[],"prompt_template":"hi","sizes":["512x512"]}}}`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s, ok := c.Style("watercolor")
+	if !ok {
+		t.Fatal("watercolor style missing")
+	}
+	if s.Prompt != "watercolor painting" {
+		t.Fatalf("prompt = %q", s.Prompt)
+	}
+	if _, ok := c.Style("nope"); ok {
+		t.Fatal("unknown style should not resolve")
+	}
+}
+
+func TestLoadRejectsDuplicateStyleKey(t *testing.T) {
+	p := writeTemp(t, `{"version":1,"styles":[{"key":"a","label":"A","prompt":"p"},{"key":"a","label":"A","prompt":"p"}],"genres":{"x":{"label":"X","fields":[],"prompt_template":"hi","sizes":["512x512"]}}}`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for duplicate style key")
+	}
+}
+
+func TestLoadRejectsEmptyStylePrompt(t *testing.T) {
+	p := writeTemp(t, `{"version":1,"styles":[{"key":"a","label":"A","prompt":""}],"genres":{"x":{"label":"X","fields":[],"prompt_template":"hi","sizes":["512x512"]}}}`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for empty style prompt")
+	}
+}

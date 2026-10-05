@@ -1,5 +1,21 @@
 {
   "version": 1,
+  "styles": [
+    {"key": "photorealistic", "label": "Photorealistic", "prompt": "photorealistic, ultra-detailed, sharp focus, 8k"},
+    {"key": "cinematic", "label": "Cinematic", "prompt": "cinematic, dramatic lighting, film grain, anamorphic lens, 35mm"},
+    {"key": "watercolor", "label": "Watercolor", "prompt": "watercolor painting, soft washes, delicate brushwork, textured paper"},
+    {"key": "oil_painting", "label": "Oil painting", "prompt": "oil painting, visible impasto brushstrokes, rich texture, classical"},
+    {"key": "anime", "label": "Anime", "prompt": "anime style, cel shading, vibrant colors, clean lineart"},
+    {"key": "3d_render", "label": "3D render", "prompt": "3D render, octane render, soft global illumination, subsurface scattering"},
+    {"key": "pencil", "label": "Pencil sketch", "prompt": "pencil sketch, graphite shading, detailed linework, monochrome"},
+    {"key": "isometric", "label": "Isometric", "prompt": "isometric view, clean geometric shapes, flat shading, minimal"},
+    {"key": "pixel_art", "label": "Pixel art", "prompt": "pixel art, 8-bit, crisp pixels, retro video game style"},
+    {"key": "film_noir", "label": "Film noir", "prompt": "film noir, high-contrast, deep shadows, black and white, 1940s"},
+    {"key": "minimalist", "label": "Minimalist", "prompt": "minimalist, flat design, generous negative space, simple shapes"},
+    {"key": "vintage_film", "label": "Vintage film", "prompt": "vintage film photograph, faded colors, light leaks, Kodachrome"},
+    {"key": "fantasy", "label": "Fantasy", "prompt": "epic fantasy concept art, painterly, intricate detail, dramatic"},
+    {"key": "cyberpunk", "label": "Cyberpunk", "prompt": "cyberpunk, neon lights, rainy city, dystopian, high-tech"}
+  ],
   "genres": {
     "landscape": {
       "label": "Landscape",
@@ -66,6 +82,141 @@
       ],
       "prompt_template": "A product shot of {product}, {material}, on a {backdrop} backdrop, {lighting} lighting, {camera_angle}° angle{include_shadow}. {notes}",
       "sizes": ["512x512", "1024x1024"]
+    },
+    "scene": {
+      "label": "Scene",
+      "description": "A free-form scene, narrative, or action",
+      "fields": [
+        {"key": "description", "label": "Scene description", "type": "textarea",
+         "placeholder": "A bustling night market under paper lanterns, a street performer juggling fire while a crowd watches",
+         "required": true,
+         "hint": "Describe the scene, narrative, and action in detail"},
+        {"key": "mood", "label": "Mood", "type": "textarea",
+         "placeholder": "warm, festive, lively"},
+        {"key": "time_of_day", "label": "Time of day", "type": "select",
+         "options": ["dawn", "midday", "golden hour", "dusk", "night"], "default": "dusk"},
+        {"key": "weather", "label": "Weather", "type": "select",
+         "options": ["clear", "misty", "overcast", "rain", "snow"], "default": "clear"},
+        {"key": "camera", "label": "Camera", "type": "select",
+         "options": ["wide shot", "medium shot", "close-up", "aerial", "first-person"],
+         "default": "wide shot"}
+      ],
+      "prompt_template": "A {camera} scene: {description}. Mood: {mood}. {time_of_day}, {weather} weather.",
+      "sizes": ["1024x1024", "1024x576", "768x512", "512x768"]
+    },
+    "character": {
+      "label": "Character",
+      "description": "A single character or creature",
+      "fields": [
+        {"key": "subject", "label": "Character", "type": "text",
+         "placeholder": "a battle-worn knight", "required": true},
+        {"key": "outfit", "label": "Outfit", "type": "text",
+         "placeholder": "tarnished plate armor, tattered cloak"},
+        {"key": "pose", "label": "Pose", "type": "text",
+         "placeholder": "leaning on a sword, weary"},
+        {"key": "expression", "label": "Expression", "type": "text",
+         "placeholder": "grim, resolute"},
+        {"key": "setting", "label": "Setting", "type": "text",
+         "placeholder": "a smoke-filled battlefield"}
+      ],
+      "prompt_template": "A character: {subject}, wearing {outfit}, {pose}, {expression} expression, in {setting}.",
+      "sizes": ["512x768", "1024x1536", "512x512"]
+    },
+    "illustration": {
+      "label": "Illustration",
+      "fields": [
+        {"key": "subject", "label": "Subject", "type": "text",
+         "placeholder": "a fox reading a book", "required": true},
+        {"key": "art_style", "label": "Art style", "type": "select",
+         "options": ["children's book", "comic", "digital painting", "ink linework", "flat vector"],
+         "default": "digital painting"},
+        {"key": "palette", "label": "Color palette", "type": "text",
+         "placeholder": "warm autumn tones"},
+        {"key": "line_quality", "label": "Line quality", "type": "select",
+         "options": ["bold outlines", "soft lines", "no lines"], "default": "soft lines"},
+        {"key": "background", "label": "Background", "type": "text",
+         "placeholder": "a cozy library"}
+      ],
+      "prompt_template": "An illustration of {subject}, {art_style} style, {line_quality}, {palette} palette, with {background} background.",
+      "sizes": ["1024x1024", "768x512", "512x768"]
+    },
+    "architecture": {
+      "label": "Architecture",
+      "fields": [
+        {"key": "building", "label": "Building", "type": "text",
+         "placeholder": "a cliffside glass house", "required": true},
+        {"key": "style_era", "label": "Style / era", "type": "select",
+         "options": ["modern", "brutalist", "gothic", "art deco", "traditional", "futuristic"],
+         "default": "modern"},
+        {"key": "material", "label": "Material", "type": "select",
+         "options": ["concrete", "glass and steel", "timber", "stone", "brick"],
+         "default": "glass and steel"},
+        {"key": "camera_angle", "label": "Camera angle", "type": "select",
+         "options": ["eye level", "low angle", "aerial", "three-quarter"],
+         "default": "three-quarter"},
+        {"key": "lighting", "label": "Lighting", "type": "select",
+         "options": ["daylight", "golden hour", "night", "overcast"],
+         "default": "golden hour"}
+      ],
+      "prompt_template": "An architectural photograph of {building}, {style_era} style, {material}, {camera_angle} view, {lighting} lighting.",
+      "sizes": ["1024x576", "1024x1024", "768x512"]
+    },
+    "food": {
+      "label": "Food",
+      "fields": [
+        {"key": "dish", "label": "Dish", "type": "text",
+         "placeholder": "a rustic bowl of ramen", "required": true},
+        {"key": "camera_angle", "label": "Camera angle", "type": "select",
+         "options": ["top-down", "45-degree", "eye level", "macro"],
+         "default": "45-degree"},
+        {"key": "props", "label": "Props / setting", "type": "text",
+         "placeholder": "chopsticks, dark wooden table"},
+        {"key": "lighting", "label": "Lighting", "type": "select",
+         "options": ["soft natural", "warm side light", "bright studio", "moody"],
+         "default": "soft natural"},
+        {"key": "include_steam", "label": "Steam", "type": "boolean",
+         "true_text": ", with visible steam rising", "false_text": ""}
+      ],
+      "prompt_template": "A food photograph of {dish}, {camera_angle}, {lighting} lighting, with {props}{include_steam}.",
+      "sizes": ["1024x1024", "512x512", "768x512"]
+    },
+    "wildlife": {
+      "label": "Wildlife",
+      "fields": [
+        {"key": "animal", "label": "Animal", "type": "text",
+         "placeholder": "a red fox", "required": true},
+        {"key": "habitat", "label": "Habitat", "type": "text",
+         "placeholder": "a snowy forest"},
+        {"key": "action", "label": "Action / pose", "type": "text",
+         "placeholder": "pouncing through the snow"},
+        {"key": "time_of_day", "label": "Time of day", "type": "select",
+         "options": ["dawn", "midday", "golden hour", "dusk", "night"],
+         "default": "golden hour"},
+        {"key": "camera", "label": "Camera", "type": "select",
+         "options": ["telephoto close-up", "wide habitat shot", "eye level", "low angle"],
+         "default": "telephoto close-up"}
+      ],
+      "prompt_template": "A wildlife photograph of {animal} in {habitat}, {action}, {time_of_day}, {camera}.",
+      "sizes": ["1024x1024", "1024x576", "768x512"]
+    },
+    "abstract": {
+      "label": "Abstract",
+      "fields": [
+        {"key": "theme", "label": "Theme", "type": "text",
+         "placeholder": "flowing energy and motion", "required": true},
+        {"key": "palette", "label": "Color palette", "type": "text",
+         "placeholder": "deep blues and gold"},
+        {"key": "composition", "label": "Composition", "type": "select",
+         "options": ["centered", "diagonal flow", "radial", "grid", "freeform"],
+         "default": "freeform"},
+        {"key": "texture", "label": "Texture", "type": "select",
+         "options": ["smooth gradients", "rough brushstrokes", "geometric", "fluid", "glitch"],
+         "default": "fluid"},
+        {"key": "mood", "label": "Mood", "type": "text",
+         "placeholder": "serene and expansive"}
+      ],
+      "prompt_template": "An abstract image about {theme}, {palette} palette, {composition} composition, {texture} texture, {mood} mood.",
+      "sizes": ["1024x1024", "768x512", "512x768"]
     }
   }
 }

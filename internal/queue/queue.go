@@ -20,6 +20,7 @@ type SubmitRequest struct {
 	Fields  map[string]string `json:"fields"`
 	Size    string            `json:"size"`
 	Enhance bool              `json:"enhance"`
+	Style   string            `json:"style"` // global style preset key (empty = none)
 
 	Mode      string    `json:"mode"`      // "generate"(default) | "edit" | "inpaint" | "blend"
 	Prompt    string    `json:"prompt"`    // free-text prompt (non-generate modes)
@@ -152,11 +153,18 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 		return "", fmt.Errorf("unknown mode %q", mode)
 	}
 
+	if req.Style != "" {
+		if _, ok := m.opts.Genres.Style(req.Style); !ok {
+			return "", fmt.Errorf("unknown style %q", req.Style)
+		}
+	}
+
 	id := newID()
 	job := &storage.Job{
 		ID:        id,
 		Mode:      mode,
 		Genre:     req.Genre,
+		Style:     req.Style,
 		Prompt:    req.Prompt,
 		Fields:    req.Fields,
 		Size:      req.Size,
@@ -225,6 +233,12 @@ func (m *Manager) run(id string) {
 	if err != nil {
 		m.finish(id, "failed", err.Error())
 		return
+	}
+	if job.Style != "" {
+		if st, ok := m.opts.Genres.Style(job.Style); ok {
+			prompt = st.Prompt + ", " + prompt
+			m.log(id, "applied style %q: %q", job.Style, prompt)
+		}
 	}
 	m.mu.Lock()
 	job.Prompt = prompt

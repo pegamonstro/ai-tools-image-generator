@@ -31,6 +31,7 @@ type config struct {
 	LatticeURL    string
 	ImageURL      string
 	FillURL       string
+	ReduxURL      string
 	DataDir       string
 	GenresFile    string
 	EnhanceModel  string
@@ -43,6 +44,7 @@ func loadConfig() config {
 		LatticeURL:    envOr("LATTICE_FRONTEND_URL", "http://127.0.0.1:8080"),
 		ImageURL:      envOr("IMAGE_URL", "http://127.0.0.1:8899"),
 		FillURL:       envOr("FILL_URL", ""),
+		ReduxURL:      envOr("REDUX_URL", ""),
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
 		EnhanceModel:  envOr("ENHANCE_MODEL", "local-brain"),
@@ -63,6 +65,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat := lattice.New(cfg.LatticeURL)
 	lat.ImageURL = cfg.ImageURL
 	lat.FillURL = cfg.FillURL
+	lat.ReduxURL = cfg.ReduxURL
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {

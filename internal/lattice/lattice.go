@@ -18,6 +18,7 @@ type Client struct {
 	BaseURL  string // chat/enhance frontend (OpenAI-compatible /v1/chat/completions)
 	ImageURL string // mflux sidecar (POST /generate)
 	FillURL  string // optional separate mflux sidecar for /fill (inpainting); defaults to ImageURL
+	ReduxURL string // optional separate mflux sidecar for /redux (multi-reference); defaults to ImageURL
 	HTTP     *http.Client
 }
 
@@ -91,6 +92,8 @@ func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byt
 	base := c.ImageURL
 	if path == "/fill" && c.FillURL != "" {
 		base = c.FillURL
+	} else if path == "/redux" && c.ReduxURL != "" {
+		base = c.ReduxURL
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {

@@ -163,6 +163,29 @@ func TestInpaintUsesFillURL(t *testing.T) {
 	}
 }
 
+func TestBlendUsesReduxURL(t *testing.T) {
+	img := []byte("fake-png")
+	reduxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/redux" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer reduxSrv.Close()
+
+	otherSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Blend hit ImageURL (%s) instead of ReduxURL", r.URL.Path)
+	}))
+	defer otherSrv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = otherSrv.URL
+	c.ReduxURL = reduxSrv.URL
+	if _, err := c.Blend(context.Background(), "a statue", "1024x1024", []string{"aW1n"}, []float64{0.8}); err != nil {
+		t.Fatalf("Blend: %v", err)
+	}
+}
+
 func TestBlend(t *testing.T) {
 	img := []byte("fake-png")
 	var got struct {

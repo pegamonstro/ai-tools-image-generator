@@ -35,7 +35,7 @@ func TestGenerate(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	got, err := c.Generate(context.Background(), "a prompt", "512x512", storage.ModelSpec{})
+	got, _, err := c.Generate(context.Background(), "a prompt", "512x512", storage.ModelSpec{}, storage.SamplingParams{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestGenerateModelSpec(t *testing.T) {
 		Model: "/m/dev",
 		Loras: []storage.LoraRef{{Name: "shauray/flux-uncensored-lora", Scale: 0.8}},
 	}
-	if _, err := c.Generate(context.Background(), "a cat", "512x512", spec); err != nil {
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", spec, storage.SamplingParams{}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if got.Model != "/m/dev" {
@@ -84,7 +84,7 @@ func TestGenerateOmitsEmptySpec(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	if _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}); err != nil {
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if _, ok := got["model"]; ok {
@@ -98,8 +98,68 @@ func TestGenerateOmitsEmptySpec(t *testing.T) {
 func TestGenerateBadSize(t *testing.T) {
 	c := New("http://unused")
 	c.ImageURL = "http://unused"
-	if _, err := c.Generate(context.Background(), "p", "bogus", storage.ModelSpec{}); err == nil {
+	if _, _, err := c.Generate(context.Background(), "p", "bogus", storage.ModelSpec{}, storage.SamplingParams{}); err == nil {
 		t.Fatal("expected error for malformed size")
+	}
+}
+
+func TestGenerateSamplingParams(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	var got struct {
+		Seed     *int64   `json:"seed"`
+		Steps    *int     `json:"steps"`
+		Guidance *float64 `json:"guidance"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `","seed":1234}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+
+	seed := int64(42)
+	steps := 30
+	guidance := 3.5
+	sp := storage.SamplingParams{Seed: &seed, Steps: &steps, Guidance: &guidance}
+	_, used, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, sp)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got.Seed == nil || *got.Seed != 42 {
+		t.Fatalf("seed = %v, want 42", got.Seed)
+	}
+	if got.Steps == nil || *got.Steps != 30 {
+		t.Fatalf("steps = %v, want 30", got.Steps)
+	}
+	if got.Guidance == nil || *got.Guidance != 3.5 {
+		t.Fatalf("guidance = %v, want 3.5", got.Guidance)
+	}
+	// The sidecar-reported seed (1234) is returned, not the requested one.
+	if used == nil || *used != 1234 {
+		t.Fatalf("used seed = %v, want 1234", used)
+	}
+}
+
+func TestGenerateOmitsEmptySamplingParams(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, k := range []string{"seed", "steps", "guidance"} {
+		if _, ok := got[k]; ok {
+			t.Fatalf("empty sampling params must omit %q, got %+v", k, got)
+		}
 	}
 }
 
@@ -130,7 +190,7 @@ func TestGenerateNon200(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	if _, err := c.Generate(context.Background(), "p", "512x512", storage.ModelSpec{}); err == nil {
+	if _, _, err := c.Generate(context.Background(), "p", "512x512", storage.ModelSpec{}, storage.SamplingParams{}); err == nil {
 		t.Fatal("expected error on 500")
 	}
 }
@@ -155,7 +215,7 @@ func TestEdit(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	out, err := c.Edit(context.Background(), "make it snow", "512x512", "aW1n", 0.6, storage.ModelSpec{})
+	out, _, err := c.Edit(context.Background(), "make it snow", "512x512", "aW1n", 0.6, storage.ModelSpec{}, storage.SamplingParams{})
 	if err != nil {
 		t.Fatalf("Edit: %v", err)
 	}

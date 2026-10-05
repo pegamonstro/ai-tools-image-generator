@@ -29,18 +29,20 @@ func New(baseURL string) *Client {
 }
 
 // Generate requests one image from the mflux sidecar and returns its raw PNG
-// bytes. The sidecar takes explicit width/height rather than an OpenAI "size"
+// bytes plus the seed the sidecar used (nil when the sidecar does not report
+// one). The sidecar takes explicit width/height rather than an OpenAI "size"
 // string, so "1024x576" is split into its dimensions.
-func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 	w, h, err := parseSize(size)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	body := map[string]any{"prompt": prompt, "width": w, "height": h}
 	applyModelSpec(body, spec)
+	applyGenParams(body, sp)
 	b, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return c.postImage(ctx, "/generate", b)
 }
@@ -48,19 +50,20 @@ func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage
 // Edit requests an image-to-image edit: it keeps the source image's content
 // while applying the prompt. imageB64 is the source image (base64); strength is
 // the denoise strength in [0,1] (higher departs further from the source).
-func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec) ([]byte, error) {
+func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 	w, h, err := parseSize(size)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	body := map[string]any{
 		"prompt": prompt, "width": w, "height": h,
 		"init_image": imageB64, "strength": strength,
 	}
 	applyModelSpec(body, spec)
+	applyGenParams(body, sp)
 	b, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return c.postImage(ctx, "/edit", b)
 }
@@ -76,6 +79,20 @@ func applyModelSpec(body map[string]any, spec storage.ModelSpec) {
 	}
 }
 
+// applyGenParams injects the optional sampling knobs, leaving them absent when
+// unset so the sidecar keeps its own defaults.
+func applyGenParams(body map[string]any, sp storage.SamplingParams) {
+	if sp.Seed != nil {
+		body["seed"] = *sp.Seed
+	}
+	if sp.Steps != nil {
+		body["steps"] = *sp.Steps
+	}
+	if sp.Guidance != nil {
+		body["guidance"] = *sp.Guidance
+	}
+}
+
 // Inpaint repaints only the masked region of imageB64. maskB64 is a same-sized
 // mask (white = regenerate, black = keep); output size matches the source.
 func (c *Client) Inpaint(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error) {
@@ -83,7 +100,8 @@ func (c *Client) Inpaint(ctx context.Context, prompt, imageB64, maskB64 string) 
 	if err != nil {
 		return nil, err
 	}
-	return c.postImage(ctx, "/fill", body)
+	png, _, err := c.postImage(ctx, "/fill", body)
+	return png, err
 }
 
 // Blend generates a new image from a prompt plus reference images (base64) and
@@ -100,7 +118,8 @@ func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []str
 	if err != nil {
 		return nil, err
 	}
-	return c.postImage(ctx, "/redux", body)
+	png, _, err := c.postImage(ctx, "/redux", body)
+	return png, err
 }
 
 // statusResp is the sidecar's GET /status payload.
@@ -176,8 +195,9 @@ func (c *Client) Cancel(ctx context.Context, mode string) error {
 	return nil
 }
 
-// postImage sends one sidecar request and decodes the returned base64 PNG.
-func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byte, error) {
+// postImage sends one sidecar request and decodes the returned base64 PNG and
+// (when present) the seed the sidecar used.
+func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byte, *int64, error) {
 	name := strings.TrimPrefix(path, "/")
 	base := c.ImageURL
 	if path == "/fill" && c.FillURL != "" {
@@ -187,32 +207,34 @@ func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byt
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("mflux %s: %s: %s", name, resp.Status, msg)
+		return nil, nil, fmt.Errorf("mflux %s: %s: %s", name, resp.Status, msg)
 	}
 	var gr struct {
 		Image string `json:"image"`
+		Seed  *int64 `json:"seed"`
 		Error string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if gr.Image == "" {
 		if gr.Error != "" {
-			return nil, fmt.Errorf("mflux %s: %s", name, gr.Error)
+			return nil, nil, fmt.Errorf("mflux %s: %s", name, gr.Error)
 		}
-		return nil, fmt.Errorf("mflux %s: empty image", name)
+		return nil, nil, fmt.Errorf("mflux %s: empty image", name)
 	}
-	return base64.StdEncoding.DecodeString(gr.Image)
+	png, err := base64.StdEncoding.DecodeString(gr.Image)
+	return png, gr.Seed, err
 }
 
 func parseSize(size string) (int, int, error) {

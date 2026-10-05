@@ -23,6 +23,14 @@ type ModelSpec struct {
 	Loras []LoraRef // mflux --lora list; nil = none
 }
 
+// SamplingParams are optional generation knobs forwarded to the mflux sidecar.
+// A nil pointer means "leave to the sidecar default".
+type SamplingParams struct {
+	Seed     *int64   `json:"seed,omitempty"`     // fixed seed; nil = random
+	Steps    *int     `json:"steps,omitempty"`    // diffusion steps; nil = sidecar default
+	Guidance *float64 `json:"guidance,omitempty"` // classifier-free guidance; nil = sidecar default
+}
+
 type Job struct {
 	ID         string            `json:"id"`
 	Genre      string            `json:"genre"`
@@ -34,6 +42,9 @@ type Job struct {
 	Enhance    bool              `json:"enhance"`
 	Model      string            `json:"model,omitempty"`
 	Loras      []LoraRef         `json:"loras,omitempty"`
+	Seed       *int64            `json:"seed,omitempty"`     // seed actually used (sidecar response); nil for inpaint/blend
+	Steps      *int              `json:"steps,omitempty"`     // requested diffusion steps (nil = default)
+	Guidance   *float64          `json:"guidance,omitempty"`  // requested guidance (nil = default)
 	Status     string            `json:"status"`
 	Step       int               `json:"-"` // in-flight diffusion step (transient, not persisted)
 	Total      int               `json:"-"` // total diffusion steps (transient, not persisted)

@@ -41,8 +41,8 @@ func testOpts(t *testing.T) Options {
 		Genres: testCatalog(),
 		Store:  s,
 		Ops: ImageOps{
-			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
-				return []byte("PNG"), nil
+			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+				return []byte("PNG"), nil, nil
 			},
 		},
 		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
@@ -118,8 +118,8 @@ func TestEnhanceJobCompletes(t *testing.T) {
 
 func TestGenerateErrorFailsJob(t *testing.T) {
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
-		return nil, fmt.Errorf("lattice down")
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		return nil, nil, fmt.Errorf("lattice down")
 	}
 	m := New(opts)
 	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512"})
@@ -165,14 +165,14 @@ func TestSingleSlotSerializes(t *testing.T) {
 	var active int32
 	release := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		n := atomic.AddInt32(&active, 1)
 		if n > 1 {
 			t.Errorf("two generations ran concurrently")
 		}
 		<-release
 		atomic.AddInt32(&active, -1)
-		return []byte("PNG"), nil
+		return []byte("PNG"), nil, nil
 	}
 	m := New(opts)
 	id1, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
@@ -191,10 +191,10 @@ func TestSingleSlotSerializes(t *testing.T) {
 func TestCancelStopsRunningJob(t *testing.T) {
 	started := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		close(started)
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 	opts.Ops.Cancel = func(ctx context.Context, mode string) error { return nil }
 	m := New(opts)
@@ -222,9 +222,9 @@ func TestCancelTerminalJobFails(t *testing.T) {
 func TestProgressEventsStream(t *testing.T) {
 	release := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		<-release
-		return []byte("PNG"), nil
+		return []byte("PNG"), nil, nil
 	}
 	opts.Ops.Progress = func(ctx context.Context, mode string) (int, int, error) {
 		return 7, 25, nil
@@ -309,11 +309,11 @@ func TestJobLogsStreamAndReplay(t *testing.T) {
 
 func editOps() ImageOps {
 	return ImageOps{
-		Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
-			return []byte("PNG"), nil
+		Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+			return []byte("PNG"), nil, nil
 		},
-		Edit: func(ctx context.Context, prompt, size, img string, strength float64, spec storage.ModelSpec) ([]byte, error) {
-			return []byte("PNG"), nil
+		Edit: func(ctx context.Context, prompt, size, img string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+			return []byte("PNG"), nil, nil
 		},
 		Inpaint: func(ctx context.Context, prompt, img, mask string) ([]byte, error) { return []byte("PNG"), nil },
 		Blend: func(ctx context.Context, prompt, size string, imgs []string, ws []float64) ([]byte, error) {
@@ -410,10 +410,10 @@ func TestEditJobDispatchCallsEdit(t *testing.T) {
 	var gotStrength float64
 	opts := testOpts(t)
 	opts.Ops = editOps()
-	opts.Ops.Edit = func(ctx context.Context, prompt, size, img string, strength float64, spec storage.ModelSpec) ([]byte, error) {
+	opts.Ops.Edit = func(ctx context.Context, prompt, size, img string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		called = true
 		gotStrength = strength
-		return []byte("PNG"), nil
+		return []byte("PNG"), nil, nil
 	}
 	m := New(opts)
 	id, _ := m.Submit(SubmitRequest{Mode: "edit", Prompt: "p", Size: "512x512", Image: "aW1n"})

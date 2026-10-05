@@ -44,13 +44,10 @@
           <select id="model"></select>
         </label>
 
-        <div class="row">
-          <label class="ctrl">LoRA
-            <select id="lora"></select>
-          </label>
-          <label class="ctrl">LoRA scale <span id="lora-scale-val">1.0</span>
-            <input type="range" id="lora-scale" min="0" max="1" step="0.05" value="1">
-          </label>
+        <div class="ctrl" id="lora-wrap">
+          <span>LoRAs</span>
+          <div id="lora-list"></div>
+          <button id="add-lora" type="button" class="ghost">+ Add LoRA</button>
         </div>
 
         <details class="advanced">
@@ -58,10 +55,29 @@
           <label class="ctrl">Model override
             <input type="text" id="model-raw" placeholder="/path/to/model or org/model">
           </label>
-          <label class="ctrl">LoRA override
-            <input type="text" id="lora-raw" placeholder="/path/to/lora or org/lora">
+          <label class="ctrl">Custom LoRA (HF id / path)
+            <input type="text" id="lora-raw" placeholder="org/lora or /path/to/lora">
           </label>
         </details>
+
+        <div id="sampling-controls">
+          <div class="row">
+            <label class="ctrl">Seed
+              <input type="number" id="seed" placeholder="random">
+            </label>
+            <label class="ctrl">Steps
+              <input type="number" id="steps" placeholder="default" min="1" max="200">
+            </label>
+            <label class="ctrl">Guidance
+              <input type="number" id="guidance" placeholder="default" min="0" max="20" step="0.1">
+            </label>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="lock-seed">
+            <span class="toggle-track" aria-hidden="true"></span>
+            Lock seed (reuse last seed)
+          </label>
+        </div>
 
         <div id="gen-controls">
           <div class="row">
@@ -83,8 +99,10 @@
             <select id="edit-size"></select>
           </label>
           <div id="image-picker" class="picker">
-            <input type="file" id="edit-image" accept="image/*">
+            <label class="upload-btn" for="edit-image">Choose image…</label>
+            <input type="file" id="edit-image" accept="image/*" hidden>
             <small>Upload the image to edit.</small>
+            <img id="edit-preview" alt="uploaded image" hidden>
           </div>
           <label class="ctrl">Strength <span id="strength-val">0.4</span>
             <input type="range" id="strength" min="0" max="1" step="0.05" value="0.4">
@@ -96,7 +114,8 @@
             <textarea id="inpaint-prompt" rows="3" placeholder="describe what should appear in the painted region"></textarea>
           </label>
           <div class="picker">
-            <input type="file" id="inpaint-image" accept="image/*">
+            <label class="upload-btn" for="inpaint-image">Choose image…</label>
+            <input type="file" id="inpaint-image" accept="image/*" hidden>
             <small>Upload the image to edit.</small>
           </div>
           <div id="mask-wrap" hidden>
@@ -118,7 +137,8 @@
             <select id="blend-size"></select>
           </label>
           <div class="picker">
-            <input type="file" id="blend-image" accept="image/*" multiple>
+            <label class="upload-btn" for="blend-image">Choose images…</label>
+            <input type="file" id="blend-image" accept="image/*" multiple hidden>
             <small>Upload one or more reference images.</small>
           </div>
           <div id="refs"></div>

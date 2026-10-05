@@ -458,6 +458,17 @@ button.danger:hover { background: rgba(248, 113, 113, 0.12); border-color: var(-
 }
 .advanced .ctrl { margin-top: 12px; }
 
+/* ---------- Multi-LoRA + sampling ---------- */
+
+#lora-wrap { margin-bottom: 18px; }
+#lora-list { display: flex; flex-direction: column; gap: 8px; }
+.lora-row { display: flex; gap: 8px; align-items: center; }
+.lora-row select { flex: 1; }
+.lora-row input[type="range"] { width: 88px; flex: none; }
+.lora-row button { flex: none; padding: 6px 12px; }
+#add-lora { align-self: flex-start; }
+#sampling-controls .toggle { margin-bottom: 18px; }
+
 /* ---------- Detail modal ---------- */
 
 .modal {
@@ -521,6 +532,31 @@ a.button:hover { filter: brightness(1.08); }
 
 .picker { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 18px; font-size: 0.85rem; color: var(--muted); }
 .picker input[type="file"] { color: var(--muted); }
+.upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 18px;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.upload-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+.picker img {
+  max-width: 100%;
+  max-height: 220px;
+  width: auto;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 6px;
+}
 #mask-canvas { max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: crosshair; display: block; }
 .mask-tools { display: flex; gap: 14px; align-items: center; margin: 10px 0 6px; font-size: 0.8rem; color: var(--muted); }
 .mask-tools label { display: flex; align-items: center; gap: 6px; }

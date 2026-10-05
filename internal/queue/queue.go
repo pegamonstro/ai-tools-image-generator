@@ -32,6 +32,10 @@ type SubmitRequest struct {
 
 	Model string            `json:"model"` // mflux --model value (path or HF id); "" = sidecar default
 	Loras []storage.LoraRef `json:"loras"` // mflux --lora list; nil = none
+
+	Seed     *int64   `json:"seed,omitempty"`     // fixed seed; nil = random
+	Steps    *int     `json:"steps,omitempty"`    // diffusion steps; nil = sidecar default
+	Guidance *float64 `json:"guidance,omitempty"` // guidance; nil = sidecar default
 }
 
 type Event struct {
@@ -42,6 +46,7 @@ type Event struct {
 	Log    string    `json:"log,omitempty"`
 	Step   int       `json:"step,omitempty"`
 	Total  int       `json:"total,omitempty"`
+	Seed   *int64    `json:"seed,omitempty"` // seed used, on the terminal "done" event
 }
 
 type LogLine struct {
@@ -51,8 +56,8 @@ type LogLine struct {
 }
 
 type ImageOps struct {
-	Generate func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error)
-	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec) ([]byte, error)
+	Generate func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
+	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
 	Inpaint  func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
 	Blend    func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
 	Progress func(ctx context.Context, mode string) (step, total int, err error)
@@ -182,6 +187,9 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 		Enhance:   req.Enhance,
 		Model:     req.Model,
 		Loras:     normalizeLoras(req.Loras),
+		Seed:      req.Seed,
+		Steps:     req.Steps,
+		Guidance:  req.Guidance,
 		Status:    "queued",
 		CreatedAt: time.Now(),
 	}
@@ -292,8 +300,9 @@ func (m *Manager) run(id string) {
 	m.setStatus(id, "generating", "")
 	start := time.Now()
 	spec := storage.ModelSpec{Model: job.Model, Loras: job.Loras}
+	sp := storage.SamplingParams{Seed: job.Seed, Steps: job.Steps, Guidance: job.Guidance}
 
-	png, err := m.dispatch(ctx, id, job, inputs, prompt, spec)
+	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)
 	cancel()
 	m.mu.Lock()
 	delete(m.cancels, id)
@@ -308,6 +317,12 @@ func (m *Manager) run(id string) {
 		m.log(id, "generation failed after %s: %v", roundDur(time.Since(start)), err)
 		m.finish(id, "failed", err.Error())
 		return
+	}
+	if seed != nil {
+		m.mu.Lock()
+		job.Seed = seed
+		m.mu.Unlock()
+		m.log(id, "seed=%d", *seed)
 	}
 	m.log(id, "lattice returned %d bytes in %s", len(png), roundDur(time.Since(start)))
 
@@ -328,19 +343,21 @@ func (m *Manager) run(id string) {
 // dispatch runs the mode-specific op in a goroutine so per-step progress can
 // be polled from the sidecar while the op blocks. It returns the PNG bytes or
 // the op error. The op receives ctx, so cancelling it aborts the HTTP request.
-func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inputs imageInputs, prompt string, spec storage.ModelSpec) ([]byte, error) {
+func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inputs imageInputs, prompt string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 	type result struct {
-		png []byte
-		err error
+		png  []byte
+		seed *int64
+		err  error
 	}
 	done := make(chan result, 1)
 	go func() {
 		var png []byte
+		var seed *int64
 		var err error
 		switch job.Mode {
 		case "edit":
 			m.log(id, "requesting edit (strength=%.2f)", inputs.Strength)
-			png, err = m.opts.Ops.Edit(ctx, prompt, job.Size, inputs.Image, inputs.Strength, spec)
+			png, seed, err = m.opts.Ops.Edit(ctx, prompt, job.Size, inputs.Image, inputs.Strength, spec, sp)
 		case "inpaint":
 			m.log(id, "requesting inpaint")
 			png, err = m.opts.Ops.Inpaint(ctx, prompt, inputs.Image, inputs.Mask)
@@ -349,14 +366,14 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 			png, err = m.opts.Ops.Blend(ctx, prompt, job.Size, inputs.Images, inputs.Strengths)
 		default:
 			m.log(id, "requesting image from lattice (size=%s)", job.Size)
-			png, err = m.opts.Ops.Generate(ctx, prompt, job.Size, spec)
+			png, seed, err = m.opts.Ops.Generate(ctx, prompt, job.Size, spec, sp)
 		}
-		done <- result{png, err}
+		done <- result{png, seed, err}
 	}()
 
 	if m.opts.Ops.Progress == nil {
 		r := <-done
-		return r.png, r.err
+		return r.png, r.seed, r.err
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -364,7 +381,7 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 	for {
 		select {
 		case r := <-done:
-			return r.png, r.err
+			return r.png, r.seed, r.err
 		case <-ticker.C:
 			step, total, perr := m.opts.Ops.Progress(context.Background(), job.Mode)
 			if perr == nil && total > 0 {
@@ -491,7 +508,7 @@ func (m *Manager) finish(id, status, errMsg string) {
 	m.mu.Unlock()
 
 	_ = m.opts.Store.AppendHistory(j)
-	m.notify(id, status, errMsg)
+	m.broadcast(Event{JobID: id, Status: status, Error: errMsg, Ts: now, Seed: j.Seed})
 }
 
 // setStatus updates an in-progress status and notifies subscribers.

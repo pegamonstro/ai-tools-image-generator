@@ -18,11 +18,12 @@ function renderMode() {
   $('inpaint-controls').hidden = m !== 'inpaint';
   $('blend-controls').hidden = m !== 'blend';
   $('enhance').closest('.toggle').hidden = false;
-  // LoRA applies to generate/edit only (fill/redux take no --lora).
-  const loraDisabled = (m === 'inpaint' || m === 'blend');
-  $('lora').disabled = loraDisabled;
-  $('lora-scale').disabled = loraDisabled;
-  $('lora-raw').disabled = loraDisabled;
+  // LoRA + sampling knobs apply to generate/edit only (fill/redux take none).
+  const genLike = (m === 'generate' || m === 'edit');
+  $('lora-list').querySelectorAll('select, input').forEach(el => { el.disabled = !genLike; });
+  $('add-lora').disabled = !genLike;
+  $('lora-raw').disabled = !genLike;
+  $('sampling-controls').hidden = !genLike;
 }
 
 function populateSizes(sel, sizes) {
@@ -103,12 +104,18 @@ async function init() {
   renderGenreSelect();
   renderStyleSelect();
   loadModels();
-  $('lora-scale').oninput = () => { $('lora-scale-val').textContent = parseFloat($('lora-scale').value).toFixed(2); };
+  $('add-lora').onclick = addLoraRow;
   $('mode').onchange = () => { renderMode(); };
   populateSizes($('edit-size'), EDIT_SIZES);
   populateSizes($('blend-size'), EDIT_SIZES);
   $('edit-image').onchange = async (e) => {
-    if (e.target.files[0]) uploaded.edit = stripDataURL(await readFileAsDataURL(e.target.files[0]));
+    if (e.target.files[0]) {
+      const url = await readFileAsDataURL(e.target.files[0]);
+      uploaded.edit = stripDataURL(url);
+      const pv = $('edit-preview');
+      pv.src = url;
+      pv.hidden = false;
+    }
   };
   $('inpaint-image').onchange = async (e) => {
     if (e.target.files[0]) {
@@ -182,9 +189,9 @@ function renderModelSelect() {
   }
 }
 
-function renderLoraSelect() {
-  const sel = $('lora');
-  sel.innerHTML = '';
+function makeLoraSelect() {
+  const sel = document.createElement('select');
+  sel.className = 'lora-name';
   const none = document.createElement('option');
   none.value = '';
   none.textContent = 'None';
@@ -195,14 +202,59 @@ function renderLoraSelect() {
     o.textContent = l.label;
     sel.appendChild(o);
   }
+  return sel;
+}
+
+function addLoraRow() {
+  const row = document.createElement('div');
+  row.className = 'lora-row';
+  const sel = makeLoraSelect();
+  const scale = document.createElement('input');
+  scale.type = 'range'; scale.min = '0'; scale.max = '1'; scale.step = '0.05'; scale.value = '1';
+  scale.className = 'lora-scale';
+  const rm = document.createElement('button');
+  rm.type = 'button'; rm.textContent = '×'; rm.className = 'ghost';
+  rm.onclick = () => row.remove();
+  row.appendChild(sel); row.appendChild(scale); row.appendChild(rm);
+  $('lora-list').appendChild(row);
+}
+
+// renderLoraSelect resets the LoRA list to a single empty row after the catalog
+// loads. Rows can be added or removed afterwards without reloading.
+function renderLoraSelect() {
+  $('lora-list').innerHTML = '';
+  addLoraRow();
+}
+
+function collectLoras() {
+  const out = [];
+  for (const row of document.querySelectorAll('#lora-list .lora-row')) {
+    const name = row.querySelector('.lora-name').value;
+    if (name) out.push({ name, scale: parseFloat(row.querySelector('.lora-scale').value) });
+  }
+  // The custom free-text LoRA contributes one extra entry at full scale.
+  const raw = $('lora-raw').value.trim();
+  if (raw) out.push({ name: raw, scale: 1.0 });
+  return out;
+}
+
+function collectSampling() {
+  const sp = {};
+  const seed = $('seed').value.trim();
+  if (seed !== '') sp.seed = parseInt(seed, 10);
+  const steps = $('steps').value.trim();
+  if (steps !== '') sp.steps = parseInt(steps, 10);
+  const guidance = $('guidance').value.trim();
+  if (guidance !== '') sp.guidance = parseFloat(guidance);
+  return sp;
 }
 
 function collectModelSpec() {
   const model = $('model-raw').value.trim() || $('model').value;
-  const loraName = $('lora-raw').value.trim() || $('lora').value;
   const spec = {};
   if (model) spec.model = model;
-  if (loraName) spec.loras = [{ name: loraName, scale: parseFloat($('lora-scale').value) }];
+  const loras = collectLoras();
+  if (loras.length) spec.loras = loras;
   return spec;
 }
 
@@ -369,6 +421,7 @@ async function generate() {
   const body = { mode, enhance: $('enhance').checked, style: $('style').value };
   if (mode === 'generate' || mode === 'edit') {
     Object.assign(body, collectModelSpec());
+    Object.assign(body, collectSampling());
   }
   if (mode === 'generate') {
     body.genre = $('genre').value;
@@ -423,6 +476,9 @@ function stream(id) {
       updateProgress(id, ev.step, ev.total);
     }
     if (ev.status === 'done') {
+      if (ev.seed != null && $('lock-seed').checked) {
+        $('seed').value = String(ev.seed);
+      }
       showProgress(false);
       setStatus('complete', 'ok');
       showImage(id);
@@ -545,7 +601,7 @@ async function loadHistory() {
 
     const meta = document.createElement('div');
     meta.className = 'card-meta';
-    meta.textContent = [j.model, (j.loras && j.loras.length ? j.loras.map(l => l.name).join(', ') : ''), j.style].filter(Boolean).join(' · ');
+    meta.textContent = [j.model, (j.loras && j.loras.length ? j.loras.map(l => l.name).join(', ') : ''), j.style, (j.seed != null ? 'seed ' + j.seed : '')].filter(Boolean).join(' · ');
     if (meta.textContent) card.appendChild(meta);
 
     if (inflight) {
@@ -616,7 +672,7 @@ function openDetail(j) {
     $('detail-img').removeAttribute('src');
     $('detail-download').removeAttribute('href');
   }
-  $('detail-meta').textContent = [j.prompt, j.model, (j.loras || []).map(l => l.name).join(', '), j.style, j.size, j.created_at].filter(Boolean).join('\n');
+  $('detail-meta').textContent = [j.prompt, j.model, (j.loras || []).map(l => l.name).join(', '), j.style, j.size, (j.seed != null ? 'seed: ' + j.seed : ''), j.created_at].filter(Boolean).join('\n');
   $('detail-edit').hidden = !j.image_path;
   $('detail-save').hidden = !j.image_path;
   $('detail-download').hidden = !j.image_path;
@@ -632,6 +688,9 @@ async function useHistoryAsEdit(id) {
     setStatus('error: ' + e.message, 'err');
     return;
   }
+  const pv = $('edit-preview');
+  pv.src = '/api/images/' + id + '.png';
+  pv.hidden = false;
   $('mode').value = 'edit';
   renderMode();
   setStatus('loaded image ' + id + ' for editing', 'pending');

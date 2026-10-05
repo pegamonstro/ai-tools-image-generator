@@ -111,7 +111,7 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 			}
 		}
 		if !contains(g.Sizes, req.Size) {
-			return "", fmt.Errorf("size %q not allowed for genre %q", req.Genre, req.Size)
+			return "", fmt.Errorf("size %q not allowed for genre %q", req.Size, req.Genre)
 		}
 	case "edit":
 		if strings.TrimSpace(req.Prompt) == "" {

@@ -97,6 +97,28 @@ func applyGenParams(body map[string]any, sp storage.SamplingParams) {
 	}
 }
 
+// Controlnet requests an edge-guided (pose) generation via the sidecar's /pose
+// endpoint: it conditions generation on a reference image's detected edges.
+// imageB64 is the reference image (base64); strength is the ControlNet strength
+// in [0,1] (higher follows the pose more rigidly).
+func (c *Client) Controlnet(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	w, h, err := parseSize(size)
+	if err != nil {
+		return nil, nil, err
+	}
+	body := map[string]any{
+		"prompt": prompt, "width": w, "height": h,
+		"image": imageB64, "strength": strength,
+	}
+	applyModelSpec(body, spec)
+	applyGenParams(body, sp)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.postImage(ctx, "/pose", b)
+}
+
 // Inpaint repaints only the masked region of imageB64. maskB64 is a same-sized
 // mask (white = regenerate, black = keep); output size matches the source.
 func (c *Client) Inpaint(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error) {

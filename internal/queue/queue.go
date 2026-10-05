@@ -65,6 +65,7 @@ type ImageOps struct {
 	Inpaint  func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
 	Blend    func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
 	Upscale  func(ctx context.Context, imageB64 string) ([]byte, error)
+	Controlnet func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
 	Progress func(ctx context.Context, mode string) (step, total int, err error)
 	Cancel   func(ctx context.Context, mode string) error
 }
@@ -208,6 +209,21 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 			return "", fmt.Errorf("image is required for upscale")
 		}
 		inputs.Image = req.Image
+	case "pose":
+		if strings.TrimSpace(req.Prompt) == "" {
+			return "", fmt.Errorf("prompt is required for pose")
+		}
+		if strings.TrimSpace(req.Image) == "" {
+			return "", fmt.Errorf("a reference image is required for pose")
+		}
+		if !validSize(req.Size) {
+			return "", fmt.Errorf("invalid size %q", req.Size)
+		}
+		inputs.Image = req.Image
+		inputs.Strength = req.Strength
+		if inputs.Strength == 0 {
+			inputs.Strength = 0.7
+		}
 	default:
 		return "", fmt.Errorf("unknown mode %q", mode)
 	}
@@ -448,6 +464,9 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 		case "upscale":
 			m.log(id, "requesting upscale")
 			png, err = m.opts.Ops.Upscale(ctx, inputs.Image)
+		case "pose":
+			m.log(id, "requesting pose (strength=%.2f)", inputs.Strength)
+			png, seed, err = m.opts.Ops.Controlnet(ctx, prompt, job.Size, inputs.Image, inputs.Strength, spec, sp)
 		default:
 			m.log(id, "requesting image from lattice (size=%s)", job.Size)
 			png, seed, err = m.opts.Ops.Generate(ctx, prompt, job.Size, spec, sp)

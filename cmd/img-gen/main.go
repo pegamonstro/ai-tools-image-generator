@@ -97,6 +97,7 @@ func newHandler(cfg config) (http.Handler, error) {
 			Inpaint:  lat.Inpaint,
 			Blend:    lat.Blend,
 			Upscale:  lat.Upscale,
+			Controlnet: lat.Controlnet,
 			Progress: lat.Progress,
 			Cancel:   lat.Cancel,
 		},

@@ -7,7 +7,7 @@ let activeJobId = null;
 let detailJob = null;
 
 const EDIT_SIZES = ['512x512', '768x512', '1024x576', '1024x1024'];
-let uploaded = { edit: null, inpaint: null, blend: [], upscale: null }; // base64 strings
+let uploaded = { edit: null, inpaint: null, blend: [], upscale: null, pose: null }; // base64 strings
 let outpaintImg = null; // decoded Image of the source to expand
 let brushErase = false;
 
@@ -21,10 +21,11 @@ function renderMode() {
   $('outpaint-controls').hidden = m !== 'outpaint';
   $('blend-controls').hidden = m !== 'blend';
   $('upscale-controls').hidden = m !== 'upscale';
+  $('pose-controls').hidden = m !== 'pose';
   // Upscale is a promptless deterministic pass; there is nothing to enhance.
   $('enhance').closest('.toggle').hidden = m === 'upscale';
-  // LoRA + sampling knobs apply to generate/edit only (fill/redux take none).
-  const genLike = (m === 'generate' || m === 'edit');
+  // LoRA + sampling knobs apply to generate/edit/pose (fill/redux take none).
+  const genLike = (m === 'generate' || m === 'edit' || m === 'pose');
   $('lora-list').querySelectorAll('select, input').forEach(el => { el.disabled = !genLike; });
   $('add-lora').disabled = !genLike;
   $('lora-raw').disabled = !genLike;
@@ -114,6 +115,7 @@ async function init() {
   $('mode').onchange = () => { renderMode(); };
   populateSizes($('edit-size'), EDIT_SIZES);
   populateSizes($('blend-size'), EDIT_SIZES);
+  populateSizes($('pose-size'), EDIT_SIZES);
   $('edit-image').onchange = async (e) => {
     if (e.target.files[0]) {
       const url = await readFileAsDataURL(e.target.files[0]);
@@ -146,6 +148,16 @@ async function init() {
       pv.hidden = false;
     }
   };
+  $('pose-image').onchange = async (e) => {
+    if (e.target.files[0]) {
+      const url = await readFileAsDataURL(e.target.files[0]);
+      uploaded.pose = stripDataURL(url);
+      const pv = $('pose-preview');
+      pv.src = url;
+      pv.hidden = false;
+    }
+  };
+  $('pose-strength').oninput = () => { $('pose-strength-val').textContent = $('pose-strength').value; };
   renderMode();
   $('generate').onclick = generate;
   $('cancel').onclick = () => cancelJob();
@@ -520,7 +532,7 @@ async function generate() {
   const mode = currentMode();
   const body = { mode, enhance: $('enhance').checked, style: $('style').value, preset: $('preset').value };
   body.batch = Math.max(1, Math.min(8, parseInt($('batch').value, 10) || 1));
-  if (mode === 'generate' || mode === 'edit') {
+  if (mode === 'generate' || mode === 'edit' || mode === 'pose') {
     Object.assign(body, collectModelSpec());
     Object.assign(body, collectSampling());
   }
@@ -543,6 +555,12 @@ async function generate() {
     body.prompt = $('outpaint-prompt').value;
     if (!outpaintImg) { setStatus('please upload an image to expand', 'err'); return; }
     Object.assign(body, buildOutpaint());
+  } else if (mode === 'pose') {
+    body.prompt = $('pose-prompt').value;
+    body.size = $('pose-size').value;
+    body.image = uploaded.pose;
+    body.strength = parseFloat($('pose-strength').value);
+    if (!body.image) { setStatus('please upload a reference image', 'err'); return; }
   } else if (mode === 'blend') {
     body.prompt = $('blend-prompt').value;
     body.size = $('blend-size').value;

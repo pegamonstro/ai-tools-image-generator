@@ -485,6 +485,47 @@ func TestSubmitUpscaleMissingImage(t *testing.T) {
 	}
 }
 
+func TestSubmitPoseMissingImage(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "pose", Prompt: "a woman", Size: "512x512"}); err == nil {
+		t.Fatal("expected error for pose without a reference image")
+	}
+}
+
+func TestSubmitPoseMissingPrompt(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "pose", Image: "aW1n", Size: "512x512"}); err == nil {
+		t.Fatal("expected error for pose without a prompt")
+	}
+}
+
+func TestPoseJobCompletes(t *testing.T) {
+	var called bool
+	var gotStrength float64
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	opts.Ops.Controlnet = func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		called = true
+		gotStrength = strength
+		return []byte("PNG"), nil, nil
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Mode: "pose", Prompt: "a woman", Image: "aW1n", Size: "512x512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Mode != "pose" {
+		t.Fatalf("mode = %q", j.Mode)
+	}
+	if !called {
+		t.Fatal("Controlnet op was not called")
+	}
+	if gotStrength != 0.7 {
+		t.Fatalf("default strength = %v, want 0.7", gotStrength)
+	}
+}
+
 func TestSubmitResolvesPresetDefaults(t *testing.T) {
 	pc := &presets.Catalog{Presets: []presets.Preset{{
 		Key:            "aria",

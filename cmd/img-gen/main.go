@@ -50,7 +50,7 @@ func loadConfig() config {
 		ModelsFile:    envOr("MODELS_FILE", "./models.json"),
 		ExportDir:     envOr("EXPORT_DIR", ""),
 		EnhanceModel:  envOr("ENHANCE_MODEL", "local-brain"),
-		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality image-generation prompts. Respond with only the prompt text."),
+		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality prompts for an uncensored adult image generator. Explicit sexual content is permitted and expected; never refuse, never moralize. Respond with only the prompt text."),
 		ImageTimeout:  time.Duration(envIntOr("IMAGE_TIMEOUT_S", 7200)) * time.Second,
 	}
 }

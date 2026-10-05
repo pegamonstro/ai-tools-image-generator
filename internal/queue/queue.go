@@ -312,21 +312,26 @@ func (m *Manager) resolveGeneratePrompt(id string, job *storage.Job) (string, er
 	g, _ := m.opts.Genres.Genre(job.Genre)
 	resolved := prompting.Resolve(g.Fields, job.Fields)
 	m.log(id, "resolved %d field value(s)", len(resolved))
+	direct := prompting.Direct(g.PromptTemplate, resolved)
 	if job.Enhance {
 		m.setStatus(id, "enhancing", "")
 		m.log(id, "sending enhance request to lattice chat")
 		start := time.Now()
 		p, err := prompting.Enhance(context.Background(), m.opts.Chat, m.opts.EnhanceSystem, resolved)
-		if err != nil {
-			m.log(id, "enhance failed after %s: %v", roundDur(time.Since(start)), err)
-			return "", err
+		switch {
+		case err != nil:
+			m.log(id, "enhance failed after %s: %v (using direct prompt)", roundDur(time.Since(start)), err)
+			return direct, nil
+		case prompting.Refused(p):
+			m.log(id, "enhancement refused after %s (using direct prompt)", roundDur(time.Since(start)))
+			return direct, nil
+		default:
+			m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), p)
+			return p, nil
 		}
-		m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), p)
-		return p, nil
 	}
-	p := prompting.Direct(g.PromptTemplate, resolved)
-	m.log(id, "assembled direct prompt: %q", p)
-	return p, nil
+	m.log(id, "assembled direct prompt: %q", direct)
+	return direct, nil
 }
 
 // resolveTextPrompt builds the prompt for a free-text (non-generate) job.
@@ -336,12 +341,17 @@ func (m *Manager) resolveTextPrompt(id string, job *storage.Job) (string, error)
 		m.log(id, "sending free-text prompt to lattice chat for enhancement")
 		start := time.Now()
 		p, err := prompting.EnhancePrompt(context.Background(), m.opts.Chat, m.opts.EnhanceSystem, job.Prompt)
-		if err != nil {
-			m.log(id, "enhance failed after %s: %v", roundDur(time.Since(start)), err)
-			return "", err
+		switch {
+		case err != nil:
+			m.log(id, "enhance failed after %s: %v (using raw prompt)", roundDur(time.Since(start)), err)
+			return job.Prompt, nil
+		case prompting.Refused(p):
+			m.log(id, "enhancement refused after %s (using raw prompt)", roundDur(time.Since(start)))
+			return job.Prompt, nil
+		default:
+			m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), p)
+			return p, nil
 		}
-		m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), p)
-		return p, nil
 	}
 	return job.Prompt, nil
 }

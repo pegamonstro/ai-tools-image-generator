@@ -129,6 +129,38 @@ func TestGenerateErrorFailsJob(t *testing.T) {
 	}
 }
 
+func TestEnhanceRefusalFallsBackToDirect(t *testing.T) {
+	opts := testOpts(t)
+	opts.Chat = func(ctx context.Context, msgs []prompting.Message) (string, error) {
+		return "I cannot fulfill this request. I am prohibited from generating explicit content.", nil
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512", Enhance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Prompt != "A landscape: a valley." {
+		t.Fatalf("prompt = %q, want the direct prompt (refusal must be bypassed)", j.Prompt)
+	}
+}
+
+func TestEnhanceErrorFallsBackToDirect(t *testing.T) {
+	opts := testOpts(t)
+	opts.Chat = func(ctx context.Context, msgs []prompting.Message) (string, error) {
+		return "", fmt.Errorf("chat down")
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512", Enhance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Prompt != "A landscape: a valley." {
+		t.Fatalf("prompt = %q, want the direct prompt (enhance error must not fail the job)", j.Prompt)
+	}
+}
+
 func TestSingleSlotSerializes(t *testing.T) {
 	var active int32
 	release := make(chan struct{})

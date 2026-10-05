@@ -59,6 +59,27 @@ func TestEnhanceCallsChat(t *testing.T) {
 	}
 }
 
+func TestRefused(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"I cannot fulfill this request. I am prohibited from generating sexually explicit content.", true},
+		{"I'm sorry, but I can't help with that.", true},
+		{"As an AI, I am unable to generate explicit imagery.", true},
+		{"I apologize, but I won't assist with this request.", true},
+		{"a portrait of a woman standing in a field at sunset", false},
+		{"a man who cannot swim in rough seas", false},
+		{"photorealistic, ultra-detailed, sharp focus, 8k", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := Refused(c.in); got != c.want {
+			t.Errorf("Refused(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestEnhancePropagatesError(t *testing.T) {
 	chat := func(ctx context.Context, msgs []Message) (string, error) {
 		return "", errors.New("boom")

@@ -94,3 +94,48 @@ func EnhancePrompt(ctx context.Context, chat ChatFunc, system, prompt string) (s
 		{Role: "user", Content: prompt},
 	})
 }
+
+// refusalPhrases are first-person, model-authored refusals. They are deliberate
+// false-positive-averse: a phrase like "I cannot" only appears when the model is
+// declining, never in image-prompt prose describing a subject. Keeping them
+// first-person avoids flagging legitimate prompt text (e.g. "a man who cannot
+// swim").
+var refusalPhrases = []string{
+	"i cannot",
+	"i can't",
+	"i could not",
+	"i'm sorry",
+	"i am sorry",
+	"i apologize",
+	"i apologise",
+	"as an ai",
+	"i am unable",
+	"i'm unable",
+	"i won't",
+	"i will not",
+	"i'm not able",
+	"i am not able",
+	"i am prohibited",
+	"i'm prohibited",
+	"i'm not allowed",
+	"i am not allowed",
+	"cannot fulfill",
+	"cannot comply",
+	"i can't assist",
+	"i cannot assist",
+	"i'm not comfortable",
+}
+
+// Refused reports whether a chat completion is a content refusal rather than a
+// usable prompt. The img-gen tool is an uncensored image generator, so a
+// censored model's refusal must be detected and bypassed rather than forwarded
+// (where it would be styled into the image prompt).
+func Refused(s string) bool {
+	lower := strings.ToLower(s)
+	for _, phrase := range refusalPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}

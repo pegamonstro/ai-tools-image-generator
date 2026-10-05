@@ -40,6 +40,29 @@
           <select id="style"></select>
         </label>
 
+        <label class="ctrl">Model
+          <select id="model"></select>
+        </label>
+
+        <div class="row">
+          <label class="ctrl">LoRA
+            <select id="lora"></select>
+          </label>
+          <label class="ctrl">LoRA scale <span id="lora-scale-val">1.0</span>
+            <input type="range" id="lora-scale" min="0" max="1" step="0.05" value="1">
+          </label>
+        </div>
+
+        <details class="advanced">
+          <summary>Advanced — local path or HuggingFace id</summary>
+          <label class="ctrl">Model override
+            <input type="text" id="model-raw" placeholder="/path/to/model or org/model">
+          </label>
+          <label class="ctrl">LoRA override
+            <input type="text" id="lora-raw" placeholder="/path/to/lora or org/lora">
+          </label>
+        </details>
+
         <div id="gen-controls">
           <div class="row">
             <label class="ctrl">Genre
@@ -142,6 +165,19 @@
       </div>
     </section>
   </main>
+
+  <div id="detail" class="modal" hidden>
+    <div class="modal-body">
+      <button id="detail-close" class="ghost" type="button">×</button>
+      <img id="detail-img" alt="image">
+      <div id="detail-meta" class="detail-meta"></div>
+      <div class="actions">
+        <button id="detail-edit" type="button">Edit this image</button>
+        <a id="detail-download" class="button" download>Download</a>
+        <button id="detail-save" type="button">Save to folder</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

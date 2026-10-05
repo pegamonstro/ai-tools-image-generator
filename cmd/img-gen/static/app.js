@@ -1,7 +1,9 @@
 'use strict';
 
 let genres = null;
+let models = { models: [], loras: [] };
 let activeJobId = null;
+let detailJob = null;
 
 const EDIT_SIZES = ['512x512', '768x512', '1024x576', '1024x1024'];
 let uploaded = { edit: null, inpaint: null, blend: [] }; // base64 strings
@@ -16,6 +18,11 @@ function renderMode() {
   $('inpaint-controls').hidden = m !== 'inpaint';
   $('blend-controls').hidden = m !== 'blend';
   $('enhance').closest('.toggle').hidden = false;
+  // LoRA applies to generate/edit only (fill/redux take no --lora).
+  const loraDisabled = (m === 'inpaint' || m === 'blend');
+  $('lora').disabled = loraDisabled;
+  $('lora-scale').disabled = loraDisabled;
+  $('lora-raw').disabled = loraDisabled;
 }
 
 function populateSizes(sel, sizes) {
@@ -95,6 +102,8 @@ async function init() {
   setConn('● connected', 'ok');
   renderGenreSelect();
   renderStyleSelect();
+  loadModels();
+  $('lora-scale').oninput = () => { $('lora-scale-val').textContent = parseFloat($('lora-scale').value).toFixed(2); };
   $('mode').onchange = () => { renderMode(); };
   populateSizes($('edit-size'), EDIT_SIZES);
   populateSizes($('blend-size'), EDIT_SIZES);
@@ -144,6 +153,56 @@ function renderStyleSelect() {
     o.textContent = s.label;
     sel.appendChild(o);
   }
+}
+
+async function loadModels() {
+  try {
+    models = await jsonFetch('/api/models');
+  } catch (e) {
+    appendLog(new Date(), 'failed', 'could not load models: ' + e.message);
+    return;
+  }
+  renderModelSelect();
+  renderLoraSelect();
+}
+
+function renderModelSelect() {
+  const sel = $('model');
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'Sidecar default';
+  sel.appendChild(none);
+  for (const m of (models.models || [])) {
+    const o = document.createElement('option');
+    o.value = m.value;
+    o.textContent = m.label;
+    sel.appendChild(o);
+  }
+}
+
+function renderLoraSelect() {
+  const sel = $('lora');
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'None';
+  sel.appendChild(none);
+  for (const l of (models.loras || [])) {
+    const o = document.createElement('option');
+    o.value = l.value;
+    o.textContent = l.label;
+    sel.appendChild(o);
+  }
+}
+
+function collectModelSpec() {
+  const model = $('model-raw').value.trim() || $('model').value;
+  const loraName = $('lora-raw').value.trim() || $('lora').value;
+  const spec = {};
+  if (model) spec.model = model;
+  if (loraName) spec.loras = [{ name: loraName, scale: parseFloat($('lora-scale').value) }];
+  return spec;
 }
 
 function renderForm() {
@@ -307,6 +366,9 @@ function renderRefs() {
 async function generate() {
   const mode = currentMode();
   const body = { mode, enhance: $('enhance').checked, style: $('style').value };
+  if (mode === 'generate' || mode === 'edit') {
+    Object.assign(body, collectModelSpec());
+  }
   if (mode === 'generate') {
     body.genre = $('genre').value;
     body.fields = collectFields();
@@ -422,6 +484,27 @@ async function loadHistory() {
       err.textContent = j.error;
       card.appendChild(err);
     }
+
+    const meta = document.createElement('div');
+    meta.className = 'card-meta';
+    meta.textContent = [j.model, (j.loras && j.loras.length ? j.loras.map(l => l.name).join(', ') : ''), j.style].filter(Boolean).join(' · ');
+    if (meta.textContent) card.appendChild(meta);
+
+    const acts = document.createElement('div');
+    acts.className = 'card-actions';
+    const view = document.createElement('button');
+    view.type = 'button';
+    view.textContent = 'View';
+    view.onclick = () => openDetail(j);
+    acts.appendChild(view);
+    if (j.image_path) {
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.textContent = 'Edit';
+      editBtn.onclick = () => useHistoryAsEdit(j.id);
+      acts.appendChild(editBtn);
+    }
+    card.appendChild(acts);
     el.appendChild(card);
   }
   // Re-attach to any job still in flight so its live log keeps streaming.
@@ -438,5 +521,64 @@ function resume(id) {
   setStatus('resumed ' + id, 'pending');
   stream(id);
 }
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result.split(',')[1]);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+function openDetail(j) {
+  detailJob = j;
+  $('detail').hidden = false;
+  $('detail-img').hidden = !j.image_path;
+  if (j.image_path) {
+    $('detail-img').src = '/api/images/' + j.id + '.png';
+    $('detail-download').href = '/api/images/' + j.id + '.png?download=1';
+  } else {
+    $('detail-img').removeAttribute('src');
+    $('detail-download').removeAttribute('href');
+  }
+  $('detail-meta').textContent = [j.prompt, j.model, (j.loras || []).map(l => l.name).join(', '), j.style, j.size, j.created_at].filter(Boolean).join('\n');
+  $('detail-edit').hidden = !j.image_path;
+  $('detail-save').hidden = !j.image_path;
+  $('detail-download').hidden = !j.image_path;
+}
+
+async function useHistoryAsEdit(id) {
+  $('detail').hidden = true;
+  try {
+    const resp = await fetch('/api/images/' + id + '.png');
+    if (!resp.ok) throw new Error('image not found');
+    uploaded.edit = await blobToBase64(await resp.blob());
+  } catch (e) {
+    setStatus('error: ' + e.message, 'err');
+    return;
+  }
+  $('mode').value = 'edit';
+  renderMode();
+  setStatus('loaded image ' + id + ' for editing', 'pending');
+}
+
+async function saveToFolder() {
+  if (!detailJob) return;
+  try {
+    const r = await jsonFetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [detailJob.id] }),
+    });
+    setStatus('saved: ' + (r.copied[0] || 'skipped'), r.copied.length ? 'ok' : 'err');
+  } catch (e) {
+    setStatus('error: ' + e.message, 'err');
+  }
+}
+
+$('detail-close').onclick = () => { $('detail').hidden = true; };
+$('detail-edit').onclick = () => useHistoryAsEdit(detailJob.id);
+$('detail-save').onclick = saveToFolder;
 
 init();

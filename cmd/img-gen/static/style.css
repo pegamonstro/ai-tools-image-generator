@@ -376,6 +376,107 @@ button.ghost:hover { color: var(--text); border-color: var(--muted); filter: non
 .badge.failed { color: var(--err); background: rgba(248, 113, 113, 0.14); }
 .badge.queued, .badge.enhancing, .badge.generating { color: #c4b5fd; background: var(--accent-soft); }
 
+.card-meta {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 8px;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.card-actions button {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 0.76rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: none;
+}
+.card-actions button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- Advanced (model/LoRA) ---------- */
+
+.advanced {
+  margin: 4px 0 18px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  background: var(--surface-2);
+}
+.advanced summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  user-select: none;
+}
+.advanced .ctrl { margin-top: 12px; }
+
+/* ---------- Detail modal ---------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 6, 10, 0.82);
+  padding: 24px;
+}
+.modal[hidden] { display: none; }
+
+.modal-body {
+  position: relative;
+  max-width: min(720px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+#detail-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 1rem;
+  padding: 4px 12px;
+}
+#detail-img {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  display: block;
+  margin-bottom: 14px;
+}
+.detail-meta {
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 16px;
+  word-break: break-word;
+}
+
+a.button {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 11px 22px;
+  font-weight: 600;
+  text-decoration: none;
+  letter-spacing: 0.01em;
+  box-shadow: 0 6px 18px -6px rgba(124, 108, 255, 0.6);
+}
+a.button:hover { filter: brightness(1.08); }
+
 /* ---------- Edit / inpaint / blend controls ---------- */
 
 .picker { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 18px; font-size: 0.85rem; color: var(--muted); }

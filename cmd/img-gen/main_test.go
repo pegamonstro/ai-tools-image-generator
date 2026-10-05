@@ -284,3 +284,76 @@ func TestSSEUnknownJob(t *testing.T) {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+func TestEditRoundTrip(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/generate":
+			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/edit":
+			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/v1/chat/completions":
+			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mock.Close()
+
+	cfg := config{
+		LatticeURL:    mock.URL,
+		ImageURL:      mock.URL,
+		DataDir:       t.TempDir(),
+		GenresFile:    writeGenres(t),
+		EnhanceModel:  "flux-dev",
+		EnhanceSystem: "sys",
+		ImageTimeout:  5 * time.Second,
+	}
+	h, err := newHandler(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	body := []byte(`{"mode":"edit","prompt":"make it snow","size":"512x512","image":"aW1n"}`)
+	resp, err := http.Post(srv.URL+"/api/jobs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var sub struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sub); err != nil {
+		t.Fatal(err)
+	}
+	if sub.JobID == "" {
+		t.Fatal("empty job_id")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var job struct {
+		Mode   string `json:"mode"`
+		Status string `json:"status"`
+	}
+	for time.Now().Before(deadline) {
+		r, err := http.Get(srv.URL + "/api/jobs/" + sub.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		json.NewDecoder(r.Body).Decode(&job)
+		r.Body.Close()
+		if job.Status == "done" || job.Status == "failed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if job.Status != "done" {
+		t.Fatalf("status = %q", job.Status)
+	}
+	if job.Mode != "edit" {
+		t.Fatalf("mode = %q, want edit", job.Mode)
+	}
+}

@@ -86,6 +86,7 @@ func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []str
 
 // postImage sends one sidecar request and decodes the returned base64 PNG.
 func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byte, error) {
+	name := strings.TrimPrefix(path, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ImageURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -98,7 +99,7 @@ func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byt
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("mflux %s: %s: %s", path, resp.Status, msg)
+		return nil, fmt.Errorf("mflux %s: %s: %s", name, resp.Status, msg)
 	}
 	var gr struct {
 		Image string `json:"image"`
@@ -109,9 +110,9 @@ func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byt
 	}
 	if gr.Image == "" {
 		if gr.Error != "" {
-			return nil, fmt.Errorf("mflux %s: %s", path, gr.Error)
+			return nil, fmt.Errorf("mflux %s: %s", name, gr.Error)
 		}
-		return nil, fmt.Errorf("mflux %s: empty image", path)
+		return nil, fmt.Errorf("mflux %s: empty image", name)
 	}
 	return base64.StdEncoding.DecodeString(gr.Image)
 }

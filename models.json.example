@@ -1,0 +1,9 @@
+{
+  "models": [
+    { "key": "persephone", "label": "Persephone 2.0 (NSFW)", "value": "/Users/<you>/mflux-models/persephone-4bit" },
+    { "key": "dev", "label": "FLUX.1-dev", "value": "/Users/<you>/mflux-models/flux-dev-4bit" }
+  ],
+  "loras": [
+    { "key": "uncensored", "label": "Uncensored (dev-trained)", "value": "shauray/flux-uncensored-lora" }
+  ]
+}

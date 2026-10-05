@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,14 @@ type SubmitRequest struct {
 	Fields  map[string]string `json:"fields"`
 	Size    string            `json:"size"`
 	Enhance bool              `json:"enhance"`
+
+	Mode      string    `json:"mode"`      // "generate"(default) | "edit" | "inpaint" | "blend"
+	Prompt    string    `json:"prompt"`    // free-text prompt (non-generate modes)
+	Image     string    `json:"image"`     // base64: edit/inpaint source
+	Mask      string    `json:"mask"`      // base64: inpaint mask
+	Strength  float64   `json:"strength"`  // edit denoise strength (0..1)
+	Images    []string  `json:"images"`    // base64: blend references
+	Strengths []float64 `json:"strengths"` // blend per-reference weights
 }
 
 type Event struct {
@@ -35,54 +44,120 @@ type LogLine struct {
 	Msg    string
 }
 
+type ImageOps struct {
+	Generate func(ctx context.Context, prompt, size string) ([]byte, error)
+	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64) ([]byte, error)
+	Inpaint  func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
+	Blend    func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
+}
+
 type Options struct {
 	Genres        *genres.Catalog
 	Store         *storage.Store
-	Generate      func(ctx context.Context, prompt, size string) ([]byte, error)
+	Ops           ImageOps
 	Chat          prompting.ChatFunc
 	EnhanceSystem string
 }
 
+type imageInputs struct {
+	Image     string   // base64 (edit/inpaint source)
+	Mask      string   // base64 (inpaint mask)
+	Images    []string // base64 (blend refs)
+	Strengths []float64
+	Strength  float64
+}
+
 type Manager struct {
-	mu    sync.Mutex
-	jobs  map[string]*storage.Job
-	logs  map[string][]LogLine
-	order []string
-	subs  map[string][]chan Event
-	work  chan string
-	opts  Options
+	mu     sync.Mutex
+	jobs   map[string]*storage.Job
+	logs   map[string][]LogLine
+	order  []string
+	subs   map[string][]chan Event
+	work   chan string
+	inputs map[string]imageInputs
+	opts   Options
 }
 
 func New(opts Options) *Manager {
 	m := &Manager{
-		jobs: map[string]*storage.Job{},
-		logs: map[string][]LogLine{},
-		subs: map[string][]chan Event{},
-		work: make(chan string, 64),
-		opts: opts,
+		jobs:   map[string]*storage.Job{},
+		logs:   map[string][]LogLine{},
+		subs:   map[string][]chan Event{},
+		work:   make(chan string, 64),
+		inputs: map[string]imageInputs{},
+		opts:   opts,
 	}
 	go m.worker()
 	return m
 }
 
 func (m *Manager) Submit(req SubmitRequest) (string, error) {
-	g, ok := m.opts.Genres.Genre(req.Genre)
-	if !ok {
-		return "", fmt.Errorf("unknown genre %q", req.Genre)
+	mode := req.Mode
+	if mode == "" {
+		mode = "generate"
 	}
-	for _, f := range g.Fields {
-		if f.Required && strings.TrimSpace(req.Fields[f.Key]) == "" {
-			return "", fmt.Errorf("field %q is required", f.Key)
+
+	var inputs imageInputs
+	switch mode {
+	case "generate":
+		g, ok := m.opts.Genres.Genre(req.Genre)
+		if !ok {
+			return "", fmt.Errorf("unknown genre %q", req.Genre)
 		}
-	}
-	if !contains(g.Sizes, req.Size) {
-		return "", fmt.Errorf("size %q not allowed for genre %q", req.Genre, req.Size)
+		for _, f := range g.Fields {
+			if f.Required && strings.TrimSpace(req.Fields[f.Key]) == "" {
+				return "", fmt.Errorf("field %q is required", f.Key)
+			}
+		}
+		if !contains(g.Sizes, req.Size) {
+			return "", fmt.Errorf("size %q not allowed for genre %q", req.Genre, req.Size)
+		}
+	case "edit":
+		if strings.TrimSpace(req.Prompt) == "" {
+			return "", fmt.Errorf("prompt is required for edit")
+		}
+		if strings.TrimSpace(req.Image) == "" {
+			return "", fmt.Errorf("image is required for edit")
+		}
+		if !validSize(req.Size) {
+			return "", fmt.Errorf("invalid size %q", req.Size)
+		}
+		inputs.Image = req.Image
+		inputs.Strength = req.Strength
+		if inputs.Strength == 0 {
+			inputs.Strength = 0.4
+		}
+	case "inpaint":
+		if strings.TrimSpace(req.Prompt) == "" {
+			return "", fmt.Errorf("prompt is required for inpaint")
+		}
+		if strings.TrimSpace(req.Image) == "" || strings.TrimSpace(req.Mask) == "" {
+			return "", fmt.Errorf("image and mask are required for inpaint")
+		}
+		inputs.Image = req.Image
+		inputs.Mask = req.Mask
+	case "blend":
+		if strings.TrimSpace(req.Prompt) == "" {
+			return "", fmt.Errorf("prompt is required for blend")
+		}
+		if len(req.Images) == 0 {
+			return "", fmt.Errorf("at least one reference image is required for blend")
+		}
+		if !validSize(req.Size) {
+			return "", fmt.Errorf("invalid size %q", req.Size)
+		}
+		inputs.Images = req.Images
+		inputs.Strengths = normalizeStrengths(req.Strengths, len(req.Images))
+	default:
+		return "", fmt.Errorf("unknown mode %q", mode)
 	}
 
 	id := newID()
 	job := &storage.Job{
 		ID:        id,
+		Mode:      mode,
 		Genre:     req.Genre,
+		Prompt:    req.Prompt,
 		Fields:    req.Fields,
 		Size:      req.Size,
 		Enhance:   req.Enhance,
@@ -91,11 +166,36 @@ func (m *Manager) Submit(req SubmitRequest) (string, error) {
 	}
 	m.mu.Lock()
 	m.jobs[id] = job
+	if mode != "generate" {
+		m.inputs[id] = inputs
+	}
 	m.order = append(m.order, id)
 	m.mu.Unlock()
 
 	m.work <- id
 	return id, nil
+}
+
+func validSize(size string) bool {
+	w, h, ok := strings.Cut(size, "x")
+	if !ok {
+		return false
+	}
+	wi, err1 := strconv.Atoi(w)
+	hi, err2 := strconv.Atoi(h)
+	return err1 == nil && err2 == nil && wi > 0 && hi > 0
+}
+
+func normalizeStrengths(ws []float64, n int) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		if i < len(ws) {
+			out[i] = ws[i]
+		} else {
+			out[i] = 1.0
+		}
+	}
+	return out
 }
 
 func (m *Manager) worker() {
@@ -107,42 +207,46 @@ func (m *Manager) worker() {
 func (m *Manager) run(id string) {
 	m.mu.Lock()
 	job := m.jobs[id]
+	inputs := m.inputs[id]
+	delete(m.inputs, id)
 	m.mu.Unlock()
 	if job == nil {
 		return
 	}
-	m.log(id, "start: genre=%s size=%s enhance=%t", job.Genre, job.Size, job.Enhance)
-
-	g, _ := m.opts.Genres.Genre(job.Genre)
-	resolved := prompting.Resolve(g.Fields, job.Fields)
-	m.log(id, "resolved %d field value(s)", len(resolved))
+	m.log(id, "start: mode=%s size=%s enhance=%t", job.Mode, job.Size, job.Enhance)
 
 	var prompt string
 	var err error
-	if job.Enhance {
-		m.setStatus(id, "enhancing", "")
-		m.log(id, "sending enhance request to lattice chat")
-		start := time.Now()
-		prompt, err = prompting.Enhance(context.Background(), m.opts.Chat, m.opts.EnhanceSystem, resolved)
-		if err != nil {
-			m.log(id, "enhance failed after %s: %v", roundDur(time.Since(start)), err)
-			m.finish(id, "failed", err.Error())
-			return
-		}
-		m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), prompt)
+	if job.Mode == "generate" {
+		prompt, err = m.resolveGeneratePrompt(id, job)
 	} else {
-		prompt = prompting.Direct(g.PromptTemplate, resolved)
-		m.log(id, "assembled direct prompt: %q", prompt)
+		prompt, err = m.resolveTextPrompt(id, job)
 	}
-
+	if err != nil {
+		m.finish(id, "failed", err.Error())
+		return
+	}
 	m.mu.Lock()
 	job.Prompt = prompt
 	m.mu.Unlock()
 
 	m.setStatus(id, "generating", "")
-	m.log(id, "requesting image from lattice (size=%s)", job.Size)
 	start := time.Now()
-	png, err := m.opts.Generate(context.Background(), prompt, job.Size)
+	var png []byte
+	switch job.Mode {
+	case "edit":
+		m.log(id, "requesting edit (strength=%.2f)", inputs.Strength)
+		png, err = m.opts.Ops.Edit(context.Background(), prompt, job.Size, inputs.Image, inputs.Strength)
+	case "inpaint":
+		m.log(id, "requesting inpaint")
+		png, err = m.opts.Ops.Inpaint(context.Background(), prompt, inputs.Image, inputs.Mask)
+	case "blend":
+		m.log(id, "requesting blend (%d reference image(s))", len(inputs.Images))
+		png, err = m.opts.Ops.Blend(context.Background(), prompt, job.Size, inputs.Images, inputs.Strengths)
+	default:
+		m.log(id, "requesting image from lattice (size=%s)", job.Size)
+		png, err = m.opts.Ops.Generate(context.Background(), prompt, job.Size)
+	}
 	if err != nil {
 		m.log(id, "generation failed after %s: %v", roundDur(time.Since(start)), err)
 		m.finish(id, "failed", err.Error())
@@ -162,6 +266,46 @@ func (m *Manager) run(id string) {
 	m.log(id, "saved image to %s", rel)
 
 	m.finish(id, "done", "")
+}
+
+// resolveGeneratePrompt builds the prompt for a genre/fields job (direct or
+// enhanced). It is the pre-existing prompt path, factored out of run.
+func (m *Manager) resolveGeneratePrompt(id string, job *storage.Job) (string, error) {
+	g, _ := m.opts.Genres.Genre(job.Genre)
+	resolved := prompting.Resolve(g.Fields, job.Fields)
+	m.log(id, "resolved %d field value(s)", len(resolved))
+	if job.Enhance {
+		m.setStatus(id, "enhancing", "")
+		m.log(id, "sending enhance request to lattice chat")
+		start := time.Now()
+		p, err := prompting.Enhance(context.Background(), m.opts.Chat, m.opts.EnhanceSystem, resolved)
+		if err != nil {
+			m.log(id, "enhance failed after %s: %v", roundDur(time.Since(start)), err)
+			return "", err
+		}
+		m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), p)
+		return p, nil
+	}
+	p := prompting.Direct(g.PromptTemplate, resolved)
+	m.log(id, "assembled direct prompt: %q", p)
+	return p, nil
+}
+
+// resolveTextPrompt builds the prompt for a free-text (non-generate) job.
+func (m *Manager) resolveTextPrompt(id string, job *storage.Job) (string, error) {
+	if job.Enhance {
+		m.setStatus(id, "enhancing", "")
+		m.log(id, "sending free-text prompt to lattice chat for enhancement")
+		start := time.Now()
+		p, err := prompting.EnhancePrompt(context.Background(), m.opts.Chat, m.opts.EnhanceSystem, job.Prompt)
+		if err != nil {
+			m.log(id, "enhance failed after %s: %v", roundDur(time.Since(start)), err)
+			return "", err
+		}
+		m.log(id, "enhanced prompt ready in %s: %q", roundDur(time.Since(start)), p)
+		return p, nil
+	}
+	return job.Prompt, nil
 }
 
 // roundDur trims a duration to milliseconds for readable log lines.

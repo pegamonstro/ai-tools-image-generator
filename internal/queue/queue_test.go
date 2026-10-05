@@ -35,10 +35,12 @@ func testOpts(t *testing.T) Options {
 		t.Fatal(err)
 	}
 	return Options{
-		Genres:   testCatalog(),
-		Store:    s,
-		Generate: func(ctx context.Context, prompt, size string) ([]byte, error) { return []byte("PNG"), nil },
-		Chat:     func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+		Genres: testCatalog(),
+		Store:  s,
+		Ops: ImageOps{
+			Generate: func(ctx context.Context, prompt, size string) ([]byte, error) { return []byte("PNG"), nil },
+		},
+		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
 	}
 }
 
@@ -111,7 +113,7 @@ func TestEnhanceJobCompletes(t *testing.T) {
 
 func TestGenerateErrorFailsJob(t *testing.T) {
 	opts := testOpts(t)
-	opts.Generate = func(ctx context.Context, prompt, size string) ([]byte, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string) ([]byte, error) {
 		return nil, fmt.Errorf("lattice down")
 	}
 	m := New(opts)
@@ -126,7 +128,7 @@ func TestSingleSlotSerializes(t *testing.T) {
 	var active int32
 	release := make(chan struct{})
 	opts := testOpts(t)
-	opts.Generate = func(ctx context.Context, prompt, size string) ([]byte, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string) ([]byte, error) {
 		n := atomic.AddInt32(&active, 1)
 		if n > 1 {
 			t.Errorf("two generations ran concurrently")
@@ -200,5 +202,89 @@ func TestJobLogsStreamAndReplay(t *testing.T) {
 	}
 	if len(replayed) < len(logs) {
 		t.Fatalf("replay got %d logs, want >= %d", len(replayed), len(logs))
+	}
+}
+
+func editOps() ImageOps {
+	return ImageOps{
+		Generate: func(ctx context.Context, prompt, size string) ([]byte, error) { return []byte("PNG"), nil },
+		Edit:     func(ctx context.Context, prompt, size, img string, strength float64) ([]byte, error) { return []byte("PNG"), nil },
+		Inpaint:  func(ctx context.Context, prompt, img, mask string) ([]byte, error) { return []byte("PNG"), nil },
+		Blend:    func(ctx context.Context, prompt, size string, imgs []string, ws []float64) ([]byte, error) { return []byte("PNG"), nil },
+	}
+}
+
+func TestSubmitUnknownMode(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "nope"}); err == nil {
+		t.Fatal("expected error for unknown mode")
+	}
+}
+
+func TestSubmitEditMissingImage(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "edit", Prompt: "x", Size: "512x512"}); err == nil {
+		t.Fatal("expected error for edit without image")
+	}
+}
+
+func TestSubmitInpaintMissingMask(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "inpaint", Prompt: "x", Image: "aW1n"}); err == nil {
+		t.Fatal("expected error for inpaint without mask")
+	}
+}
+
+func TestSubmitBlendNoImages(t *testing.T) {
+	m := New(testOpts(t))
+	if _, err := m.Submit(SubmitRequest{Mode: "blend", Prompt: "x", Size: "512x512"}); err == nil {
+		t.Fatal("expected error for blend without reference images")
+	}
+}
+
+func TestEditJobCompletes(t *testing.T) {
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Mode: "edit", Prompt: "make it snow", Size: "512x512", Image: "aW1n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Mode != "edit" || j.Prompt != "make it snow" {
+		t.Fatalf("mode=%q prompt=%q", j.Mode, j.Prompt)
+	}
+}
+
+func TestEditJobDispatchCallsEdit(t *testing.T) {
+	var called bool
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	opts.Ops.Edit = func(ctx context.Context, prompt, size, img string, strength float64) ([]byte, error) {
+		called = true
+		if strength != 0.4 {
+			t.Fatalf("default strength = %v, want 0.4", strength)
+		}
+		return []byte("PNG"), nil
+	}
+	m := New(opts)
+	id, _ := m.Submit(SubmitRequest{Mode: "edit", Prompt: "p", Size: "512x512", Image: "aW1n"})
+	waitFor(t, m, id, "done")
+	if !called {
+		t.Fatal("Edit op was not called")
+	}
+}
+
+func TestInpaintJobCompletes(t *testing.T) {
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Mode: "inpaint", Prompt: "add a cat", Image: "aW1n", Mask: "bWFzaw=="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Mode != "inpaint" {
+		t.Fatalf("mode = %q", j.Mode)
 	}
 }

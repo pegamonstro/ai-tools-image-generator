@@ -280,8 +280,8 @@ func main() {
 		log.Fatalf("startup: %v", err)
 	}
 	addr := envOr("LISTEN", ":8099")
-	log.Printf("img-gen config: lattice=%s image_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s",
-		cfg.LatticeURL, cfg.ImageURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr)
+	log.Printf("img-gen config: lattice=%s image_url=%s upscale_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s",
+		cfg.LatticeURL, cfg.ImageURL, cfg.UpscaleURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr)
 	log.Printf("img-gen listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, h))
 }

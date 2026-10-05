@@ -258,13 +258,12 @@ func TestEditJobCompletes(t *testing.T) {
 
 func TestEditJobDispatchCallsEdit(t *testing.T) {
 	var called bool
+	var gotStrength float64
 	opts := testOpts(t)
 	opts.Ops = editOps()
 	opts.Ops.Edit = func(ctx context.Context, prompt, size, img string, strength float64) ([]byte, error) {
 		called = true
-		if strength != 0.4 {
-			t.Fatalf("default strength = %v, want 0.4", strength)
-		}
+		gotStrength = strength
 		return []byte("PNG"), nil
 	}
 	m := New(opts)
@@ -272,6 +271,9 @@ func TestEditJobDispatchCallsEdit(t *testing.T) {
 	waitFor(t, m, id, "done")
 	if !called {
 		t.Fatal("Edit op was not called")
+	}
+	if gotStrength != 0.4 {
+		t.Fatalf("default strength = %v, want 0.4", gotStrength)
 	}
 }
 

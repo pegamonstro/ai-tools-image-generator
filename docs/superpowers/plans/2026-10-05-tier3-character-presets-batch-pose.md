@@ -491,7 +491,9 @@ Record: does it succeed, download the model, and produce an edge-following image
 ```
 Record: does mflux accept a custom model + `--base-model dev-controlnet-canny` and apply canny conditioning, or does it error / ignore the conditioning?
 
-- [ ] **Step 3: Record the ruling** — in the plan ledger, note the chosen invocation and the censored-vs-uncensored outcome. The sidecar `CONTROLNET_MODEL` default and the `--base-model` flag (if needed) in Task 7 follow this ruling.
+- [x] **Step 3: Record the ruling** — in the plan ledger, note the chosen invocation and the censored-vs-uncensored outcome. The sidecar `CONTROLNET_MODEL` default and the `--base-model` flag (if needed) in Task 7 follow this ruling.
+
+> **RULING (2026-10-05):** Pose runs on the **uncensored Persephone** model. The plan's Step 2 assumption was wrong in mechanism but right in outcome. `mflux-generate-controlnet`'s `main()` calls `_get_controlnet_model_config(args.model)`, which hard-codes `dev`/`schnell` and **ignores `--base-model` entirely** (the parser validates it, `main()` never reads it). The correct lever is `--model <local-path>`: the parser computes `model_path = --model` when it's not a built-in name, and `Flux1Controlnet(model_config=dev_controlnet_canny, model_path=<persephone-path>)` loads Persephone's 4-bit transformer as the base while `_load_controlnet_weights` downloads the InstantX canny adapter separately (it only reuses a local `transformer_controlnet/` if present — Persephone has none). Smoke-tested on M6: `mflux-generate-controlnet --model /Users/<you>/mflux-models/persephone-4bit --controlnet-image-path <ref> --controlnet-strength 0.7 --steps 20 --width 512 --height 512 --vae-tiling` → 512×512 PNG, 58s, peak 13.55 GB MLX. **Sidecar: `CONTROLNET_MODEL` defaults to `MODEL` (Persephone), no `--base-model`.**
 
 ---
 

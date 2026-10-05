@@ -10,13 +10,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"img-gen/internal/genres"
 	"img-gen/internal/lattice"
+	"img-gen/internal/models"
 	"img-gen/internal/prompting"
 	"img-gen/internal/queue"
 	"img-gen/internal/storage"
@@ -25,8 +25,6 @@ import (
 //go:embed static
 var staticFS embed.FS
 
-var idRe = regexp.MustCompile(`^[a-f0-9]{16}$`)
-
 type config struct {
 	LatticeURL    string
 	ImageURL      string
@@ -34,6 +32,8 @@ type config struct {
 	ReduxURL      string
 	DataDir       string
 	GenresFile    string
+	ModelsFile    string
+	ExportDir     string
 	EnhanceModel  string
 	EnhanceSystem string
 	ImageTimeout  time.Duration
@@ -47,6 +47,8 @@ func loadConfig() config {
 		ReduxURL:      envOr("REDUX_URL", ""),
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
+		ModelsFile:    envOr("MODELS_FILE", "./models.json"),
+		ExportDir:     envOr("EXPORT_DIR", ""),
 		EnhanceModel:  envOr("ENHANCE_MODEL", "local-brain"),
 		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality image-generation prompts. Respond with only the prompt text."),
 		ImageTimeout:  time.Duration(envIntOr("IMAGE_TIMEOUT_S", 7200)) * time.Second,
@@ -55,6 +57,10 @@ func loadConfig() config {
 
 func newHandler(cfg config) (http.Handler, error) {
 	catalog, err := genres.Load(cfg.GenresFile)
+	if err != nil {
+		return nil, err
+	}
+	modelCatalog, err := models.Load(cfg.ModelsFile)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +78,8 @@ func newHandler(cfg config) (http.Handler, error) {
 		return lat.Chat(ctx, cfg.EnhanceModel, msgs)
 	}
 	mgr := queue.New(queue.Options{
-		Genres:        catalog,
-		Store:         store,
+		Genres: catalog,
+		Store:  store,
 		Ops: queue.ImageOps{
 			Generate: lat.Generate,
 			Edit:     lat.Edit,
@@ -88,6 +94,10 @@ func newHandler(cfg config) (http.Handler, error) {
 
 	mux.HandleFunc("/api/genres", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, catalog)
+	})
+
+	mux.HandleFunc("/api/models", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, modelCatalog)
 	})
 
 	mux.HandleFunc("/api/jobs", func(w http.ResponseWriter, r *http.Request) {
@@ -132,11 +142,51 @@ func newHandler(cfg config) (http.Handler, error) {
 			return
 		}
 		id := strings.TrimSuffix(name, ".png")
-		if !idRe.MatchString(id) {
+		if !storage.ValidImageID(id) {
 			writeErr(w, http.StatusNotFound, "not found")
 			return
 		}
+		if r.URL.Query().Get("download") == "1" {
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+".png"))
+		}
 		http.ServeFile(w, r, filepath.Join(cfg.DataDir, "images", id+".png"))
+	})
+
+	mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			IDs  []string `json:"ids"`
+			Dest string   `json:"dest"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad body")
+			return
+		}
+		dest := req.Dest
+		if dest == "" {
+			dest = cfg.ExportDir
+		}
+		if dest == "" {
+			home, _ := os.UserHomeDir()
+			dest = filepath.Join(home, "Downloads", "img-gen")
+		}
+		if !filepath.IsAbs(dest) {
+			writeErr(w, http.StatusBadRequest, "dest must be an absolute path")
+			return
+		}
+		var copied, skipped []string
+		for _, id := range req.IDs {
+			dst, err := store.CopyImage(id, dest)
+			if err != nil {
+				skipped = append(skipped, id)
+				continue
+			}
+			copied = append(copied, dst)
+		}
+		writeJSON(w, map[string]any{"copied": copied, "skipped": skipped})
 	})
 
 	sub, err := fs.Sub(staticFS, "static")

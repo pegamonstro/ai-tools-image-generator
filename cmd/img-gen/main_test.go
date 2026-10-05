@@ -34,6 +34,19 @@ func writeGenres(t *testing.T) string {
 	return p
 }
 
+func writeModels(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "models.json")
+	content := `{
+  "models": [{"key": "dev", "label": "FLUX.1-dev", "value": "/m/dev"}],
+  "loras": [{"key": "uncensored", "label": "Uncensored", "value": "shauray/flux-uncensored-lora"}]
+}`
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // newTestHandler builds a handler backed by a fast mock lattice server.
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
@@ -166,6 +179,117 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("genres status = %d", r.StatusCode)
 	}
 	r.Body.Close()
+}
+
+func TestModelsAndExport(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/generate":
+			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/v1/chat/completions":
+			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mock.Close()
+
+	cfg := config{
+		LatticeURL:    mock.URL,
+		ImageURL:      mock.URL,
+		DataDir:       t.TempDir(),
+		GenresFile:    writeGenres(t),
+		ModelsFile:    writeModels(t),
+		EnhanceModel:  "flux-dev",
+		EnhanceSystem: "sys",
+		ImageTimeout:  5 * time.Second,
+	}
+	h, err := newHandler(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// /api/models returns the catalog.
+	r, err := http.Get(srv.URL + "/api/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cat struct {
+		Models []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"models"`
+		Loras []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"loras"`
+	}
+	json.NewDecoder(r.Body).Decode(&cat)
+	r.Body.Close()
+	if len(cat.Models) != 1 || cat.Models[0].Value != "/m/dev" {
+		t.Fatalf("models = %+v", cat.Models)
+	}
+	if len(cat.Loras) != 1 || cat.Loras[0].Value != "shauray/flux-uncensored-lora" {
+		t.Fatalf("loras = %+v", cat.Loras)
+	}
+
+	// Generate one image, then export it to a temp dir.
+	resp, err := http.Post(srv.URL+"/api/jobs", "application/json",
+		bytes.NewReader([]byte(`{"genre":"landscape","fields":{"setting":"a valley"},"size":"512x512","model":"/m/dev"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sub struct {
+		JobID string `json:"job_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&sub)
+	resp.Body.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var job struct {
+		Status string `json:"status"`
+		Model  string `json:"model"`
+	}
+	for time.Now().Before(deadline) {
+		r, err := http.Get(srv.URL + "/api/jobs/" + sub.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		json.NewDecoder(r.Body).Decode(&job)
+		r.Body.Close()
+		if job.Status == "done" || job.Status == "failed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if job.Status != "done" {
+		t.Fatalf("status = %q", job.Status)
+	}
+	if job.Model != "/m/dev" {
+		t.Fatalf("model = %q, want /m/dev", job.Model)
+	}
+
+	dest := filepath.Join(t.TempDir(), "out")
+	resp, err = http.Post(srv.URL+"/api/export", "application/json",
+		bytes.NewReader([]byte(`{"ids":["`+sub.JobID+`"],"dest":"`+dest+`"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exp struct {
+		Copied  []string `json:"copied"`
+		Skipped []string `json:"skipped"`
+	}
+	json.NewDecoder(resp.Body).Decode(&exp)
+	resp.Body.Close()
+	if len(exp.Copied) != 1 || len(exp.Skipped) != 0 {
+		t.Fatalf("export = %+v", exp)
+	}
+	if _, err := os.Stat(exp.Copied[0]); err != nil {
+		t.Fatalf("copied file missing: %v", err)
+	}
 }
 
 func TestSubmitBadGenre(t *testing.T) {

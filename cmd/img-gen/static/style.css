@@ -292,6 +292,45 @@ button.ghost:hover { color: var(--text); border-color: var(--muted); filter: non
   box-shadow: 0 10px 30px -14px rgba(0, 0, 0, 0.7);
 }
 
+/* ---------- Progress bar ---------- */
+
+.progress-bar {
+  height: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-fill, #progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #7c6cff, #b06cff);
+  transition: width 0.3s ease;
+}
+
+.progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+button.danger {
+  background: transparent;
+  border: 1px solid var(--err);
+  color: var(--err);
+  box-shadow: none;
+  padding: 4px 12px;
+  font-size: 0.76rem;
+}
+button.danger:hover { background: rgba(248, 113, 113, 0.12); border-color: var(--err); color: var(--err); filter: none; box-shadow: none; }
+
+.card .progress-bar { margin: 10px 0 8px; }
+.card button.danger { width: 100%; margin-bottom: 10px; }
+
 /* ---------- Log panel ---------- */
 
 .log-panel .panel-head { margin-bottom: 12px; }
@@ -374,6 +413,7 @@ button.ghost:hover { color: var(--text); border-color: var(--muted); filter: non
 }
 .badge.done { color: var(--ok); background: rgba(52, 211, 153, 0.14); }
 .badge.failed { color: var(--err); background: rgba(248, 113, 113, 0.14); }
+.badge.cancelled { color: var(--warn); background: rgba(251, 191, 36, 0.14); }
 .badge.queued, .badge.enhancing, .badge.generating { color: #c4b5fd; background: var(--accent-soft); }
 
 .card-meta {

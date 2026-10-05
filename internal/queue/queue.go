@@ -40,6 +40,8 @@ type Event struct {
 	Error  string    `json:"error,omitempty"`
 	Ts     time.Time `json:"ts"`
 	Log    string    `json:"log,omitempty"`
+	Step   int       `json:"step,omitempty"`
+	Total  int       `json:"total,omitempty"`
 }
 
 type LogLine struct {
@@ -53,6 +55,8 @@ type ImageOps struct {
 	Edit     func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec) ([]byte, error)
 	Inpaint  func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
 	Blend    func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
+	Progress func(ctx context.Context, mode string) (step, total int, err error)
+	Cancel   func(ctx context.Context, mode string) error
 }
 
 type Options struct {
@@ -72,24 +76,28 @@ type imageInputs struct {
 }
 
 type Manager struct {
-	mu     sync.Mutex
-	jobs   map[string]*storage.Job
-	logs   map[string][]LogLine
-	order  []string
-	subs   map[string][]chan Event
-	work   chan string
-	inputs map[string]imageInputs
-	opts   Options
+	mu        sync.Mutex
+	jobs      map[string]*storage.Job
+	logs      map[string][]LogLine
+	order     []string
+	subs      map[string][]chan Event
+	work      chan string
+	inputs    map[string]imageInputs
+	cancels   map[string]context.CancelFunc
+	cancelled map[string]bool
+	opts      Options
 }
 
 func New(opts Options) *Manager {
 	m := &Manager{
-		jobs:   map[string]*storage.Job{},
-		logs:   map[string][]LogLine{},
-		subs:   map[string][]chan Event{},
-		work:   make(chan string, 64),
-		inputs: map[string]imageInputs{},
-		opts:   opts,
+		jobs:      map[string]*storage.Job{},
+		logs:      map[string][]LogLine{},
+		subs:      map[string][]chan Event{},
+		work:      make(chan string, 64),
+		inputs:    map[string]imageInputs{},
+		cancels:   map[string]context.CancelFunc{},
+		cancelled: map[string]bool{},
+		opts:      opts,
 	}
 	go m.worker()
 	return m
@@ -246,6 +254,11 @@ func (m *Manager) run(id string) {
 	}
 	m.log(id, "start: mode=%s size=%s enhance=%t", job.Mode, job.Size, job.Enhance)
 
+	if m.isCancelled(id) {
+		m.finish(id, "cancelled", "")
+		return
+	}
+
 	var prompt string
 	var err error
 	if job.Mode == "generate" {
@@ -255,6 +268,10 @@ func (m *Manager) run(id string) {
 	}
 	if err != nil {
 		m.finish(id, "failed", err.Error())
+		return
+	}
+	if m.isCancelled(id) {
+		m.finish(id, "cancelled", "")
 		return
 	}
 	if job.Style != "" {
@@ -267,25 +284,27 @@ func (m *Manager) run(id string) {
 	job.Prompt = prompt
 	m.mu.Unlock()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.cancels[id] = cancel
+	m.mu.Unlock()
+
 	m.setStatus(id, "generating", "")
 	start := time.Now()
 	spec := storage.ModelSpec{Model: job.Model, Loras: job.Loras}
-	var png []byte
-	switch job.Mode {
-	case "edit":
-		m.log(id, "requesting edit (strength=%.2f)", inputs.Strength)
-		png, err = m.opts.Ops.Edit(context.Background(), prompt, job.Size, inputs.Image, inputs.Strength, spec)
-	case "inpaint":
-		m.log(id, "requesting inpaint")
-		png, err = m.opts.Ops.Inpaint(context.Background(), prompt, inputs.Image, inputs.Mask)
-	case "blend":
-		m.log(id, "requesting blend (%d reference image(s))", len(inputs.Images))
-		png, err = m.opts.Ops.Blend(context.Background(), prompt, job.Size, inputs.Images, inputs.Strengths)
-	default:
-		m.log(id, "requesting image from lattice (size=%s)", job.Size)
-		png, err = m.opts.Ops.Generate(context.Background(), prompt, job.Size, spec)
-	}
+
+	png, err := m.dispatch(ctx, id, job, inputs, prompt, spec)
+	cancel()
+	m.mu.Lock()
+	delete(m.cancels, id)
+	m.mu.Unlock()
+
 	if err != nil {
+		if m.isCancelled(id) {
+			m.log(id, "generation cancelled after %s", roundDur(time.Since(start)))
+			m.finish(id, "cancelled", "")
+			return
+		}
 		m.log(id, "generation failed after %s: %v", roundDur(time.Since(start)), err)
 		m.finish(id, "failed", err.Error())
 		return
@@ -304,6 +323,105 @@ func (m *Manager) run(id string) {
 	m.log(id, "saved image to %s", rel)
 
 	m.finish(id, "done", "")
+}
+
+// dispatch runs the mode-specific op in a goroutine so per-step progress can
+// be polled from the sidecar while the op blocks. It returns the PNG bytes or
+// the op error. The op receives ctx, so cancelling it aborts the HTTP request.
+func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inputs imageInputs, prompt string, spec storage.ModelSpec) ([]byte, error) {
+	type result struct {
+		png []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		var png []byte
+		var err error
+		switch job.Mode {
+		case "edit":
+			m.log(id, "requesting edit (strength=%.2f)", inputs.Strength)
+			png, err = m.opts.Ops.Edit(ctx, prompt, job.Size, inputs.Image, inputs.Strength, spec)
+		case "inpaint":
+			m.log(id, "requesting inpaint")
+			png, err = m.opts.Ops.Inpaint(ctx, prompt, inputs.Image, inputs.Mask)
+		case "blend":
+			m.log(id, "requesting blend (%d reference image(s))", len(inputs.Images))
+			png, err = m.opts.Ops.Blend(ctx, prompt, job.Size, inputs.Images, inputs.Strengths)
+		default:
+			m.log(id, "requesting image from lattice (size=%s)", job.Size)
+			png, err = m.opts.Ops.Generate(ctx, prompt, job.Size, spec)
+		}
+		done <- result{png, err}
+	}()
+
+	if m.opts.Ops.Progress == nil {
+		r := <-done
+		return r.png, r.err
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case r := <-done:
+			return r.png, r.err
+		case <-ticker.C:
+			step, total, perr := m.opts.Ops.Progress(context.Background(), job.Mode)
+			if perr == nil && total > 0 {
+				m.setProgress(id, step, total)
+			}
+		}
+	}
+}
+
+// setProgress records the latest step/total on the job and streams it to
+// subscribers as a progress event.
+func (m *Manager) setProgress(id string, step, total int) {
+	m.mu.Lock()
+	if j := m.jobs[id]; j != nil {
+		j.Step = step
+		j.Total = total
+	}
+	m.mu.Unlock()
+	m.broadcast(Event{JobID: id, Status: "generating", Ts: time.Now(), Step: step, Total: total})
+}
+
+func (m *Manager) isCancelled(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cancelled[id]
+}
+
+// Cancel stops a queued or in-flight job: it aborts the job's HTTP request via
+// its context, and asks the sidecar to kill its mflux subprocess so the
+// single-flight slot is freed for the next job. It is a no-op for terminal jobs.
+func (m *Manager) Cancel(id string) error {
+	m.mu.Lock()
+	job := m.jobs[id]
+	cfn := m.cancels[id]
+	status := ""
+	if job != nil {
+		status = job.Status
+	}
+	m.mu.Unlock()
+	if job == nil {
+		return fmt.Errorf("job not found")
+	}
+	switch status {
+	case "queued", "enhancing", "generating":
+	default:
+		return fmt.Errorf("job is %s", status)
+	}
+	m.mu.Lock()
+	m.cancelled[id] = true
+	m.mu.Unlock()
+	if cfn != nil {
+		cfn()
+	}
+	if m.opts.Ops.Cancel != nil {
+		_ = m.opts.Ops.Cancel(context.Background(), job.Mode)
+	}
+	return nil
 }
 
 // resolveGeneratePrompt builds the prompt for a genre/fields job (direct or
@@ -455,7 +573,7 @@ func (m *Manager) Subscribe(id string) (<-chan Event, func()) {
 		for _, l := range m.logs[id] {
 			ch <- Event{JobID: id, Status: l.Status, Ts: l.Ts, Log: l.Msg}
 		}
-		ch <- Event{JobID: id, Status: j.Status, Ts: time.Now()}
+		ch <- Event{JobID: id, Status: j.Status, Ts: time.Now(), Step: j.Step, Total: j.Total}
 	}
 	m.subs[id] = append(m.subs[id], ch)
 	m.mu.Unlock()

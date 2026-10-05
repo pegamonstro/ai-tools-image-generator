@@ -85,6 +85,8 @@ func newHandler(cfg config) (http.Handler, error) {
 			Edit:     lat.Edit,
 			Inpaint:  lat.Inpaint,
 			Blend:    lat.Blend,
+			Progress: lat.Progress,
+			Cancel:   lat.Cancel,
 		},
 		Chat:          chatFn,
 		EnhanceSystem: cfg.EnhanceSystem,
@@ -125,6 +127,18 @@ func newHandler(cfg config) (http.Handler, error) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/jobs/")
 		if strings.HasSuffix(rest, "/events") {
 			handleSSE(w, r, mgr, strings.TrimSuffix(rest, "/events"))
+			return
+		}
+		if strings.HasSuffix(rest, "/cancel") {
+			if r.Method != http.MethodPost {
+				writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			if err := mgr.Cancel(strings.TrimSuffix(rest, "/cancel")); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, map[string]string{"status": "cancelling"})
 			return
 		}
 		j, ok := mgr.Get(rest)

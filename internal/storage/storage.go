@@ -35,6 +35,8 @@ type Job struct {
 	Model      string            `json:"model,omitempty"`
 	Loras      []LoraRef         `json:"loras,omitempty"`
 	Status     string            `json:"status"`
+	Step       int               `json:"-"` // in-flight diffusion step (transient, not persisted)
+	Total      int               `json:"-"` // total diffusion steps (transient, not persisted)
 	CreatedAt  time.Time         `json:"created_at"`
 	FinishedAt *time.Time        `json:"finished_at,omitempty"`
 	Error      string            `json:"error,omitempty"`

@@ -188,6 +188,71 @@ func TestSingleSlotSerializes(t *testing.T) {
 	waitFor(t, m, id2, "done")
 }
 
+func TestCancelStopsRunningJob(t *testing.T) {
+	started := make(chan struct{})
+	opts := testOpts(t)
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	opts.Ops.Cancel = func(ctx context.Context, mode string) error { return nil }
+	m := New(opts)
+	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
+
+	<-started
+	if err := m.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "cancelled")
+	if j.Error != "" {
+		t.Fatalf("cancelled job should have empty error, got %q", j.Error)
+	}
+}
+
+func TestCancelTerminalJobFails(t *testing.T) {
+	m := New(testOpts(t))
+	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
+	waitFor(t, m, id, "done")
+	if err := m.Cancel(id); err == nil {
+		t.Fatal("expected error cancelling a done job")
+	}
+}
+
+func TestProgressEventsStream(t *testing.T) {
+	release := make(chan struct{})
+	opts := testOpts(t)
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec) ([]byte, error) {
+		<-release
+		return []byte("PNG"), nil
+	}
+	opts.Ops.Progress = func(ctx context.Context, mode string) (int, int, error) {
+		return 7, 25, nil
+	}
+	m := New(opts)
+	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
+
+	ch, cancel := m.Subscribe(id)
+	defer cancel()
+
+	// The 500ms poller should emit a progress event while generation blocks.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Total > 0 && ev.Step > 0 {
+				goto sawProgress
+			}
+		case <-deadline:
+			close(release)
+			t.Fatal("no progress event within 2s")
+		}
+	}
+sawProgress:
+	close(release)
+	waitFor(t, m, id, "done")
+}
+
 func TestSubscribeGetsInitialStatus(t *testing.T) {
 	m := New(testOpts(t))
 	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512"})

@@ -123,6 +123,7 @@ async function init() {
   };
   renderMode();
   $('generate').onclick = generate;
+  $('cancel').onclick = () => cancelJob();
   $('clear-log').onclick = () => { logEl().innerHTML = ''; };
   loadHistory();
 }
@@ -418,7 +419,11 @@ function stream(id) {
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.log) appendLog(ev.ts || new Date(), ev.status || 'info', ev.log);
+    if (ev.step != null && ev.total > 0) {
+      updateProgress(id, ev.step, ev.total);
+    }
     if (ev.status === 'done') {
+      showProgress(false);
       setStatus('complete', 'ok');
       showImage(id);
       loadHistory();
@@ -426,13 +431,22 @@ function stream(id) {
       activeJobId = null;
       $('generate').disabled = false;
     } else if (ev.status === 'failed') {
+      showProgress(false);
       setStatus('failed' + (ev.error ? ': ' + ev.error : ''), 'err');
+      loadHistory();
+      es.close();
+      activeJobId = null;
+      $('generate').disabled = false;
+    } else if (ev.status === 'cancelled') {
+      showProgress(false);
+      setStatus('cancelled', 'warn');
       loadHistory();
       es.close();
       activeJobId = null;
       $('generate').disabled = false;
     } else if (ev.status) {
       setStatus(ev.status, 'pending');
+      showProgress(true, ev.status === 'generating' ? 'generating…' : ev.status + '…');
     }
   };
   es.onerror = () => { /* generation can take a long time; keep the stream open */ };
@@ -440,7 +454,49 @@ function stream(id) {
 
 function showImage(id) {
   $('result').hidden = false;
+  $('image').hidden = false;
   $('image').src = '/api/images/' + id + '.png';
+}
+
+// showProgress reveals the Result panel's progress bar (and hides any previous
+// image) during a job, or restores the image when the job ends.
+function showProgress(show, label) {
+  const wrap = $('progress-wrap');
+  if (show) {
+    $('result').hidden = false;
+    $('image').hidden = true;
+    wrap.hidden = false;
+    if (label) $('progress-text').textContent = label;
+  } else {
+    wrap.hidden = true;
+    $('image').hidden = false;
+  }
+}
+
+// updateProgress fills the Result bar for the active job and any matching
+// in-flight history card.
+function updateProgress(id, step, total) {
+  const pct = total > 0 ? Math.round((step / total) * 100) : 0;
+  if (id === activeJobId) {
+    $('progress-fill').style.width = pct + '%';
+    $('progress-text').textContent = `step ${step} of ${total} (${pct}%)`;
+  }
+  const card = document.querySelector('.card[data-id="' + id + '"]');
+  if (card) {
+    const fill = card.querySelector('.progress-fill');
+    if (fill) fill.style.width = pct + '%';
+  }
+}
+
+async function cancelJob(id) {
+  id = id || activeJobId;
+  if (!id) return;
+  setStatus('cancelling…', 'pending');
+  try {
+    await jsonFetch('/api/jobs/' + id + '/cancel', { method: 'POST' });
+  } catch (e) {
+    setStatus('cancel error: ' + e.message, 'err');
+  }
 }
 
 async function loadHistory() {
@@ -462,6 +518,8 @@ async function loadHistory() {
   for (const j of jobs) {
     const card = document.createElement('div');
     card.className = 'card ' + j.status;
+    card.dataset.id = j.id;
+    const inflight = j.status === 'queued' || j.status === 'enhancing' || j.status === 'generating';
     const head = document.createElement('div');
     head.className = 'card-head';
     const title = document.createElement('div');
@@ -489,6 +547,22 @@ async function loadHistory() {
     meta.className = 'card-meta';
     meta.textContent = [j.model, (j.loras && j.loras.length ? j.loras.map(l => l.name).join(', ') : ''), j.style].filter(Boolean).join(' · ');
     if (meta.textContent) card.appendChild(meta);
+
+    if (inflight) {
+      const prog = document.createElement('div');
+      prog.className = 'progress-bar';
+      const fill = document.createElement('div');
+      fill.className = 'progress-fill';
+      prog.appendChild(fill);
+      card.appendChild(prog);
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'danger';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = () => cancelJob(j.id);
+      card.appendChild(cancelBtn);
+    }
 
     const acts = document.createElement('div');
     acts.className = 'card-actions';

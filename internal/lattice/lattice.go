@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
@@ -100,6 +101,79 @@ func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []str
 		return nil, err
 	}
 	return c.postImage(ctx, "/redux", body)
+}
+
+// statusResp is the sidecar's GET /status payload.
+type statusResp struct {
+	State     string `json:"state"`
+	Step      int    `json:"step"`
+	Total     int    `json:"total"`
+	Cancelled bool   `json:"cancelled"`
+}
+
+// sidecarForMode resolves the sidecar base URL for a job mode, mirroring the
+// URL selection postImage uses (fill/redux may live on a different host).
+func (c *Client) sidecarForMode(mode string) string {
+	switch mode {
+	case "inpaint":
+		if c.FillURL != "" {
+			return c.FillURL
+		}
+	case "blend":
+		if c.ReduxURL != "" {
+			return c.ReduxURL
+		}
+	}
+	return c.ImageURL
+}
+
+// Progress polls the sidecar's /status endpoint and returns the in-flight
+// job's step/total. It returns (0, 0, nil) when the sidecar is idle. The poll
+// uses a short timeout so a dead sidecar never stalls the queue loop.
+func (c *Client) Progress(ctx context.Context, mode string) (int, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode)+"/status", nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("mflux status: %s", resp.Status)
+	}
+	var sr statusResp
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return 0, 0, err
+	}
+	if sr.State != "running" || sr.Total <= 0 {
+		return 0, 0, nil
+	}
+	return sr.Step, sr.Total, nil
+}
+
+// Cancel asks the sidecar to terminate its in-flight mflux subprocess and
+// release its single-flight lock. It is a no-op when the sidecar is idle.
+func (c *Client) Cancel(ctx context.Context, mode string) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.sidecarForMode(mode)+"/cancel", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("mflux cancel: %s: %s", resp.Status, msg)
+	}
+	return nil
 }
 
 // postImage sends one sidecar request and decodes the returned base64 PNG.

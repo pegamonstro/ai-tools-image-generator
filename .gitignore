@@ -8,3 +8,4 @@ training/datasets/
 training/out/
 training/*.safetensors
 training/*.train.json
+.claude/

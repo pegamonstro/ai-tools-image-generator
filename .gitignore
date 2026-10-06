@@ -7,7 +7,7 @@ presets.json
 training/datasets/
 training/out/
 training/*.safetensors
-training/*.train.json
-training/*.train.*.json
-training/__pycache__/
+training/**/*.train.json
+training/**/*.train.*.json
+**/__pycache__/
 .claude/

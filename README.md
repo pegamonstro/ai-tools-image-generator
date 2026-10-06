@@ -15,12 +15,35 @@ genre-keyed editable field sets and an async single-slot queue.
 Image generation talks to the mflux sidecar (`IMAGE_URL`), prompt enhancement
 talks to the lattice frontend's chat endpoint (`LATTICE_FRONTEND_URL`).
 
-Env vars: `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`), `IMAGE_URL`
-(default `http://127.0.0.1:8899`), `DATA_DIR` (`./data`), `GENRES_FILE`
-(`./genres.json`), `MODELS_FILE` (`./models.json`), `EXPORT_DIR` (defaults to
-`~/Downloads/img-gen`), `ENHANCE_MODEL` (`huihui_ai/dolphin3-abliterated:latest`),
-`ENHANCE_SYSTEM`,
-`IMAGE_TIMEOUT_S` (`7200`), `LISTEN` (`:8099`).
+Env vars: `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`) — the lattice
+frontend's chat endpoint used for prompt enhancement; `IMAGE_URL` (default
+`http://127.0.0.1:8899`) — the mflux sidecar handling generation; `FILL_URL` and
+`REDUX_URL` — sidecar endpoints for inpaint/outpaint when served separately;
+`UPSCALE_URL` — the Real-ESRGAN sidecar; `IMG_GEN_TOKEN` — require a bearer
+token on `/api/*` (see "Agent API" below); `DATA_DIR` (`./data`), `GENRES_FILE`
+(`./genres.json`), `MODELS_FILE` (`./models.json`), `PRESETS_FILE`
+(`./presets.json`), `EXPORT_DIR`, `ENHANCE_MODEL`
+(`huihui_ai/dolphin3-abliterated:latest`), `ENHANCE_SYSTEM`, `IMAGE_TIMEOUT_S`
+(`7200`), `LISTEN` (`:8099`).
+
+The sidecar URLs and any private hosts are passed only on the install command
+line or in the environment — never committed (see `deploy/` for the
+placeholder-based install scripts).
+
+## Modes
+
+The composer drives the mflux sidecar in several modes:
+
+- **Generate** — text-to-image from the genre template.
+- **Edit** — img2img on an existing generation (from the History gallery).
+- **Inpaint** — mask a region and regenerate what's inside (`FILL_URL`;
+  FLUX.1-Fill-dev).
+- **Outpaint** — extend an image beyond its frame with an FLUX Redux encoder
+  (`REDUX_URL`).
+- **Blend** — compose from multiple reference images.
+- **Upscale** — enhance a finished image with Real-ESRGAN (`UPSCALE_URL`).
+- **Pose** — ControlNet-guided generation: submit a pose/edge reference and
+  the composition is honored in the output.
 
 ## Adding a genre
 

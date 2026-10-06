@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Go stdlib only (no external deps beyond `img-gen/internal/*`); module `img-gen`, build with `go build -o bin/img-gen ./cmd/img-gen`, test with `go test ./...`.
-- **No real usernames/hostnames/IPs in tracked files.** Catalog templates ship as `*.json.example` with `igor`/paths; real `models.json`/`presets.json` are gitignored. The M6 sidecar IP is passed at install time (`IMAGE_URL=... ./deploy/install-macos.sh`), never committed.
+- **No real usernames/hostnames/IPs in tracked files.** Catalog templates ship as `*.json.example` with placeholder paths (`/Users/<you>/…`); real `models.json`/`presets.json` are gitignored. The sidecar IP is passed at install time (`IMAGE_URL=... ./deploy/install-macos.sh`), never committed.
 - Modes are validated server-side in `queue.Submit`; every new mode gets a `case` in that switch and an `ImageOps` func.
 - The sidecar is **stdlib-only Python** (system `/usr/bin/python3`); it shells out to mflux CLIs. New endpoints follow `/generate`'s single-flight + b64-in/b64-out shape.
 - mflux LoRA/ControlNet format constraint: BFL/Diffusers/LoKR OK, **XLabs not**; ControlNet built-ins are Canny/Depth (see pose spike, Task 6).

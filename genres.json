@@ -38,7 +38,7 @@
         {"key": "include_wildlife", "label": "Wildlife", "type": "boolean",
          "true_text": ", with a few birds in the distance", "false_text": ""}
       ],
-      "prompt_template": "A landscape image: {setting}, {time_of_day}, {weather} weather, {season}, focal point {object}, mood {mood}{include_wildlife}.",
+      "prompt_template": "A landscape image: {setting}, {time_of_day}, {?weather:{weather} weather, }{season}, focal point {object}{?mood:, mood {mood}}{include_wildlife}.",
       "sizes": ["1024x576", "768x512", "512x512"]
     },
     "portrait": {
@@ -56,7 +56,7 @@
         {"key": "setting", "label": "Setting", "type": "text",
          "placeholder": "wooden boat interior"}
       ],
-      "prompt_template": "A portrait of {subject}, age {age}, {expression} expression, {lighting} lighting, in {setting}.",
+      "prompt_template": "A portrait of {subject}{?age:, age {age}}{?expression:, {expression} expression}{?lighting:, {lighting} lighting}{?setting:, in {setting}}.",
       "sizes": ["512x768", "1024x1536", "512x512"]
     },
     "product": {
@@ -80,7 +80,7 @@
         {"key": "notes", "label": "Extra details", "type": "textarea",
          "placeholder": "steam rising from the mug"}
       ],
-      "prompt_template": "A product shot of {product}, {material}, on a {backdrop} backdrop, {lighting} lighting, {camera_angle}° angle{include_shadow}. {notes}",
+      "prompt_template": "A product shot of {product}{?material:, {material}}{?backdrop:, on a {backdrop} backdrop}{?lighting:, {lighting} lighting}{?camera_angle:, {camera_angle}° angle}{include_shadow}{?notes:, {notes}}.",
       "sizes": ["512x512", "1024x1024"]
     },
     "scene": {
@@ -101,7 +101,7 @@
          "options": ["wide shot", "medium shot", "close-up", "aerial", "first-person"],
          "default": "wide shot"}
       ],
-      "prompt_template": "A {camera} scene: {description}. Mood: {mood}. {time_of_day}, {weather} weather.",
+      "prompt_template": "A {?camera:{camera} }scene: {description}. {?mood:Mood: {mood}. }{?time_of_day:{time_of_day}. }{?weather:{weather} weather.}",
       "sizes": ["1024x1024", "1024x576", "768x512", "512x768"]
     },
     "character": {
@@ -119,7 +119,7 @@
         {"key": "setting", "label": "Setting", "type": "text",
          "placeholder": "a smoke-filled battlefield"}
       ],
-      "prompt_template": "A character: {subject}, wearing {outfit}, {pose}, {expression} expression, in {setting}.",
+      "prompt_template": "A character: {subject}{?outfit:, wearing {outfit}}{?pose:, {pose}}{?expression:, {expression} expression}{?setting:, in {setting}}.",
       "sizes": ["512x768", "1024x1536", "512x512"]
     },
     "illustration": {
@@ -137,7 +137,7 @@
         {"key": "background", "label": "Background", "type": "text",
          "placeholder": "a cozy library"}
       ],
-      "prompt_template": "An illustration of {subject}, {art_style} style, {line_quality}, {palette} palette, with {background} background.",
+      "prompt_template": "An illustration of {subject}{?art_style:, {art_style} style}{?line_quality:, {line_quality}}{?palette:, {palette} palette}{?background:, with {background} background}.",
       "sizes": ["1024x1024", "768x512", "512x768"]
     },
     "architecture": {
@@ -158,7 +158,7 @@
          "options": ["daylight", "golden hour", "night", "overcast"],
          "default": "golden hour"}
       ],
-      "prompt_template": "An architectural photograph of {building}, {style_era} style, {material}, {camera_angle} view, {lighting} lighting.",
+      "prompt_template": "An architectural photograph of {building}{?style_era:, {style_era} style}{?material:, {material}}{?camera_angle:, {camera_angle} view}{?lighting:, {lighting} lighting}.",
       "sizes": ["1024x576", "1024x1024", "768x512"]
     },
     "food": {
@@ -177,7 +177,7 @@
         {"key": "include_steam", "label": "Steam", "type": "boolean",
          "true_text": ", with visible steam rising", "false_text": ""}
       ],
-      "prompt_template": "A food photograph of {dish}, {camera_angle}, {lighting} lighting, with {props}{include_steam}.",
+      "prompt_template": "A food photograph of {dish}{?camera_angle:, {camera_angle}}{?lighting:, {lighting} lighting}{?props:, with {props}}{include_steam}.",
       "sizes": ["1024x1024", "512x512", "768x512"]
     },
     "wildlife": {
@@ -196,7 +196,7 @@
          "options": ["telephoto close-up", "wide habitat shot", "eye level", "low angle"],
          "default": "telephoto close-up"}
       ],
-      "prompt_template": "A wildlife photograph of {animal} in {habitat}, {action}, {time_of_day}, {camera}.",
+      "prompt_template": "A wildlife photograph of {animal}{?habitat: in {habitat}}{?action:, {action}}{?time_of_day:, {time_of_day}}{?camera:, {camera}}.",
       "sizes": ["1024x1024", "1024x576", "768x512"]
     },
     "abstract": {
@@ -215,7 +215,7 @@
         {"key": "mood", "label": "Mood", "type": "text",
          "placeholder": "serene and expansive"}
       ],
-      "prompt_template": "An abstract image about {theme}, {palette} palette, {composition} composition, {texture} texture, {mood} mood.",
+      "prompt_template": "An abstract image about {theme}{?palette:, {palette} palette}{?composition:, {composition} composition}{?texture:, {texture} texture}{?mood:, {mood} mood}.",
       "sizes": ["1024x1024", "768x512", "512x768"]
     }
   }

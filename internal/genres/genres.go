@@ -34,9 +34,12 @@ type Field struct {
 }
 
 type Genre struct {
-	Label          string   `json:"label"`
-	Description    string   `json:"description,omitempty"`
-	Fields         []Field  `json:"fields"`
+	Label       string  `json:"label"`
+	Description string  `json:"description,omitempty"`
+	Fields      []Field `json:"fields"`
+	// PromptTemplate: {key} tokens fall back to empty; a clause
+	// {?key: fragment} renders the fragment (surrounding literals included)
+	// only when the key has a submitted value.
 	PromptTemplate string   `json:"prompt_template"`
 	Sizes          []string `json:"sizes"`
 }

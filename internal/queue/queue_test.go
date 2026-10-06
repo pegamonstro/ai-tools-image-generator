@@ -714,6 +714,57 @@ func TestSubmitRejectsUnknownPreset(t *testing.T) {
 	}
 }
 
+func TestSubmitComposesOptionalClauses(t *testing.T) {
+	cat := &genres.Catalog{
+		Version: 1,
+		Genres: map[string]genres.Genre{
+			"portrait": {
+				Label: "Portrait",
+				Fields: []genres.Field{
+					{Key: "subject", Label: "Subject", Type: genres.FieldText, Required: true},
+					{Key: "lighting", Label: "Lighting", Type: genres.FieldText},
+				},
+				PromptTemplate: "A portrait of {subject}{?lighting:, {lighting} lighting}.",
+				Sizes:          []string{"512x512"},
+			},
+		},
+	}
+	var gotPrompt string
+	opts := testOpts(t)
+	opts.Genres = cat
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		gotPrompt = prompt
+		return []byte("PNG"), nil, nil
+	}
+	m := New(opts)
+
+	// Optional field unset: its literal words must not leak into the prompt.
+	id, err := m.Submit(SubmitRequest{
+		Genre: "portrait", Fields: map[string]string{"subject": "an archer"}, Size: "512x512",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	if gotPrompt != "A portrait of an archer." {
+		t.Fatalf("unset optional leaked: %q", gotPrompt)
+	}
+
+	// Optional field set: fragment renders.
+	id, err = m.Submit(SubmitRequest{
+		Genre: "portrait",
+		Fields: map[string]string{"subject": "an archer", "lighting": "soft"},
+		Size:   "512x512",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	if gotPrompt != "A portrait of an archer, soft lighting." {
+		t.Fatalf("set optional dropped: %q", gotPrompt)
+	}
+}
+
 func TestPresetTriggerPrefixApplied(t *testing.T) {
 	pc := &presets.Catalog{Presets: []presets.Preset{{
 		Key: "aria", Trigger: "aria, silver hair",

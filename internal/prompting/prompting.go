@@ -22,10 +22,15 @@ type FieldValues map[string]string
 
 var tokenRe = regexp.MustCompile(`\{([a-z0-9_]+)\}`)
 
+var spanKeyRe = regexp.MustCompile(`^[a-z0-9_]+$`)
+
 // Direct fills the template from values, dropping empty optional fields and
-// tidying leftover separators.
+// tidying leftover separators. A plain {key} token falls back to empty; a
+// clause {?key: fragment} renders the fragment only when the key has a
+// value, and vanishes — surrounding literals included — when it doesn't.
 func Direct(template string, values FieldValues) string {
-	out := tokenRe.ReplaceAllStringFunc(template, func(m string) string {
+	out := expandOptionals(template, values)
+	out = tokenRe.ReplaceAllStringFunc(out, func(m string) string {
 		key := m[1 : len(m)-1]
 		if v := strings.TrimSpace(values[key]); v != "" {
 			return v
@@ -33,6 +38,64 @@ func Direct(template string, values FieldValues) string {
 		return "\x00"
 	})
 	return tidy(out)
+}
+
+const spanOpen = "{?"
+
+// expandOptionals renders {?key: fragment} spans. The fragment may contain
+// plain {tokens} (their braces are balanced while scanning) but no nested
+// optional clauses. A span whose key has no value (or a malformed one) is
+// dropped whole / passed through literal respectively.
+func expandOptionals(template string, values FieldValues) string {
+	var b strings.Builder
+	for i := 0; i < len(template); {
+		if !strings.HasPrefix(template[i:], spanOpen) {
+			b.WriteByte(template[i])
+			i++
+			continue
+		}
+		key, frag, next, ok := parseOption(template, i)
+		if !ok {
+			b.WriteByte(template[i])
+			i++
+			continue
+		}
+		if strings.TrimSpace(values[key]) != "" {
+			b.WriteString(frag)
+		}
+		i = next
+	}
+	return b.String()
+}
+
+// parseOption reads a {?key: fragment} span starting at i (at the open
+// brace). It returns the key, the fragment, the index just past the span's
+// closing brace, and whether the span syntactically closes at all.
+func parseOption(template string, i int) (key, frag string, next int, ok bool) {
+	start := i + len(spanOpen)
+	open := template[start:]
+	colon := strings.IndexByte(open, ':')
+	if colon <= 0 {
+		return "", "", 0, false
+	}
+	key = open[:colon]
+	if !spanKeyRe.MatchString(key) {
+		return "", "", 0, false
+	}
+	fragStart := start + colon + 1
+	depth := 1 // matching the brace behind us
+	for j := fragStart; j < len(template); j++ {
+		switch template[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return key, template[fragStart:j], j + 1, true
+			}
+		}
+	}
+	return "", "", 0, false
 }
 
 func tidy(s string) string {
@@ -43,6 +106,7 @@ func tidy(s string) string {
 		s = strings.ReplaceAll(s, " \x00", "")
 		s = strings.ReplaceAll(s, "\x00 ", "")
 		s = strings.ReplaceAll(s, "\x00", "")
+		s = strings.ReplaceAll(s, "  ", " ")
 		s = strings.ReplaceAll(s, " ,", ",")
 		s = strings.ReplaceAll(s, ",,", ",")
 		if s == n {

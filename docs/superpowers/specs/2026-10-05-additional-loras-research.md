@@ -43,14 +43,17 @@ Empirically verified this session against the running mflux sidecar:
 - **Multi-LoRA**: supported end-to-end (sidecar iterates the `loras` list into
   repeated `--lora` flags; the frontend already stacks rows).
 
-### Open item — repeat-download latency
+### Resolve: repeat-download latency — pre-downloaded local paths
 
-The LoRA did not appear under a `models--*` dir in `~/.cache/huggingface/hub`,
-so it is unconfirmed whether mflux caches LoRA weights persistently or re-fetches
-them each request. If re-fetching proves true, mitigate by pre-downloading each
-curated LoRA to a local dir and referencing the **local path** in `models.json`
-(instead of the HF repo id). Verify before committing to repo-id references for
-the default catalog.
+mflux did not persist HF downloads under `models--*` in the HF cache, so
+every repo-id reference would re-fetch per request. **Resolved by
+convention: the default catalog references pre-downloaded local files.**
+The two curated alvdansen LoRAs are downloaded to the sidecar host
+(`illustration_1.0.safetensors`, `anime_style_v1.safetensors`, each 430 MB)
+and their `models.json` entries point at those local paths. Format was
+verified before installation (safetensors keys `transformer.…lora_A/lora_B`,
+no `lora_unet_*`). Only *free-text* HF repo ids — typed at request time —
+still fall back to mflux's per-request fetch.
 
 ## Curated LoRA shortlist
 
@@ -98,8 +101,9 @@ format), and **already verified working on M6**.
 2. **Format gate** — before adding any Civitai LoRA, confirm it is *not* XLabs
    (a quick `/generate` with the LoRA errors clearly if unsupported, or inspect
    the safetensors keys for `lora_unet_*` prefixes).
-3. **Caching** — resolve the repeat-download question; prefer pre-downloaded
-   local paths for the default catalog if mflux does not persist HF LoRA downloads.
+3. **Caching (done)** — resolved: the default catalog uses pre-downloaded
+   local paths (see "Resolve" above). `models.json.example` documents both
+   forms: a repo id works for ad-hoc use, a local path avoids re-fetching.
 4. **Tier 3 tie-in** — the "character preset" feature naturally bundles a base
    model + style LoRA + scale + trigger word + negative prompt into one named,
    one-click preset. This is where these LoRAs get productized; carry this list

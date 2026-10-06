@@ -4,6 +4,7 @@
     { "key": "dev", "label": "FLUX.1-dev", "value": "/Users/<you>/mflux-models/flux-dev-4bit" }
   ],
   "loras": [
-    { "key": "uncensored", "label": "Uncensored (dev-trained)", "value": "shauray/flux-uncensored-lora" }
+    { "key": "uncensored", "label": "Uncensored (dev-trained)", "value": "shauray/flux-uncensored-lora" },
+    { "key": "illustration", "label": "Illustration 1.0 (broad styles)", "value": "/Users/<you>/mflux-models/loras/illustration_1.0.safetensors" }
   ]
 }

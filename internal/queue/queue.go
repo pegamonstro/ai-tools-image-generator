@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"img-gen/internal/genres"
+	"img-gen/internal/models"
 	"img-gen/internal/presets"
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
@@ -83,6 +84,7 @@ type ImageOps struct {
 type Options struct {
 	Genres        *genres.Catalog
 	Presets       *presets.Catalog
+	Models        *models.Catalog // catalog keys ("persephone") resolve to mflux values (paths/ids); raw values pass through
 	Store         *storage.Store
 	Ops           ImageOps
 	Chat          prompting.ChatFunc
@@ -273,6 +275,8 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		}
 	}
 
+	resolveModelValues(m, &req)
+
 	id := newID()
 	job := &storage.Job{
 		ID:             id,
@@ -326,6 +330,27 @@ func normalizeStrengths(ws []float64, n int) []float64 {
 		}
 	}
 	return out
+}
+
+// resolveModelValues maps catalog keys to mflux argument values, after the
+// preset merge so preset supplies can also carry keys. Raw values (paths,
+// HF ids) pass through; unknown keys pass through unchanged and fail later
+// at the sidecar with mflux's own "not found" error.
+func resolveModelValues(m *Manager, req *SubmitRequest) {
+	cat := m.opts.Models
+	if cat == nil {
+		return
+	}
+	if req.Model != "" {
+		if v, ok := cat.LookupModel(req.Model); ok {
+			req.Model = v
+		}
+	}
+	for i := range req.Loras {
+		if v, ok := cat.LookupLora(req.Loras[i].Name); ok {
+			req.Loras[i].Name = v
+		}
+	}
 }
 
 // normalizeLoras defaults a missing scale to 1.0 and clamps to [0,1].

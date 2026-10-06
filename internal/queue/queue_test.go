@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"img-gen/internal/genres"
+	"img-gen/internal/models"
 	"img-gen/internal/presets"
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
@@ -363,6 +364,72 @@ func TestSubmitRecordsModelAndLoras(t *testing.T) {
 	}
 	if len(j.Loras) != 1 || j.Loras[0].Name != "shauray/flux-uncensored-lora" || j.Loras[0].Scale != 1.0 {
 		t.Fatalf("loras = %+v (want default scale 1.0)", j.Loras)
+	}
+}
+
+func TestSubmitResolvesCatalogKeys(t *testing.T) {
+	opts := testOpts(t)
+	opts.Models = &models.Catalog{
+		Models: []models.Entry{{Key: "persephone", Value: "/m/persephone-4bit"}},
+		Loras:  []models.Entry{{Key: "lora-fnc", Value: "/m/loras/fnc.safetensors"}},
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+		Model: "persephone",
+		Loras: []storage.LoraRef{{Name: "lora-fnc", Scale: 0.8}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "/m/persephone-4bit" {
+		t.Fatalf("model key not resolved: %q", j.Model)
+	}
+	if len(j.Loras) != 1 || j.Loras[0].Name != "/m/loras/fnc.safetensors" {
+		t.Fatalf("lora key not resolved: %+v", j.Loras)
+	}
+	if j.Loras[0].Scale != 0.8 {
+		t.Fatalf("scale changed by resolution: %+v", j.Loras[0])
+	}
+}
+
+func TestSubmitPassesRawValuesAndUnknownKeysThrough(t *testing.T) {
+	opts := testOpts(t)
+	opts.Models = &models.Catalog{
+		Models: []models.Entry{{Key: "persephone", Value: "/m/persephone-4bit"}},
+		Loras:  []models.Entry{{Key: "lora-fnc", Value: "/m/loras/fnc.safetensors"}},
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+		Model: "huggingface/flux-dev",
+		Loras: []storage.LoraRef{{Name: "shauray/flux-uncensored-lora"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "huggingface/flux-dev" {
+		t.Fatalf("raw model value altered: %q", j.Model)
+	}
+	if len(j.Loras) != 1 || j.Loras[0].Name != "shauray/flux-uncensored-lora" {
+		t.Fatalf("raw lora value altered or unknown key mutated: %+v", j.Loras)
+	}
+}
+
+func TestSubmitNilCatalogSkipsResolution(t *testing.T) {
+	m := New(testOpts(t))
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+		Model: "persephone",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "persephone" {
+		t.Fatalf("model altered without catalog: %q", j.Model)
 	}
 }
 

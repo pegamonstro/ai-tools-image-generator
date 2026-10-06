@@ -91,6 +91,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	mgr := queue.New(queue.Options{
 		Genres:  catalog,
 		Presets: presetCatalog,
+		Models:  modelCatalog,
 		Store:   store,
 		Ops: queue.ImageOps{
 			Generate:   lat.Generate,

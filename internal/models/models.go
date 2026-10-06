@@ -33,3 +33,25 @@ func Load(path string) (*Catalog, error) {
 	}
 	return &c, nil
 }
+
+// LookupModel returns the mflux --model value for a catalog key.
+func (c *Catalog) LookupModel(key string) (string, bool) {
+	return lookup(c.Models, key)
+}
+
+// LookupLora returns the mflux --lora value (path or HF id) for a catalog key.
+func (c *Catalog) LookupLora(key string) (string, bool) {
+	return lookup(c.Loras, key)
+}
+
+func lookup(entries []Entry, key string) (string, bool) {
+	if key == "" {
+		return "", false
+	}
+	for _, e := range entries {
+		if e.Key == key {
+			return e.Value, true
+		}
+	}
+	return "", false
+}

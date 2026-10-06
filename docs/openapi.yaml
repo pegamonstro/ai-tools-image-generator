@@ -218,6 +218,12 @@ components:
         image_path:
           type: string
           description: Data-dir-relative PNG path; serve via GET /api/v1/images/{id}.png.
+        gen_id:
+          type: string
+          description: >
+            Sidecar-side generation id. Present once the sidecar learns the job
+            (mid-flight or from history); a restart re-attaches to this
+            generation's persisted result instead of failing the job.
     GenerateAndWaitRequest:
       allOf:
         - $ref: "#/components/schemas/SubmitRequest"

@@ -36,7 +36,9 @@ in the tempdir). The success response body is unchanged.
 
 New endpoint `GET /result/<id>`:
 
-- Auth: same gate as POST (`X-Mflux-Token` when `MFLUX_TOKEN` is set).
+- Auth: none, like the sidecar's other GET endpoints (`/health`, `/status` —
+  its convention gates POSTs only, and img-gen's client sends no token today,
+  so gating GETs would add no protection). Gen ids are uuid4, unguessable.
 - 200 `image/png` (raw bytes, not base64) when the file exists.
 - 404 otherwise. `/status` already exposes the running gen id — combined with
   `/result`, a client can distinguish "still running", "finished", and "lost".

@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"img-gen/internal/genres"
+	"img-gen/internal/lattice"
 	"img-gen/internal/models"
 	"img-gen/internal/presets"
 	"img-gen/internal/prompting"
@@ -38,7 +40,12 @@ func testCatalog() *genres.Catalog {
 
 func testOpts(t *testing.T) Options {
 	t.Helper()
-	s, err := storage.New(t.TempDir())
+	return testOptsAt(t, t.TempDir())
+}
+
+func testOptsAt(t *testing.T, dir string) Options {
+	t.Helper()
+	s, err := storage.New(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,8 +238,8 @@ func TestProgressEventsStream(t *testing.T) {
 		<-release
 		return []byte("PNG"), nil, nil
 	}
-	opts.Ops.Progress = func(ctx context.Context, mode string) (int, int, error) {
-		return 7, 25, nil
+	opts.Ops.Progress = func(ctx context.Context, mode string) (int, int, string, error) {
+		return 7, 25, "", nil
 	}
 	m := New(opts)
 	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
@@ -894,5 +901,282 @@ func TestRestoreCorruptHistoryStartsClean(t *testing.T) {
 	m := New(opts)
 	if _, ok := m.Get("a"); ok {
 		t.Fatal("corrupt history must not be restored")
+	}
+}
+
+func TestDispatchCapturesGenIDAndPersists(t *testing.T) {
+	release := make(chan struct{})
+	dir := t.TempDir()
+	opts := testOptsAt(t, dir)
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		<-release
+		return []byte("PNG"), nil, nil
+	}
+	opts.Ops.Progress = func(ctx context.Context, mode string) (int, int, string, error) {
+		return 3, 20, "gen7", nil
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The 500ms poller surfaces the sidecar's gen id and the job learns it.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		j, _ := m.Get(id)
+		if j.GenID == "gen7" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("gen id never captured, job=%+v", j)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(release)
+	j := waitFor(t, m, id, "done")
+	if j.GenID != "gen7" {
+		t.Fatalf("terminal job lost gen id: %q", j.GenID)
+	}
+
+	// Raw history lines: queued + one generating record with the gen id +
+	// terminal done. One capture only — repeated ticks must not re-append.
+	raw, err := os.ReadFile(filepath.Join(dir, "history.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []storage.Job
+	for _, ln := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var j storage.Job
+		if err := json.Unmarshal([]byte(ln), &j); err != nil {
+			t.Fatalf("history line: %v", err)
+		}
+		lines = append(lines, j)
+	}
+	if len(lines) != 3 || lines[0].Status != "queued" || lines[1].Status != "generating" || lines[2].Status != "done" {
+		t.Fatalf("want queued/generating/done lines, got %+v", lines)
+	}
+	if lines[1].GenID != "gen7" || lines[2].GenID != "gen7" {
+		t.Fatalf("gen id not persisted on generating/done records: %+v", lines)
+	}
+}
+
+func TestAttachRecoversResult(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{ID: "att", Genre: "landscape", Mode: "generate", Status: "generating", GenID: "gen42", CreatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptsAt(t, dir)
+	generateCalled := false
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		generateCalled = true
+		return []byte("PNG"), nil, nil
+	}
+	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+		if mode != "generate" || genID != "gen42" {
+			t.Errorf("Result(mode=%s genID=%s)", mode, genID)
+		}
+		return []byte("RECOVERED-PNG"), nil
+	}
+	m := New(opts)
+
+	j := waitFor(t, m, "att", "done")
+	if generateCalled {
+		t.Fatal("attach must recover without regenerating")
+	}
+	if j.ImagePath == "" {
+		t.Fatal("recovered image not saved to the gallery")
+	}
+	b, err := os.ReadFile(filepath.Join(dir, j.ImagePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "RECOVERED-PNG" {
+		t.Fatalf("recovered image content = %q", b)
+	}
+	hist, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := hist[len(hist)-1]
+	if last.ID != "att" || last.Status != "done" || last.ImagePath == "" {
+		t.Fatalf("terminal recovered record not persisted: %+v", last)
+	}
+}
+
+func TestAttachFailsWhenResultGone(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{ID: "att", Genre: "landscape", Mode: "generate", Status: "generating", GenID: "gen42", CreatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+		return nil, lattice.ErrResultNotFound
+	}
+	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+		return "", nil // sidecar idle: the generation is truly gone
+	}
+	m := New(opts)
+
+	j := waitFor(t, m, "att", "failed")
+	if !strings.Contains(j.Error, "restart") || !strings.Contains(j.Error, "submit the job again") {
+		t.Fatalf("should fail with the restart message, got %q", j.Error)
+	}
+	hist, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := hist[len(hist)-1]; last.ID != "att" || last.Status != "failed" {
+		t.Fatalf("failed record not persisted: %+v", last)
+	}
+}
+
+func TestAttachKeepsPollingWhileSidecarBusy(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{ID: "att", Genre: "landscape", Mode: "generate", Status: "generating", GenID: "gen42", CreatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	restore := fastAttach(t)
+	defer restore()
+	opts := testOptsAt(t, dir)
+	calls := 0
+	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+		calls++
+		if calls < 3 {
+			return nil, lattice.ErrResultNotFound // file appears only when mflux finishes
+		}
+		return []byte("LATE-PNG"), nil
+	}
+	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+		return "gen42", nil // our generation is still in flight
+	}
+	m := New(opts)
+
+	j := waitFor(t, m, "att", "done")
+	if calls < 3 {
+		t.Fatalf("attach gave up after %d polls", calls)
+	}
+	if j.ImagePath == "" {
+		t.Fatal("late-arriving result not saved")
+	}
+}
+
+// fastAttach shortens the attach loop's poll interval so tests finish in
+// milliseconds instead of minutes; window/cap stay at production values unless
+// a test overrides them separately.
+func fastAttach(t *testing.T) func() {
+	t.Helper()
+	oldPoll := attachPollInterval
+	attachPollInterval = 5 * time.Millisecond
+	return func() { attachPollInterval = oldPoll }
+}
+
+func TestAttachUnreachableWindowFails(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{ID: "att", Genre: "landscape", Mode: "generate", Status: "generating", GenID: "gen42", CreatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	restore := fastAttach(t)
+	defer restore()
+	oldWindow := attachUnreachableWindow
+	attachUnreachableWindow = 30 * time.Millisecond
+	defer func() { attachUnreachableWindow = oldWindow }()
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+		return nil, fmt.Errorf("dial tcp: connection refused") // transport error, not a 404
+	}
+	m := New(opts)
+
+	j := waitFor(t, m, "att", "failed")
+	if !strings.Contains(j.Error, "submit the job again") {
+		t.Fatalf("should fail with the resubmission hint, got %q", j.Error)
+	}
+	hist, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := hist[len(hist)-1]; last.ID != "att" || last.Status != "failed" {
+		t.Fatalf("failed record not persisted: %+v", last)
+	}
+}
+
+func TestAttachCapEndsTheWait(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{ID: "att", Genre: "landscape", Mode: "generate", Status: "generating", GenID: "gen42", CreatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	restore := fastAttach(t)
+	defer restore()
+	oldCap := attachMaxWait
+	attachMaxWait = 30 * time.Millisecond
+	defer func() { attachMaxWait = oldCap }()
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+		return nil, lattice.ErrResultNotFound
+	}
+	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+		return "gen42", nil // forever running: the cap must end the attach
+	}
+	m := New(opts)
+
+	j := waitFor(t, m, "att", "failed")
+	if !strings.Contains(j.Error, "submit the job again") {
+		t.Fatalf("should fail with the resubmission hint, got %q", j.Error)
+	}
+	hist, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := hist[len(hist)-1]; last.ID != "att" || last.Status != "failed" {
+		t.Fatalf("failed record not persisted: %+v", last)
+	}
+}
+
+func TestAttachHonoursCancel(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{ID: "att", Genre: "landscape", Mode: "generate", Status: "generating", GenID: "gen42", CreatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	restore := fastAttach(t)
+	defer restore()
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+		return nil, lattice.ErrResultNotFound
+	}
+	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+		return "gen42", nil
+	}
+	m := New(opts)
+	time.Sleep(50 * time.Millisecond) // let at least one attach poll happen
+	if err := m.Cancel("att"); err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, "att", "cancelled")
+	if j.Status != "cancelled" {
+		t.Fatalf("status = %q, want cancelled", j.Status)
 	}
 }

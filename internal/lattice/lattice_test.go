@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -375,5 +376,100 @@ func TestBlend(t *testing.T) {
 	}
 	if len(got.Images) != 1 || got.Images[0] != "aW1n" || len(got.Strengths) != 1 || got.Strengths[0] != 0.8 {
 		t.Fatalf("body = %+v", got)
+	}
+}
+
+func TestResultReturnsBytes(t *testing.T) {
+	png := []byte("fake-png-bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/result/abc123" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(png)
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	got, err := c.Result(context.Background(), "generate", "abc123")
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if string(got) != string(png) {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResultMissingIsSentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"no result"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	_, err := c.Result(context.Background(), "generate", "unknown")
+	if !errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("want ErrResultNotFound, got %v", err)
+	}
+}
+
+func TestResultTransportErrorDistinct(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close() // closed: connection refused
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	_, err := c.Result(context.Background(), "generate", "x")
+	if err == nil || errors.Is(err, ErrResultNotFound) {
+		t.Fatalf("want transport error, got %v", err)
+	}
+}
+
+func TestStatusReturnsRunningGenID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"state":"running","id":"gen42","step":3,"total":10}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	id, err := c.Status(context.Background(), "generate")
+	if err != nil || id != "gen42" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+}
+
+func TestStatusIdleReturnsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"state":"idle"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	id, err := c.Status(context.Background(), "generate")
+	if err != nil || id != "" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+}
+
+func TestProgressSurfacesGenID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"state":"running","id":"gen42","step":7,"total":10}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	step, total, genID, err := c.Progress(context.Background(), "generate")
+	if err != nil || step != 7 || total != 10 || genID != "gen42" {
+		t.Fatalf("step=%d total=%d id=%q err=%v", step, total, genID, err)
 	}
 }

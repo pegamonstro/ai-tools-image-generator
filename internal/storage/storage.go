@@ -56,6 +56,7 @@ type Job struct {
 	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
 	Error          string            `json:"error,omitempty"`
 	ImagePath      string            `json:"image_path,omitempty"`
+	GenID          string            `json:"gen_id,omitempty"` // sidecar-side generation id; lets a restart re-attach to a persisted result
 }
 
 type Store struct {

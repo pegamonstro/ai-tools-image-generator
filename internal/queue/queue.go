@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"img-gen/internal/genres"
+	"img-gen/internal/lattice"
 	"img-gen/internal/models"
 	"img-gen/internal/presets"
 	"img-gen/internal/prompting"
@@ -78,8 +80,15 @@ type ImageOps struct {
 	Blend      func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
 	Upscale    func(ctx context.Context, imageB64 string) ([]byte, error)
 	Controlnet func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
-	Progress   func(ctx context.Context, mode string) (step, total int, err error)
-	Cancel     func(ctx context.Context, mode string) error
+	// Progress polls the in-flight generation's step/total plus the sidecar's
+	// gen id (empty when idle/not running), piggybacked on the same poll.
+	Progress func(ctx context.Context, mode string) (step, total int, genID string, err error)
+	// Status returns which gen id (if any) the sidecar is currently generating.
+	Status func(ctx context.Context, mode string) (runningGenID string, err error)
+	// Result fetches a completed generation's PNG from the sidecar's persisted
+	// results, or lattice.ErrResultNotFound when the id is unknown/expired.
+	Result func(ctx context.Context, mode, genID string) ([]byte, error)
+	Cancel func(ctx context.Context, mode string) error
 }
 
 type Options struct {
@@ -130,31 +139,147 @@ func New(opts Options) *Manager {
 }
 
 // restore seeds the manager from persisted history after a restart. Interrupted
-// (non-terminal) records are honestly failed — their sidecar result is gone
-// (the sidecar cleans its temp output when the interrupted handler returns), so
-// regeneration with the same seed and params is the recovery. Terminal records
-// are rehydrated untouched so Get/List/Cancel/Subscribe see the same universe.
+// (non-terminal) records split on GenID: one that never learned its sidecar gen
+// id is honestly failed (its result is unreachable), while one that did keeps
+// status "generating" and an attach goroutine re-attaches to the sidecar's
+// persisted result — recovery without regeneration. Terminal records are
+// rehydrated untouched so Get/List/Cancel/Subscribe see the same universe.
 func (m *Manager) restore() {
 	hist, err := m.opts.Store.LoadHistory()
 	if err != nil {
 		return
 	}
 	now := time.Now()
+	var attachIDs []string
 	for _, j := range hist {
 		if !isTerminal(j.Status) {
-			j.Status = "failed"
-			j.Error = "interrupted by a service restart before completion; submit the job again (same seed and params reproduce the image)"
-			j.Step = 0
-			j.Total = 0
-			j.FinishedAt = &now
-			if err := m.opts.Store.AppendHistory(j); err != nil {
-				log.Printf("queue: persist corrected status of interrupted job %s: %v", j.ID, err)
+			if j.GenID == "" {
+				j.Status = "failed"
+				j.Error = "interrupted by a service restart before completion; submit the job again (same seed and params reproduce the image)"
+				j.Step = 0
+				j.Total = 0
+				j.FinishedAt = &now
+				if err := m.opts.Store.AppendHistory(j); err != nil {
+					log.Printf("queue: persist corrected status of interrupted job %s: %v", j.ID, err)
+				}
+			} else {
+				j.Status = "generating"
+				j.Step = 0
+				j.Total = 0
+				attachIDs = append(attachIDs, j.ID)
 			}
 		}
 		job := j
 		m.jobs[j.ID] = &job
 		m.order = append(m.order, j.ID)
 	}
+	for _, id := range attachIDs {
+		go m.attach(id)
+	}
+}
+
+// attach loop tuning, overridden by tests: poll cadence, how long transport
+// errors may persist before giving up, and the belt-and-braces total cap.
+var (
+	attachPollInterval      = 3 * time.Second
+	attachUnreachableWindow = 15 * time.Minute
+	attachMaxWait           = 2 * time.Hour
+)
+
+const attachFailMsg = "interrupted by a service restart before completion; submit the job again (same seed and params reproduce the image)"
+
+// attach finishes a job interrupted by a restart whose sidecar generation kept
+// running (or completed) while img-gen was down. It polls the sidecar's
+// persisted result store for the job's gen id: 200 recovers the image without
+// regeneration; a 404 means "still running" (sidecar reports our gen id) or
+// "lost" (idle — one immediate retry covers the sidecar's write-then-respond
+// race); transport errors are retried within the unreachable window.
+func (m *Manager) attach(id string) {
+	m.mu.Lock()
+	job := m.jobs[id]
+	if job == nil {
+		m.mu.Unlock()
+		return
+	}
+	mode, genID := job.Mode, job.GenID
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancels[id] = cancel
+	m.mu.Unlock()
+	defer func() {
+		cancel()
+		m.mu.Lock()
+		delete(m.cancels, id)
+		m.mu.Unlock()
+	}()
+
+	m.log(id, "restart recovery: watching sidecar result %s", genID)
+	deadline := time.Now().Add(attachMaxWait)
+	var unreachableSince time.Time
+	for {
+		if m.isCancelled(id) {
+			m.finish(id, "cancelled", "")
+			return
+		}
+		if !unreachableSince.IsZero() && time.Since(unreachableSince) > attachUnreachableWindow {
+			m.log(id, "restart recovery gave up: sidecar unreachable for %s", roundDur(attachUnreachableWindow))
+			m.finish(id, "failed", attachFailMsg)
+			return
+		}
+		if time.Now().After(deadline) {
+			m.log(id, "restart recovery exceeded its %s cap", roundDur(attachMaxWait))
+			m.finish(id, "failed", attachFailMsg)
+			return
+		}
+
+		png, err := m.opts.Ops.Result(ctx, mode, genID)
+		switch {
+		case err == nil:
+			m.saveRecovered(id, png)
+			return
+		case errors.Is(err, lattice.ErrResultNotFound):
+			running, serr := m.opts.Ops.Status(context.Background(), mode)
+			if serr == nil && running == genID {
+				// Our generation is still in flight on the sidecar; the
+				// persisted file appears when mflux finishes and writes it.
+				time.Sleep(attachPollInterval)
+				continue
+			}
+			// Idle (or another gen is running): one immediate retry covers
+			// the sidecar's write-then-respond race, then the result is lost.
+			png, retryErr := m.opts.Ops.Result(context.Background(), mode, genID)
+			if retryErr == nil {
+				m.saveRecovered(id, png)
+				return
+			}
+			m.log(id, "restart recovery gave up: sidecar no longer holds result %s", genID)
+			m.finish(id, "failed", attachFailMsg)
+			return
+		default:
+			// Transport error (sidecar rebooting, network flap): keep trying.
+			if unreachableSince.IsZero() {
+				unreachableSince = time.Now()
+			}
+			time.Sleep(attachPollInterval)
+		}
+	}
+}
+
+// saveRecovered stores the re-attached image and marks the job done, or fails
+// the job if the save itself fails.
+func (m *Manager) saveRecovered(id string, png []byte) {
+	rel, err := m.opts.Store.SaveImage(id, png)
+	if err != nil {
+		m.log(id, "saving the recovered image failed: %v", err)
+		m.finish(id, "failed", err.Error())
+		return
+	}
+	m.mu.Lock()
+	if j := m.jobs[id]; j != nil {
+		j.ImagePath = rel
+	}
+	m.mu.Unlock()
+	m.log(id, "recovered image from the sidecar after restart: %s (%d bytes)", rel, len(png))
+	m.finish(id, "done", "")
 }
 
 func (m *Manager) Submit(req SubmitRequest) (string, error) {
@@ -558,11 +683,36 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 		case r := <-done:
 			return r.png, r.seed, r.err
 		case <-ticker.C:
-			step, total, perr := m.opts.Ops.Progress(context.Background(), job.Mode)
-			if perr == nil && total > 0 {
+			step, total, genID, perr := m.opts.Ops.Progress(context.Background(), job.Mode)
+			if perr != nil {
+				continue
+			}
+			if total > 0 {
 				m.setProgress(id, step, total)
 			}
+			if genID != "" {
+				m.captureGenID(id, genID)
+			}
 		}
+	}
+}
+
+// captureGenID records the sidecar's gen id on the job the first time the
+// progress poll surfaces it, appending the job to history so a restart knows
+// which persisted result to re-attach to.
+func (m *Manager) captureGenID(id, genID string) {
+	m.mu.Lock()
+	job := m.jobs[id]
+	if job == nil || job.GenID == genID || isTerminal(job.Status) {
+		m.mu.Unlock()
+		return
+	}
+	job.GenID = genID
+	j := *job
+	m.mu.Unlock()
+	m.log(id, "sidecar generation id %s", genID)
+	if err := m.opts.Store.AppendHistory(j); err != nil {
+		log.Printf("queue: persist gen id of job %s: %v", id, err)
 	}
 }
 

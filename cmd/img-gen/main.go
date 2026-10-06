@@ -101,6 +101,8 @@ func newHandler(cfg config) (http.Handler, error) {
 			Upscale:    lat.Upscale,
 			Controlnet: lat.Controlnet,
 			Progress:   lat.Progress,
+			Status:     lat.Status,
+			Result:     lat.Result,
 			Cancel:     lat.Cancel,
 		},
 		Chat:          chatFn,

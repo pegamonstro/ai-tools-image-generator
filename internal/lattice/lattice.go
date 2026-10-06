@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -163,10 +165,15 @@ func (c *Client) Upscale(ctx context.Context, imageB64 string) ([]byte, error) {
 // statusResp is the sidecar's GET /status payload.
 type statusResp struct {
 	State     string `json:"state"`
+	ID        string `json:"id"`
 	Step      int    `json:"step"`
 	Total     int    `json:"total"`
 	Cancelled bool   `json:"cancelled"`
 }
+
+// ErrResultNotFound is returned by Result when the sidecar reports 404 for the
+// gen id — the generation either never ran there or its persisted file is gone.
+var ErrResultNotFound = errors.New("result not found")
 
 // sidecarForMode resolves the sidecar base URL for a job mode, mirroring the
 // URL selection postImage uses (fill/redux may live on a different host).
@@ -189,31 +196,89 @@ func (c *Client) sidecarForMode(mode string) string {
 }
 
 // Progress polls the sidecar's /status endpoint and returns the in-flight
-// job's step/total. It returns (0, 0, nil) when the sidecar is idle. The poll
-// uses a short timeout so a dead sidecar never stalls the queue loop.
-func (c *Client) Progress(ctx context.Context, mode string) (int, int, error) {
+// job's step/total plus the sidecar's gen id (empty when idle). The poll uses
+// a short timeout so a dead sidecar never stalls the queue loop.
+func (c *Client) Progress(ctx context.Context, mode string) (int, int, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode)+"/status", nil)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("mflux status: %s", resp.Status)
+		return 0, 0, "", fmt.Errorf("mflux status: %s", resp.Status)
 	}
 	var sr statusResp
 	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	if sr.State != "running" || sr.Total <= 0 {
-		return 0, 0, nil
+		return 0, 0, "", nil
 	}
-	return sr.Step, sr.Total, nil
+	return sr.Step, sr.Total, sr.ID, nil
+}
+
+// Status returns the gen id the sidecar is currently generating ("" when
+// idle), so a booted client can tell whether a persisted gen id is still
+// in flight on the sidecar.
+func (c *Client) Status(ctx context.Context, mode string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode)+"/status", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("mflux status: %s", resp.Status)
+	}
+	var sr statusResp
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return "", err
+	}
+	if sr.State != "running" {
+		return "", nil
+	}
+	return sr.ID, nil
+}
+
+// Result fetches a completed generation's PNG from the sidecar's persistent
+// results store. ErrResultNotFound marks a 404 (unknown/expired gen id);
+// transport errors are returned as-is so a caller can keep retrying.
+func (c *Client) Result(ctx context.Context, mode, genID string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode)+"/result/"+url.PathEscape(genID), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		png, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+		if err != nil {
+			return nil, err
+		}
+		return png, nil
+	case http.StatusNotFound:
+		return nil, ErrResultNotFound
+	default:
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("mflux result %s: %s", resp.Status, msg)
+	}
 }
 
 // Cancel asks the sidecar to terminate its in-flight mflux subprocess and

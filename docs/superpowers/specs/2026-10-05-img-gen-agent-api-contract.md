@@ -21,7 +21,7 @@
 | `GET /api/v1/genres` / `/models` / `/presets` | individual catalogs (same JSON as legacy) |
 | `POST /api/v1/jobs` | `SubmitRequest`; 201 `{job_id}` or `{job_ids:[...]}` (batch ≤ 8); honors `Idempotency-Key` |
 | `GET /api/v1/jobs` | list (live + history) |
-| `GET /api/v1/jobs/{id}` | Job incl. `step`/`total`; resolves ids from previous sessions via history (2026-10-06: finished ids keep resolving after a restart; interrupted records are terminal-failed with a restart-explaining error — see `2026-10-06-queue-restart-hardening.md`) |
+| `GET /api/v1/jobs/{id}` | Job incl. `step`/`total` and `gen_id`; resolves ids from previous sessions via history (2026-10-06: finished ids keep resolving after a restart; mid-flight generations recover through the sidecar's persisted result — see `2026-10-06-queue-restart-hardening.md` and `2026-10-06-sidecar-persistent-results.md`) |
 | `GET /api/v1/jobs/{id}/events` | SSE unchanged semantics (auth applies) |
 | `POST /api/v1/jobs/{id}/cancel` | 202 |
 | `POST /api/v1/generate` | sync convenience (ruling 6) |

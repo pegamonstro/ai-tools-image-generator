@@ -20,6 +20,10 @@ LOG_DIR="$HOME/Library/Logs/img-gen"
 DOMAIN="gui/$UID"
 
 IMAGE_URL="${IMAGE_URL:?set IMAGE_URL to the mflux sidecar URL, e.g. IMAGE_URL=http://<m6>:8899 ./deploy/install-macos.sh}"
+# Optional: the lattice frontend used for prompt enhancement. Defaults to the
+# compiled-in loopback default; pass the real one, e.g.
+#   LATTICE_FRONTEND_URL=http://<lattice>:8080 ./deploy/install-macos.sh
+LATTICE_FRONTEND_URL="${LATTICE_FRONTEND_URL:-http://127.0.0.1:8080}"
 # Optional: the esrgan sidecar for "Upscale (4x)". Falls back to IMAGE_URL when
 # unset, but the sidecar is a different port so pass it explicitly:
 #   UPSCALE_URL=http://<m6>:8901 ./deploy/install-macos.sh
@@ -52,6 +56,7 @@ mkdir -p "$LOG_DIR" "$(dirname "$DEST")"
 sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__LOG_DIR__|$LOG_DIR|g" \
     -e "s|__IMAGE_URL__|$IMAGE_URL|g" \
+    -e "s|__LATTICE_FRONTEND_URL__|$LATTICE_FRONTEND_URL|g" \
     -e "s|__UPSCALE_URL__|$UPSCALE_URL|g" \
     "$TEMPLATE" > "$DEST"
 
@@ -62,6 +67,7 @@ if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
   echo "running  : $DOMAIN/$LABEL"
   echo "logs     : $LOG_DIR/img-gen.{out,err}.log"
   echo "image_url: $IMAGE_URL"
+  echo "lattice  : $LATTICE_FRONTEND_URL"
 else
   echo "error: bootstrap failed — check $LOG_DIR/img-gen.err.log" >&2
   exit 1

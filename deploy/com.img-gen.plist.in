@@ -22,6 +22,10 @@
              the (private) host/IP never lands in a tracked file. -->
         <key>IMAGE_URL</key>
         <string>__IMAGE_URL__</string>
+        <!-- The lattice frontend used for prompt enhancement. Placeholder for
+             the same reason; defaults to loopback when not passed at install. -->
+        <key>LATTICE_FRONTEND_URL</key>
+        <string>__LATTICE_FRONTEND_URL__</string>
         <!-- Route upscaling to the esrgan sidecar (a distinct host:port). Falls
              back to IMAGE_URL when empty; leave a placeholder for the same reason. -->
         <key>UPSCALE_URL</key>

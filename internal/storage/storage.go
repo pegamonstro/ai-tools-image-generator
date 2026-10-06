@@ -121,7 +121,10 @@ func (s *Store) AppendHistory(j Job) error {
 	return err
 }
 
-// LoadHistory reads history.jsonl (nil if the file does not exist yet).
+// LoadHistory reads history.jsonl (nil if the file does not exist yet). Jobs
+// may be appended more than once (per persisted transition, e.g. queued at
+// submit-time and terminal at finish); records are deduped by id, last record
+// wins, and the result keeps first-appearance (submit-time) order.
 func (s *Store) LoadHistory() ([]Job, error) {
 	f, err := os.Open(filepath.Join(s.dir, "history.jsonl"))
 	if os.IsNotExist(err) {
@@ -132,13 +135,19 @@ func (s *Store) LoadHistory() ([]Job, error) {
 	}
 	defer f.Close()
 	var jobs []Job
+	slot := map[string]int{}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		var j Job
 		if err := json.Unmarshal(sc.Bytes(), &j); err != nil {
 			return nil, err
 		}
-		jobs = append(jobs, j)
+		if i, ok := slot[j.ID]; ok {
+			jobs[i] = j
+		} else {
+			slot[j.ID] = len(jobs)
+			jobs = append(jobs, j)
+		}
 	}
 	return jobs, sc.Err()
 }

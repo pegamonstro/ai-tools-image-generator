@@ -38,7 +38,7 @@ func TestAppendAndLoadHistory(t *testing.T) {
 	if err := s.AppendHistory(j); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendHistory(j); err != nil {
+	if err := s.AppendHistory(Job{ID: "2", Genre: "landscape", Status: "done", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.LoadHistory()
@@ -47,6 +47,47 @@ func TestAppendAndLoadHistory(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("want 2, got %d", len(got))
+	}
+}
+
+func TestLoadHistoryDedupsByIDLastWins(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := Job{ID: "a", Prompt: "first", Status: "queued"}
+	aDone := Job{ID: "a", Prompt: "first", Status: "done"}
+	b := Job{ID: "b", Prompt: "second", Status: "done"}
+	for _, j := range []Job{a, aDone, b} {
+		if err := s.AppendHistory(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 deduped records, got %d: %+v", len(got), got)
+	}
+	if got[0].ID != "a" || got[0].Status != "done" {
+		t.Fatalf("want a at first position with last content, got %+v", got[0])
+	}
+	if got[1].ID != "b" {
+		t.Fatalf("want b second, got %+v", got[1])
+	}
+}
+
+func TestLoadHistoryMalformedLineErrors(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, "history.jsonl"), []byte("{not json}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadHistory(); err == nil {
+		t.Fatal("want error for malformed line")
 	}
 }
 

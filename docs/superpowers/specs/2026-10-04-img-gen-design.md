@@ -211,6 +211,11 @@ loops, no temp-file churn.
      record: `job_id`, genre, prompt, params, size, timestamps, status, image
      path.
 
+(2026-10-06: the durable history now also carries one append **at submit
+time** with the queued record, so a restart can account for lost work — see
+`2026-10-06-queue-restart-hardening.md`. That is at most three small appends
+per job; the SSD-wear goal is unchanged.)
+
 No scratch files are needed — the base64 payload is held in memory and written
 once. (A literal RAM disk is not required on macOS; if large intermediate
 buffers ever demand one, it's a drop-in `hdiutil`/tmpfs mount behind
@@ -248,6 +253,10 @@ buffers ever demand one, it's a drop-in `hdiutil`/tmpfs mount behind
 - Unknown genre / missing required field / bad size → `400` with a message.
 - The queue is in-memory: a process restart abandons queued/running jobs but
   `history.jsonl` remains intact, so completed generations survive.
+  (2026-10-06: refined — submitted jobs are now persisted at submit-time; on
+  boot, interrupted records are marked `failed` with a restart-explaining
+  error, and finished ids keep resolving. See
+  `2026-10-06-queue-restart-hardening.md`.)
 
 ## 12. Testing
 

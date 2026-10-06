@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,8 +124,37 @@ func New(opts Options) *Manager {
 		cancelled: map[string]bool{},
 		opts:      opts,
 	}
+	m.restore()
 	go m.worker()
 	return m
+}
+
+// restore seeds the manager from persisted history after a restart. Interrupted
+// (non-terminal) records are honestly failed — their sidecar result is gone
+// (the sidecar cleans its temp output when the interrupted handler returns), so
+// regeneration with the same seed and params is the recovery. Terminal records
+// are rehydrated untouched so Get/List/Cancel/Subscribe see the same universe.
+func (m *Manager) restore() {
+	hist, err := m.opts.Store.LoadHistory()
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, j := range hist {
+		if !isTerminal(j.Status) {
+			j.Status = "failed"
+			j.Error = "interrupted by a service restart before completion; submit the job again (same seed and params reproduce the image)"
+			j.Step = 0
+			j.Total = 0
+			j.FinishedAt = &now
+			if err := m.opts.Store.AppendHistory(j); err != nil {
+				log.Printf("queue: persist corrected status of interrupted job %s: %v", j.ID, err)
+			}
+		}
+		job := j
+		m.jobs[j.ID] = &job
+		m.order = append(m.order, j.ID)
+	}
 }
 
 func (m *Manager) Submit(req SubmitRequest) (string, error) {
@@ -305,6 +335,13 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 	}
 	m.order = append(m.order, id)
 	m.mu.Unlock()
+
+	// Persist the queued job before dispatching it, so a restart can account
+	// for work it was holding (restore fails it honestly) instead of losing
+	// it silently.
+	if err := m.opts.Store.AppendHistory(*job); err != nil {
+		log.Printf("queue: persist queued job %s: %v", id, err)
+	}
 
 	m.work <- id
 	return id, nil
@@ -672,7 +709,9 @@ func (m *Manager) finish(id, status, errMsg string) {
 	j := *job
 	m.mu.Unlock()
 
-	_ = m.opts.Store.AppendHistory(j)
+	if err := m.opts.Store.AppendHistory(j); err != nil {
+		log.Printf("queue: persist terminal status of job %s: %v", id, err)
+	}
 	m.broadcast(Event{JobID: id, Status: status, Error: errMsg, Ts: now, Seed: j.Seed})
 }
 

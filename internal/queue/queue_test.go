@@ -3,6 +3,8 @@ package queue
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -782,5 +784,115 @@ func TestPresetTriggerPrefixApplied(t *testing.T) {
 	j := waitFor(t, m, id, "done")
 	if j.Prompt == "" || !strings.HasPrefix(j.Prompt, "aria, silver hair") {
 		t.Fatalf("trigger not prepended: %q", j.Prompt)
+	}
+}
+
+func TestSubmitPersistsQueuedJob(t *testing.T) {
+	blocked := make(chan struct{})
+	opts := testOpts(t)
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		<-blocked
+		return []byte("PNG"), nil, nil
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hist, err := opts.Store.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || hist[0].ID != id || hist[0].Status != "queued" {
+		t.Fatalf("want one queued record for %s, got %+v", id, hist)
+	}
+
+	close(blocked)
+	j := waitFor(t, m, id, "done")
+	hist, err = opts.Store.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || hist[0].Status != "done" {
+		t.Fatalf("want one done record after finish, got %+v", hist)
+	}
+	if j.ImagePath == "" {
+		t.Fatal("image path empty")
+	}
+}
+
+func TestRestoreMarksInterruptedJobsFailed(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{ID: "gone", Genre: "landscape", Mode: "generate", Status: "generating", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	fin := time.Now()
+	if err := s.AppendHistory(storage.Job{ID: "kept", Genre: "landscape", Mode: "generate", Status: "done", CreatedAt: time.Now(), FinishedAt: &fin}); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := testOpts(t)
+	g, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Store = g
+	generateCalled := false
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		generateCalled = true
+		return []byte("PNG"), nil, nil
+	}
+	m := New(opts)
+
+	j, ok := m.Get("gone")
+	if !ok {
+		t.Fatal("restored job missing")
+	}
+	if j.Status != "failed" {
+		t.Fatalf("want failed, got %q", j.Status)
+	}
+	if !strings.Contains(j.Error, "restart") || !strings.Contains(j.Error, "submit the job again") {
+		t.Fatalf("error should explain the restart and point at resubmission, got %q", j.Error)
+	}
+	if j.FinishedAt == nil {
+		t.Fatal("finishedAt not set")
+	}
+
+	k, ok := m.Get("kept")
+	if !ok || k.Status != "done" || k.FinishedAt == nil || k.Error != "" {
+		t.Fatalf("terminal record should be untouched: ok=%v job=%+v", ok, k)
+	}
+	if generateCalled {
+		t.Fatal("restore must not rerun interrupted jobs")
+	}
+
+	hist, err := g.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 2 || hist[0].ID != "gone" || hist[0].Status != "failed" {
+		t.Fatalf("want corrected failed record for gone persisted, got %+v", hist)
+	}
+}
+
+func TestRestoreCorruptHistoryStartsClean(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "history.jsonl"), []byte("garbage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOpts(t)
+	g, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Store = g
+	m := New(opts)
+	if _, ok := m.Get("a"); ok {
+		t.Fatal("corrupt history must not be restored")
 	}
 }

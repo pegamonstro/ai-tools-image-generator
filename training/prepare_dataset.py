@@ -67,10 +67,20 @@ def load_caption_map(path: Path) -> dict:
 def write_config(slug: str, template: Path, out: Path) -> None:
     cfg = json.loads(template.read_text())
     cfg.pop("_comment", None)
-    cfg["data"] = f"datasets/{slug}/"
-    out_path = cfg.get("checkpoint", {}).get("output_path", "out")
+    dataset = DATASETS / slug
+    images = []
+    for p in sorted(dataset.iterdir()):
+        if p.suffix.lower() not in IMG_EXTS:
+            continue
+        sidecar = dataset / (p.stem + ".txt")
+        caption = sidecar.read_text(encoding="utf-8").strip()
+        images.append({"image": p.name, "prompt": caption})
+    if not images:
+        raise SystemExit(f"no captioned images in {dataset}")
+    cfg["examples"] = {"path": f"datasets/{slug}/", "images": images}
+    out_path = cfg.get("save", {}).get("output_path", "out/<slug>")
     if "<slug>" in out_path:
-        cfg["checkpoint"]["output_path"] = out_path.replace("<slug>", slug)
+        cfg["save"]["output_path"] = out_path.replace("<slug>", slug)
     out.write_text(json.dumps(cfg, indent=2) + "\n")
 
 
@@ -161,10 +171,9 @@ def main() -> None:
         print(f"wrote {cfg_out}")
 
     print(f"\ncopied {copied} image(s) into {dest}")
-    print("validate on the M6 (the datasets dir travels with the config):")
-    print(f"  mflux-train --dry-run --config training/{args.dataset}.train.json")
-    print("then train (long; output_path is inside training/):")
-    print(f"  mflux-train --config training/{args.dataset}.train.json")
+    print("\ntrain on the training host per training/README.md (patched 0.15.5 venv)")
+    print(f"launch from training/ so the relative paths ({args.dataset}.train.json's")
+    print("examples.path and save.output_path) resolve")
 
 
 if __name__ == "__main__":

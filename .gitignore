@@ -8,4 +8,6 @@ training/datasets/
 training/out/
 training/*.safetensors
 training/*.train.json
+training/*.train.*.json
+training/__pycache__/
 .claude/

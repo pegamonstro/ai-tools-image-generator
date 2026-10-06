@@ -4,12 +4,22 @@
 
 Constraint (settled): mflux consumes **diffusers-format** LoRAs; output of either path below must land as a single `.safetensors` loadable by `mflux --lora <path-or-repo>` (mflux-train emits its own format that mflux itself loads — that is fine). XLabs format is rejected.
 
-## Path A — local on the M6 (zero config, available today)
+## Path A — local on the M6 (proven recipe: patched mflux 0.15.5 venv)
 
-`mflux-train` ships inside the mflux uv tool already installed on the M6 (`~/.local/bin/mflux-train`, verified present with `--config`, `--resume`, `--quantize`, `--dry-run`). MLX-native; docs call it Dreambooth-LoRA style (strong for faces/characters/single-subjects; usable for scenes/ambient with a wider caption set).
+**Amendment (2026-10-06, after the first real run):** the uv-tool `mflux-train`
+(0.20.x) cannot train FLUX.1 — it rejects the flux1 dreambooth trainer. The
+working local trainer is a dedicated venv pinned to `mflux==0.15.5` plus four
+patch families committed at `training/patches/` (restore `model_path`, force
+per-step `mx.eval` — 0.15.5 runs a lazy graph that otherwise thrashes into
+swap — clear the Metal buffer cache per step, cap T5 `max_sequence_length` at
+128). Proven end-to-end on a 40-image / 600-step character run: ~1.5 h at
+320×448, stable memory, resumable checkpoints, adapter loads in the unpatched
+generate-side runtime. Full runbook: `training/README.md`.
 
+- MLX-native; Dreambooth-LoRA style (strong for faces/characters/
+  single-subjects; usable for scenes/ambient with a wider caption set).
 - Runs on M6 (32 GB class machine): `quantize: "4"` training config, `batch_size: 1`, modest rank.
-- Checkpoints resume deterministically; keep long runs on the M6, poll progress via ssh.
+- Loop length is `num_epochs × dataset_size` (config `steps` is sampler-only); checkpoint resume via `--train-checkpoint <zip>`.
 
 ## Path B — cloud ai-toolkit (higher ceiling; broad style/scene/environment sets)
 

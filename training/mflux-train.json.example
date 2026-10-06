@@ -1,45 +1,66 @@
 {
-  "_comment": "mflux-train config template (mflux 0.20 TrainingSpec schema). Copy to training/<slug>.train.json, set data and model, then validate with: mflux-train --dry-run --config training/<slug>.train.json. Relative data/output paths resolve against this file's directory.",
+  "_comment": "mflux-train config for the patched 0.15.5 training venv (see training/README.md). Training loop length = num_epochs x number_of_images; 'steps' is only the sampler/sigma count and does not bound the run. output_path is resolved relative to the working directory mflux-train is launched from.",
   "model": "dev",
-  "model_path": null,
+  "model_path": "~/mflux-models/<base-model-dir>",
   "seed": 42,
   "steps": 700,
   "guidance": 3.5,
   "quantize": 4,
-  "max_resolution": 1024,
-  "low_ram": false,
-  "gradient_checkpointing": false,
+  "width": 512,
+  "height": 704,
   "training_loop": {
-    "num_epochs": 50,
-    "batch_size": 1,
-    "timestep_type": "sigmoid"
+    "num_epochs": 15,
+    "batch_size": 1
   },
   "optimizer": {
     "name": "AdamW",
-    "learning_rate": 1e-4,
-    "lr_schedule": "cosine",
-    "lr_warmup_steps": 20
+    "learning_rate": 0.0001
   },
-  "checkpoint": {
-    "save_frequency": 100,
+  "save": {
+    "checkpoint_frequency": 100,
     "output_path": "out/<slug>"
   },
-  "monitoring": {
+  "instrumentation": {
     "plot_frequency": 20,
     "generate_image_frequency": 100,
-    "preview_width": 512,
-    "preview_height": 512
+    "validation_prompt": "<trigger>, full body studio photo, natural light"
   },
   "lora_layers": {
-    "targets": [
-      { "module_path": "transformer_blocks.{block}.attn.to_q", "blocks": { "start": 0, "end": 19 }, "rank": 16 },
-      { "module_path": "transformer_blocks.{block}.attn.to_k", "blocks": { "start": 0, "end": 19 }, "rank": 16 },
-      { "module_path": "transformer_blocks.{block}.attn.to_v", "blocks": { "start": 0, "end": 19 }, "rank": 16 },
-      { "module_path": "transformer_blocks.{block}.attn.to_out.0", "blocks": { "start": 0, "end": 19 }, "rank": 16 },
-      { "module_path": "single_transformer_blocks.{block}.attn.to_q", "blocks": { "start": 0, "end": 38 }, "rank": 16 },
-      { "module_path": "single_transformer_blocks.{block}.attn.to_k", "blocks": { "start": 0, "end": 38 }, "rank": 16 },
-      { "module_path": "single_transformer_blocks.{block}.attn.to_v", "blocks": { "start": 0, "end": 38 }, "rank": 16 }
-    ]
+    "transformer_blocks": {
+      "block_range": { "start": 0, "end": 19 },
+      "layer_types": [
+        "attn.to_q",
+        "attn.to_k",
+        "attn.to_v",
+        "attn.add_q_proj",
+        "attn.add_k_proj",
+        "attn.add_v_proj",
+        "attn.to_out",
+        "attn.to_add_out",
+        "ff.linear1",
+        "ff.linear2",
+        "ff_context.linear1",
+        "ff_context.linear2"
+      ],
+      "lora_rank": 16
+    },
+    "single_transformer_blocks": {
+      "block_range": { "start": 0, "end": 38 },
+      "layer_types": [
+        "proj_out",
+        "proj_mlp",
+        "attn.to_q",
+        "attn.to_k",
+        "attn.to_v"
+      ],
+      "lora_rank": 16
+    }
   },
-  "data": "datasets/<slug>/"
+  "examples": {
+    "path": "datasets/<slug>/",
+    "images": [
+      { "image": "<file01>.jpg", "prompt": "<trigger>, <caption text>" },
+      { "image": "<file02>.jpg", "prompt": "<trigger>, <caption text>" }
+    ]
+  }
 }

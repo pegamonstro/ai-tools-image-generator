@@ -19,8 +19,9 @@ type LoraRef struct {
 
 // ModelSpec is the per-request model + LoRA selection forwarded to the sidecar.
 type ModelSpec struct {
-	Model string    // mflux --model value; "" = sidecar default
-	Loras []LoraRef // mflux --lora list; nil = none
+	Model   string    // model value (checkpoint path / HF id); "" = sidecar default
+	Loras   []LoraRef // lora value list; nil = none
+	Sidecar string    // engine selection ("sdxl" = stable-diffusion.cpp sidecar; "" = default mflux sidecar)
 }
 
 // SamplingParams are optional generation knobs forwarded to the mflux sidecar.
@@ -45,6 +46,7 @@ type Job struct {
 	Enhance        bool              `json:"enhance"`
 	Model          string            `json:"model,omitempty"`
 	Loras          []LoraRef         `json:"loras,omitempty"`
+	Sidecar        string            `json:"sidecar,omitempty"`         // engine selection ("sdxl"); lets a restart re-attach on the right sidecar
 	Seed           *int64            `json:"seed,omitempty"`            // seed actually used (sidecar response); nil for inpaint/blend
 	Steps          *int              `json:"steps,omitempty"`           // requested diffusion steps (nil = default)
 	Guidance       *float64          `json:"guidance,omitempty"`        // requested guidance (nil = default)

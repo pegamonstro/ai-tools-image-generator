@@ -392,7 +392,7 @@ func TestResultReturnsBytes(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	got, err := c.Result(context.Background(), "generate", "abc123")
+	got, err := c.Result(context.Background(), "generate", "abc123", "")
 	if err != nil {
 		t.Fatalf("Result: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestResultMissingIsSentinel(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	_, err := c.Result(context.Background(), "generate", "unknown")
+	_, err := c.Result(context.Background(), "generate", "unknown", "")
 	if !errors.Is(err, ErrResultNotFound) {
 		t.Fatalf("want ErrResultNotFound, got %v", err)
 	}
@@ -423,7 +423,7 @@ func TestResultTransportErrorDistinct(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	_, err := c.Result(context.Background(), "generate", "x")
+	_, err := c.Result(context.Background(), "generate", "x", "")
 	if err == nil || errors.Is(err, ErrResultNotFound) {
 		t.Fatalf("want transport error, got %v", err)
 	}
@@ -440,7 +440,7 @@ func TestStatusReturnsRunningGenID(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	id, err := c.Status(context.Background(), "generate")
+	id, err := c.Status(context.Background(), "generate", "")
 	if err != nil || id != "gen42" {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
@@ -454,7 +454,7 @@ func TestStatusIdleReturnsEmpty(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	id, err := c.Status(context.Background(), "generate")
+	id, err := c.Status(context.Background(), "generate", "")
 	if err != nil || id != "" {
 		t.Fatalf("id=%q err=%v", id, err)
 	}
@@ -468,8 +468,115 @@ func TestProgressSurfacesGenID(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	step, total, genID, err := c.Progress(context.Background(), "generate")
+	step, total, genID, err := c.Progress(context.Background(), "generate", "")
 	if err != nil || step != 7 || total != 10 || genID != "gen42" {
 		t.Fatalf("step=%d total=%d id=%q err=%v", step, total, genID, err)
+	}
+}
+
+func TestSidecarRouting(t *testing.T) {
+	c := New("http://unused")
+	c.ImageURL = "http://flux"
+	c.SDXLImageURL = "http://sdxl"
+	c.FillURL = "http://fill"
+	cases := []struct {
+		mode, sidecar, want string
+	}{
+		{"generate", "", "http://flux"},
+		{"edit", "", "http://flux"},
+		{"inpaint", "", "http://fill"},
+		{"generate", "sdxl", "http://sdxl"},
+		{"edit", "sdxl", "http://sdxl"},
+		{"upscale", "", "http://flux"},
+		{"generate", "unknown", "http://flux"},
+	}
+	for _, tc := range cases {
+		if got := c.sidecarForMode(tc.mode, tc.sidecar); got != tc.want {
+			t.Errorf("mode=%q sidecar=%q: got %q want %q", tc.mode, tc.sidecar, got, tc.want)
+		}
+	}
+}
+
+func TestGenerateRoutesToSdxlSidecar(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	fluxHit := false
+	flux := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fluxHit = true
+		w.Write([]byte(`{"image":"should-not-be-here"}`))
+	}))
+	defer flux.Close()
+	sdxl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/generate" {
+			t.Errorf("sdxl path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+	}))
+	defer sdxl.Close()
+
+	c := New("http://unused")
+	c.ImageURL = flux.URL
+	c.SDXLImageURL = sdxl.URL
+	spec := storage.ModelSpec{Model: "/m/sdxl/pony.safetensors", Sidecar: "sdxl"}
+	got, _, err := c.Generate(context.Background(), "a prompt", "512x512", spec, storage.SamplingParams{})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if string(got) != string(img) {
+		t.Fatalf("got %q", got)
+	}
+	if fluxHit {
+		t.Fatal("generation reached the mflux sidecar")
+	}
+}
+
+func TestEditRoutesToSdxlSidecar(t *testing.T) {
+	sdxl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/edit" {
+			t.Errorf("sdxl path = %s", r.URL.Path)
+		}
+		var body struct {
+			InitImage string `json:"init_image"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		if body.InitImage != "aW1n" {
+			t.Errorf("init_image = %q", body.InitImage)
+		}
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString([]byte("png")) + `"}`))
+	}))
+	defer sdxl.Close()
+
+	c := New("http://unused")
+	c.ImageURL = "http://flux-should-not-be-hit"
+	c.SDXLImageURL = sdxl.URL
+	spec := storage.ModelSpec{Sidecar: "sdxl"}
+	if _, _, err := c.Edit(context.Background(), "a prompt", "512x512", "aW1n", 0.4, spec, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+}
+
+func TestProgressRoutesToSdxlSidecar(t *testing.T) {
+	fluxHit := false
+	flux := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fluxHit = true
+		w.Write([]byte(`{"state":"idle"}`))
+	}))
+	defer flux.Close()
+	sdxl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"state":"running","id":"gen7","step":3,"total":20}`))
+	}))
+	defer sdxl.Close()
+
+	c := New("http://unused")
+	c.ImageURL = flux.URL
+	c.SDXLImageURL = sdxl.URL
+	step, total, genID, err := c.Progress(context.Background(), "generate", "sdxl")
+	if err != nil || step != 3 || total != 20 || genID != "gen7" {
+		t.Fatalf("step=%d total=%d id=%q err=%v", step, total, genID, err)
+	}
+	if fluxHit {
+		t.Fatal("progress polled the mflux sidecar")
 	}
 }

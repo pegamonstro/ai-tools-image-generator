@@ -31,6 +31,7 @@ type config struct {
 	FillURL       string
 	ReduxURL      string
 	UpscaleURL    string
+	SDXLURL       string
 	DataDir       string
 	GenresFile    string
 	ModelsFile    string
@@ -49,6 +50,7 @@ func loadConfig() config {
 		FillURL:       envOr("FILL_URL", ""),
 		ReduxURL:      envOr("REDUX_URL", ""),
 		UpscaleURL:    envOr("UPSCALE_URL", ""),
+		SDXLURL:       envOr("SDXL_URL", ""),
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
 		ModelsFile:    envOr("MODELS_FILE", "./models.json"),
@@ -83,6 +85,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat.FillURL = cfg.FillURL
 	lat.ReduxURL = cfg.ReduxURL
 	lat.UpscaleURL = cfg.UpscaleURL
+	lat.SDXLImageURL = cfg.SDXLURL
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
@@ -290,8 +293,8 @@ func main() {
 		log.Fatalf("startup: %v", err)
 	}
 	addr := envOr("LISTEN", ":8099")
-	log.Printf("img-gen config: lattice=%s image_url=%s upscale_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s api_auth=%t",
-		cfg.LatticeURL, cfg.ImageURL, cfg.UpscaleURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr, cfg.APIToken != "")
+	log.Printf("img-gen config: lattice=%s image_url=%s upscale_url=%s sdxl_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s api_auth=%t",
+		cfg.LatticeURL, cfg.ImageURL, cfg.UpscaleURL, cfg.SDXLURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr, cfg.APIToken != "")
 	log.Printf("img-gen listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, h))
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -120,6 +121,30 @@ func TestJobModeRoundTrip(t *testing.T) {
 	}
 	if len(jobs) != 1 || jobs[0].Mode != "edit" {
 		t.Fatalf("jobs = %+v", jobs)
+	}
+}
+
+func TestJobSidecarRoundTrip(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(Job{ID: "sdxljob", Mode: "generate", Sidecar: "sdxl", Status: "generating"}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Sidecar != "sdxl" {
+		t.Fatalf("sidecar not preserved: %+v", jobs)
+	}
+	raw, err := json.Marshal(Job{ID: "x", Sidecar: "sdxl", Status: "queued"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"sidecar":"sdxl"`) {
+		t.Fatalf("sidecar key missing from job JSON: %s", raw)
 	}
 }
 

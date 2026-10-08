@@ -7,9 +7,10 @@ import (
 )
 
 type Entry struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
-	Value string `json:"value"`
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Value   string `json:"value"`
+	Sidecar string `json:"sidecar,omitempty"` // "sdxl" routes this model to the SDXL sidecar; "" = default mflux sidecar
 }
 
 type Catalog struct {
@@ -42,6 +43,21 @@ func (c *Catalog) LookupModel(key string) (string, bool) {
 // LookupLora returns the mflux --lora value (path or HF id) for a catalog key.
 func (c *Catalog) LookupLora(key string) (string, bool) {
 	return lookup(c.Loras, key)
+}
+
+// LookupSidecar resolves the engine selection for a model key or raw value.
+// It returns "" when the key matches no entry (the caller keeps the default
+// sidecar), so unknown/LoRA-only lookups never invent an engine.
+func (c *Catalog) LookupSidecar(keyOrValue string) string {
+	if keyOrValue == "" {
+		return ""
+	}
+	for _, e := range c.Models {
+		if e.Key == keyOrValue || e.Value == keyOrValue {
+			return e.Sidecar
+		}
+	}
+	return ""
 }
 
 func lookup(entries []Entry, key string) (string, bool) {

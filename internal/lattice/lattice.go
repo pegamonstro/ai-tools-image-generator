@@ -19,12 +19,13 @@ import (
 )
 
 type Client struct {
-	BaseURL    string // chat/enhance frontend (OpenAI-compatible /v1/chat/completions)
-	ImageURL   string // mflux sidecar (POST /generate)
-	FillURL    string // optional separate mflux sidecar for /fill (inpainting); defaults to ImageURL
-	ReduxURL   string // optional separate mflux sidecar for /redux (multi-reference); defaults to ImageURL
-	UpscaleURL string // optional Real-ESRGAN sidecar for /upscale; defaults to ImageURL
-	HTTP       *http.Client
+	BaseURL      string // chat/enhance frontend (OpenAI-compatible /v1/chat/completions)
+	ImageURL     string // mflux sidecar (POST /generate)
+	FillURL      string // optional separate mflux sidecar for /fill (inpainting); defaults to ImageURL
+	ReduxURL     string // optional separate mflux sidecar for /redux (multi-reference); defaults to ImageURL
+	UpscaleURL   string // optional Real-ESRGAN sidecar for /upscale; defaults to ImageURL
+	SDXLImageURL string // optional stable-diffusion.cpp sidecar; spec.Sidecar "sdxl" routes here
+	HTTP         *http.Client
 }
 
 func New(baseURL string) *Client {
@@ -47,7 +48,7 @@ func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage
 	if err != nil {
 		return nil, nil, err
 	}
-	return c.postImage(ctx, "/generate", b)
+	return c.postImage(ctx, "/generate", b, spec.Sidecar)
 }
 
 // Edit requests an image-to-image edit: it keeps the source image's content
@@ -68,7 +69,7 @@ func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, streng
 	if err != nil {
 		return nil, nil, err
 	}
-	return c.postImage(ctx, "/edit", b)
+	return c.postImage(ctx, "/edit", b, spec.Sidecar)
 }
 
 // applyModelSpec injects the optional model/LoRA selection into a request body,
@@ -118,7 +119,7 @@ func (c *Client) Controlnet(ctx context.Context, prompt, size, imageB64 string, 
 	if err != nil {
 		return nil, nil, err
 	}
-	return c.postImage(ctx, "/pose", b)
+	return c.postImage(ctx, "/pose", b, spec.Sidecar)
 }
 
 // Inpaint repaints only the masked region of imageB64. maskB64 is a same-sized
@@ -128,7 +129,7 @@ func (c *Client) Inpaint(ctx context.Context, prompt, imageB64, maskB64 string) 
 	if err != nil {
 		return nil, err
 	}
-	png, _, err := c.postImage(ctx, "/fill", body)
+	png, _, err := c.postImage(ctx, "/fill", body, "")
 	return png, err
 }
 
@@ -146,7 +147,7 @@ func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []str
 	if err != nil {
 		return nil, err
 	}
-	png, _, err := c.postImage(ctx, "/redux", body)
+	png, _, err := c.postImage(ctx, "/redux", body, "")
 	return png, err
 }
 
@@ -158,7 +159,7 @@ func (c *Client) Upscale(ctx context.Context, imageB64 string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	png, _, err := c.postImage(ctx, "/upscale", body)
+	png, _, err := c.postImage(ctx, "/upscale", body, "")
 	return png, err
 }
 
@@ -176,8 +177,13 @@ type statusResp struct {
 var ErrResultNotFound = errors.New("result not found")
 
 // sidecarForMode resolves the sidecar base URL for a job mode, mirroring the
-// URL selection postImage uses (fill/redux may live on a different host).
-func (c *Client) sidecarForMode(mode string) string {
+// URL selection postImage uses (fill/redux may live on a different host). A
+// spec with an "sdxl" sidecar overrides the mode routing: its /generate and
+// /edit speak the same body contract as mflux, just on another engine.
+func (c *Client) sidecarForMode(mode, sidecar string) string {
+	if sidecar == "sdxl" && c.SDXLImageURL != "" {
+		return c.SDXLImageURL
+	}
 	switch mode {
 	case "inpaint", "outpaint":
 		if c.FillURL != "" {
@@ -198,10 +204,10 @@ func (c *Client) sidecarForMode(mode string) string {
 // Progress polls the sidecar's /status endpoint and returns the in-flight
 // job's step/total plus the sidecar's gen id (empty when idle). The poll uses
 // a short timeout so a dead sidecar never stalls the queue loop.
-func (c *Client) Progress(ctx context.Context, mode string) (int, int, string, error) {
+func (c *Client) Progress(ctx context.Context, mode, sidecar string) (int, int, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode)+"/status", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode, sidecar)+"/status", nil)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -226,10 +232,10 @@ func (c *Client) Progress(ctx context.Context, mode string) (int, int, string, e
 // Status returns the gen id the sidecar is currently generating ("" when
 // idle), so a booted client can tell whether a persisted gen id is still
 // in flight on the sidecar.
-func (c *Client) Status(ctx context.Context, mode string) (string, error) {
+func (c *Client) Status(ctx context.Context, mode, sidecar string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode)+"/status", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode, sidecar)+"/status", nil)
 	if err != nil {
 		return "", err
 	}
@@ -254,10 +260,10 @@ func (c *Client) Status(ctx context.Context, mode string) (string, error) {
 // Result fetches a completed generation's PNG from the sidecar's persistent
 // results store. ErrResultNotFound marks a 404 (unknown/expired gen id);
 // transport errors are returned as-is so a caller can keep retrying.
-func (c *Client) Result(ctx context.Context, mode, genID string) ([]byte, error) {
+func (c *Client) Result(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode)+"/result/"+url.PathEscape(genID), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sidecarForMode(mode, sidecar)+"/result/"+url.PathEscape(genID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -283,10 +289,10 @@ func (c *Client) Result(ctx context.Context, mode, genID string) ([]byte, error)
 
 // Cancel asks the sidecar to terminate its in-flight mflux subprocess and
 // release its single-flight lock. It is a no-op when the sidecar is idle.
-func (c *Client) Cancel(ctx context.Context, mode string) error {
+func (c *Client) Cancel(ctx context.Context, mode, sidecar string) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.sidecarForMode(mode)+"/cancel", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.sidecarForMode(mode, sidecar)+"/cancel", nil)
 	if err != nil {
 		return err
 	}
@@ -304,10 +310,12 @@ func (c *Client) Cancel(ctx context.Context, mode string) error {
 
 // postImage sends one sidecar request and decodes the returned base64 PNG and
 // (when present) the seed the sidecar used.
-func (c *Client) postImage(ctx context.Context, path string, body []byte) ([]byte, *int64, error) {
+func (c *Client) postImage(ctx context.Context, path string, body []byte, sidecar string) ([]byte, *int64, error) {
 	name := strings.TrimPrefix(path, "/")
 	base := c.ImageURL
-	if path == "/fill" && c.FillURL != "" {
+	if sidecar == "sdxl" && c.SDXLImageURL != "" {
+		base = c.SDXLImageURL
+	} else if path == "/fill" && c.FillURL != "" {
 		base = c.FillURL
 	} else if path == "/redux" && c.ReduxURL != "" {
 		base = c.ReduxURL

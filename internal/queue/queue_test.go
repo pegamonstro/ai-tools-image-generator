@@ -208,7 +208,7 @@ func TestCancelStopsRunningJob(t *testing.T) {
 		<-ctx.Done()
 		return nil, nil, ctx.Err()
 	}
-	opts.Ops.Cancel = func(ctx context.Context, mode string) error { return nil }
+	opts.Ops.Cancel = func(ctx context.Context, mode, sidecar string) error { return nil }
 	m := New(opts)
 	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
 
@@ -238,7 +238,7 @@ func TestProgressEventsStream(t *testing.T) {
 		<-release
 		return []byte("PNG"), nil, nil
 	}
-	opts.Ops.Progress = func(ctx context.Context, mode string) (int, int, string, error) {
+	opts.Ops.Progress = func(ctx context.Context, mode, sidecar string) (int, int, string, error) {
 		return 7, 25, "", nil
 	}
 	m := New(opts)
@@ -540,6 +540,53 @@ func TestSubmitOutpaintMissingMask(t *testing.T) {
 	}
 }
 
+func TestSdxlEngineGateRejectsUnsupportedMode(t *testing.T) {
+	opts := testOpts(t)
+	opts.Models = &models.Catalog{
+		Models: []models.Entry{{Key: "pony", Label: "Pony V6 XL", Value: "/m/sdxl/pony.safetensors", Sidecar: "sdxl"}},
+	}
+	m := New(opts)
+	_, err := m.Submit(SubmitRequest{
+		Mode:   "inpaint",
+		Prompt: "x", Image: "aW1n", Mask: "bWFzaw==", Size: "512x512",
+		Model: "pony",
+	})
+	if err == nil {
+		t.Fatal("expected error for inpaint on sdxl engine")
+	}
+	if !strings.Contains(err.Error(), "mode inpaint is not supported on engine sdxl") {
+		t.Fatalf("wrong error: %v", err)
+	}
+}
+
+func TestSdxlEngineAllowsGenerateAndEdit(t *testing.T) {
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	opts.Models = &models.Catalog{
+		Models: []models.Entry{{Key: "pony", Label: "Pony V6 XL", Value: "/m/sdxl/pony.safetensors", Sidecar: "sdxl"}},
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+		Model: "pony",
+	})
+	if err != nil {
+		t.Fatalf("generate on sdxl engine: %v", err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Sidecar != "sdxl" {
+		t.Fatalf("job sidecar = %q", j.Sidecar)
+	}
+	id, err = m.Submit(SubmitRequest{Mode: "edit", Prompt: "make it snow", Size: "512x512", Image: "aW1n", Model: "pony"})
+	if err != nil {
+		t.Fatalf("edit on sdxl engine: %v", err)
+	}
+	j = waitFor(t, m, id, "done")
+	if j.Sidecar != "sdxl" {
+		t.Fatalf("edit job sidecar = %q", j.Sidecar)
+	}
+}
+
 func TestUpscaleJobCompletes(t *testing.T) {
 	opts := testOpts(t)
 	opts.Ops = editOps()
@@ -761,7 +808,7 @@ func TestSubmitComposesOptionalClauses(t *testing.T) {
 
 	// Optional field set: fragment renders.
 	id, err = m.Submit(SubmitRequest{
-		Genre: "portrait",
+		Genre:  "portrait",
 		Fields: map[string]string{"subject": "an archer", "lighting": "soft"},
 		Size:   "512x512",
 	})
@@ -912,7 +959,7 @@ func TestDispatchCapturesGenIDAndPersists(t *testing.T) {
 		<-release
 		return []byte("PNG"), nil, nil
 	}
-	opts.Ops.Progress = func(ctx context.Context, mode string) (int, int, string, error) {
+	opts.Ops.Progress = func(ctx context.Context, mode, sidecar string) (int, int, string, error) {
 		return 3, 20, "gen7", nil
 	}
 	m := New(opts)
@@ -976,7 +1023,7 @@ func TestAttachRecoversResult(t *testing.T) {
 		generateCalled = true
 		return []byte("PNG"), nil, nil
 	}
-	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
 		if mode != "generate" || genID != "gen42" {
 			t.Errorf("Result(mode=%s genID=%s)", mode, genID)
 		}
@@ -1018,10 +1065,10 @@ func TestAttachFailsWhenResultGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := testOptsAt(t, dir)
-	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
 		return nil, lattice.ErrResultNotFound
 	}
-	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+	opts.Ops.Status = func(ctx context.Context, mode, sidecar string) (string, error) {
 		return "", nil // sidecar idle: the generation is truly gone
 	}
 	m := New(opts)
@@ -1052,14 +1099,14 @@ func TestAttachKeepsPollingWhileSidecarBusy(t *testing.T) {
 	defer restore()
 	opts := testOptsAt(t, dir)
 	calls := 0
-	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
 		calls++
 		if calls < 3 {
 			return nil, lattice.ErrResultNotFound // file appears only when mflux finishes
 		}
 		return []byte("LATE-PNG"), nil
 	}
-	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+	opts.Ops.Status = func(ctx context.Context, mode, sidecar string) (string, error) {
 		return "gen42", nil // our generation is still in flight
 	}
 	m := New(opts)
@@ -1098,7 +1145,7 @@ func TestAttachUnreachableWindowFails(t *testing.T) {
 	attachUnreachableWindow = 30 * time.Millisecond
 	defer func() { attachUnreachableWindow = oldWindow }()
 	opts := testOptsAt(t, dir)
-	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
 		return nil, fmt.Errorf("dial tcp: connection refused") // transport error, not a 404
 	}
 	m := New(opts)
@@ -1131,10 +1178,10 @@ func TestAttachCapEndsTheWait(t *testing.T) {
 	attachMaxWait = 30 * time.Millisecond
 	defer func() { attachMaxWait = oldCap }()
 	opts := testOptsAt(t, dir)
-	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
 		return nil, lattice.ErrResultNotFound
 	}
-	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+	opts.Ops.Status = func(ctx context.Context, mode, sidecar string) (string, error) {
 		return "gen42", nil // forever running: the cap must end the attach
 	}
 	m := New(opts)
@@ -1164,10 +1211,10 @@ func TestAttachHonoursCancel(t *testing.T) {
 	restore := fastAttach(t)
 	defer restore()
 	opts := testOptsAt(t, dir)
-	opts.Ops.Result = func(ctx context.Context, mode, genID string) ([]byte, error) {
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
 		return nil, lattice.ErrResultNotFound
 	}
-	opts.Ops.Status = func(ctx context.Context, mode string) (string, error) {
+	opts.Ops.Status = func(ctx context.Context, mode, sidecar string) (string, error) {
 		return "gen42", nil
 	}
 	m := New(opts)

@@ -43,3 +43,37 @@ func TestLoadBadJSON(t *testing.T) {
 		t.Fatal("want error for bad JSON")
 	}
 }
+
+func TestLookupSidecar(t *testing.T) {
+	c := &Catalog{Models: []Entry{
+		{Key: "pony", Label: "Pony V6 XL", Value: "/m/sdxl/pony.safetensors", Sidecar: "sdxl"},
+		{Key: "persephone", Label: "Persephone 2.0", Value: "/m/persephone-4bit"},
+	}}
+	if got := c.LookupSidecar("pony"); got != "sdxl" {
+		t.Fatalf("by key: got %q", got)
+	}
+	if got := c.LookupSidecar("/m/sdxl/pony.safetensors"); got != "sdxl" {
+		t.Fatalf("by raw value: got %q", got)
+	}
+	if got := c.LookupSidecar("persephone"); got != "" {
+		t.Fatalf("entry without sidecar: got %q", got)
+	}
+	if got := c.LookupSidecar("nope"); got != "" {
+		t.Fatalf("unknown key: got %q", got)
+	}
+}
+
+func TestLoadParsesSidecar(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(p, []byte(
+		`{"models":[{"key":"pony","label":"Pony","value":"/m/sdxl/pony.safetensors","sidecar":"sdxl"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Models) != 1 || c.Models[0].Sidecar != "sdxl" {
+		t.Fatalf("sidecar not parsed: %+v", c.Models)
+	}
+}

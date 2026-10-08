@@ -37,8 +37,12 @@ type SubmitRequest struct {
 	Images    []string  `json:"images"`    // base64: blend references
 	Strengths []float64 `json:"strengths"` // blend per-reference weights
 
-	Model string            `json:"model"` // mflux --model value (path or HF id); "" = sidecar default
-	Loras []storage.LoraRef `json:"loras"` // mflux --lora list; nil = none
+	Model string            `json:"model"` // model value or catalog key (path / HF id); "" = sidecar default
+	Loras []storage.LoraRef `json:"loras"` // lora values or catalog keys; nil = none
+
+	// Sidecar is derived from the model catalog at submit time (not caller
+	// input): the resolved engine selection persisted onto the job.
+	Sidecar string `json:"-"`
 
 	Seed           *int64   `json:"seed,omitempty"`            // fixed seed; nil = random
 	Steps          *int     `json:"steps,omitempty"`           // diffusion steps; nil = sidecar default
@@ -81,14 +85,15 @@ type ImageOps struct {
 	Upscale    func(ctx context.Context, imageB64 string) ([]byte, error)
 	Controlnet func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
 	// Progress polls the in-flight generation's step/total plus the sidecar's
-	// gen id (empty when idle/not running), piggybacked on the same poll.
-	Progress func(ctx context.Context, mode string) (step, total int, genID string, err error)
+	// gen id (empty when idle/not running), piggybacked on the same poll. The
+	// sidecar arg routes to the job's engine ("" = default sidecar).
+	Progress func(ctx context.Context, mode, sidecar string) (step, total int, genID string, err error)
 	// Status returns which gen id (if any) the sidecar is currently generating.
-	Status func(ctx context.Context, mode string) (runningGenID string, err error)
+	Status func(ctx context.Context, mode, sidecar string) (runningGenID string, err error)
 	// Result fetches a completed generation's PNG from the sidecar's persisted
 	// results, or lattice.ErrResultNotFound when the id is unknown/expired.
-	Result func(ctx context.Context, mode, genID string) ([]byte, error)
-	Cancel func(ctx context.Context, mode string) error
+	Result func(ctx context.Context, mode, genID, sidecar string) ([]byte, error)
+	Cancel func(ctx context.Context, mode, sidecar string) error
 }
 
 type Options struct {
@@ -201,7 +206,7 @@ func (m *Manager) attach(id string) {
 		m.mu.Unlock()
 		return
 	}
-	mode, genID := job.Mode, job.GenID
+	mode, genID, sidecar := job.Mode, job.GenID, job.Sidecar
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[id] = cancel
 	m.mu.Unlock()
@@ -231,13 +236,13 @@ func (m *Manager) attach(id string) {
 			return
 		}
 
-		png, err := m.opts.Ops.Result(ctx, mode, genID)
+		png, err := m.opts.Ops.Result(ctx, mode, genID, sidecar)
 		switch {
 		case err == nil:
 			m.saveRecovered(id, png)
 			return
 		case errors.Is(err, lattice.ErrResultNotFound):
-			running, serr := m.opts.Ops.Status(context.Background(), mode)
+			running, serr := m.opts.Ops.Status(context.Background(), mode, sidecar)
 			if serr == nil && running == genID {
 				// Our generation is still in flight on the sidecar; the
 				// persisted file appears when mflux finishes and writes it.
@@ -246,7 +251,7 @@ func (m *Manager) attach(id string) {
 			}
 			// Idle (or another gen is running): one immediate retry covers
 			// the sidecar's write-then-respond race, then the result is lost.
-			png, retryErr := m.opts.Ops.Result(context.Background(), mode, genID)
+			png, retryErr := m.opts.Ops.Result(context.Background(), mode, genID, sidecar)
 			if retryErr == nil {
 				m.saveRecovered(id, png)
 				return
@@ -432,6 +437,10 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 
 	resolveModelValues(m, &req)
 
+	if req.Sidecar == "sdxl" && mode != "generate" && mode != "edit" {
+		return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("mode %s is not supported on engine sdxl", mode)}
+	}
+
 	id := newID()
 	job := &storage.Job{
 		ID:             id,
@@ -446,6 +455,7 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		Enhance:        req.Enhance,
 		Model:          req.Model,
 		Loras:          normalizeLoras(req.Loras),
+		Sidecar:        req.Sidecar,
 		Seed:           req.Seed,
 		Steps:          req.Steps,
 		Guidance:       req.Guidance,
@@ -507,6 +517,7 @@ func resolveModelValues(m *Manager, req *SubmitRequest) {
 		if v, ok := cat.LookupModel(req.Model); ok {
 			req.Model = v
 		}
+		req.Sidecar = cat.LookupSidecar(req.Model)
 	}
 	for i := range req.Loras {
 		if v, ok := cat.LookupLora(req.Loras[i].Name); ok {
@@ -593,7 +604,7 @@ func (m *Manager) run(id string) {
 
 	m.setStatus(id, "generating", "")
 	start := time.Now()
-	spec := storage.ModelSpec{Model: job.Model, Loras: job.Loras}
+	spec := storage.ModelSpec{Model: job.Model, Loras: job.Loras, Sidecar: job.Sidecar}
 	sp := storage.SamplingParams{Seed: job.Seed, Steps: job.Steps, Guidance: job.Guidance, NegativePrompt: job.NegativePrompt}
 
 	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)
@@ -683,7 +694,7 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 		case r := <-done:
 			return r.png, r.seed, r.err
 		case <-ticker.C:
-			step, total, genID, perr := m.opts.Ops.Progress(context.Background(), job.Mode)
+			step, total, genID, perr := m.opts.Ops.Progress(context.Background(), job.Mode, job.Sidecar)
 			if perr != nil {
 				continue
 			}
@@ -761,7 +772,7 @@ func (m *Manager) Cancel(id string) error {
 		cfn()
 	}
 	if m.opts.Ops.Cancel != nil {
-		_ = m.opts.Ops.Cancel(context.Background(), job.Mode)
+		_ = m.opts.Ops.Cancel(context.Background(), job.Mode, job.Sidecar)
 	}
 	return nil
 }

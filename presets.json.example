@@ -10,6 +10,19 @@
       "negative_prompt": "blurry, deformed hands",
       "steps": 24,
       "guidance": 3.5
+    },
+    {
+      "key": "act",
+      "label": "Explicit act (stacked)",
+      "trigger": "explicit sex scene, multiple adults, fully nude, explicit genitalia",
+      "loras": [
+        { "name": "nsfw-booster", "scale": 0.7 },
+        { "name": "photo-nuds", "scale": 0.5 },
+        { "name": "scg-anatomy", "scale": 0.8 }
+      ],
+      "negative_prompt": "blurry, deformed hands, extra fingers, low quality, watermark",
+      "steps": 24,
+      "guidance": 3.5
     }
   ]
 }

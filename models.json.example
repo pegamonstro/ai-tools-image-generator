@@ -5,6 +5,9 @@
   ],
   "loras": [
     { "key": "uncensored", "label": "Uncensored (dev-trained)", "value": "shauray/flux-uncensored-lora" },
-    { "key": "illustration", "label": "Illustration 1.0 (broad styles)", "value": "/Users/<you>/mflux-models/loras/illustration_1.0.safetensors" }
+    { "key": "illustration", "label": "Illustration 1.0 (broad styles)", "value": "/Users/<you>/mflux-models/loras/illustration_1.0.safetensors" },
+    { "key": "nsfw-booster", "label": "NSFW booster (uncensored v1)", "value": "kenerateai/Flux-uncensored" },
+    { "key": "scg-anatomy", "label": "SCG Anatomy v2 (Civitai 640156)", "value": "/Users/<you>/mflux-models/loras/scg-anatomy-v2.safetensors" },
+    { "key": "photo-nuds", "label": "Photo Nuds FPN (Civitai 675247)", "value": "/Users/<you>/mflux-models/loras/photo-nuds.safetensors" }
   ]
 }

@@ -317,6 +317,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      summary: Delete one terminal job and its stored image
+      description: >
+        Removes the job's persisted history lines and its stored PNG.
+        Refused (400) while the job is queued/running — cancel it first.
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: '{"status":"deleted"}'
+        "400":
+          description: The job is not terminal yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Unknown job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/jobs/{id}/events:
     get:
       summary: SSE progress stream (text/event-stream)

@@ -753,12 +753,26 @@ async function cancelJob(id) {
   }
 }
 
+// deleteJob is the one destructive action: it removes the job's history
+// lines and stored PNG server-side, then refreshes the gallery.
+async function deleteJob(id) {
+  if (!confirm('Delete this image and its history entry? This cannot be undone.')) return;
+  try {
+    await jsonFetch('/api/jobs/' + id, { method: 'DELETE' });
+    setStatus('Deleted ' + id + '.', 'ok');
+    await loadHistory();
+  } catch (e) {
+    showStatus(humanizeError(e), 'err', e.message);
+  }
+}
+
 const CARD_ACTIONS = (j) => [
   { label: 'View', fn: () => openDetail(j) },
   { label: 'Use as edit source', fn: () => useHistoryAsEdit(j.id) },
   { label: 'Upscale 4×', fn: () => useHistoryAsUpscale(j.id) },
   { label: 'Save to folder', fn: () => exportImage(j.id) },
   { label: 'Download', href: '/api/images/' + j.id + '.png?download=1' },
+  { label: 'Delete', fn: () => deleteJob(j.id), danger: true },
 ];
 
 function historyCard(j) {
@@ -825,6 +839,7 @@ function historyCard(j) {
       } else {
         const b = document.createElement('button');
         b.type = 'button';
+        if (it.danger) b.className = 'danger';
         b.textContent = it.label;
         b.onclick = () => { menu.open = false; it.fn(); };
         pop.appendChild(b);

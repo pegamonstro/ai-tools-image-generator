@@ -65,6 +65,10 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string { return e.Msg }
 
+// ErrJobNotFound is returned by Cancel and Delete for an unknown id. Its text
+// is the legacy API's plain-text response body, so the wording must not change.
+var ErrJobNotFound = errors.New("job not found")
+
 type Event struct {
 	JobID  string    `json:"job_id"`
 	Status string    `json:"status"`
@@ -765,7 +769,7 @@ func (m *Manager) Cancel(id string) error {
 	}
 	m.mu.Unlock()
 	if job == nil {
-		return fmt.Errorf("job not found")
+		return ErrJobNotFound
 	}
 	switch status {
 	case "queued", "enhancing", "generating":
@@ -780,6 +784,44 @@ func (m *Manager) Cancel(id string) error {
 	}
 	if m.opts.Ops.Cancel != nil {
 		_ = m.opts.Ops.Cancel(context.Background(), job.Mode, job.Sidecar)
+	}
+	return nil
+}
+
+// Delete removes a terminal job entirely: the in-memory entry (including its
+// log buffer) and every trace on disk — history lines and the stored PNG.
+// Non-terminal jobs are refused (cancel them first): a running job's own
+// completion would otherwise re-append the history line the delete just
+// removed. Disk work happens under m.mu, mirroring the append-under-lock of
+// finish, so a delete can never interleave with a status transition's persist.
+func (m *Manager) Delete(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job := m.jobs[id]
+	if job == nil {
+		return ErrJobNotFound
+	}
+	switch job.Status {
+	case "done", "failed", "cancelled":
+	default:
+		return fmt.Errorf("job is %s", job.Status)
+	}
+	if err := m.opts.Store.DeleteHistory(id); err != nil {
+		return err
+	}
+	if err := m.opts.Store.RemoveImage(job.ID); err != nil {
+		return err
+	}
+	// Disk is clean, so any failure up to here leaves a retryable state.
+	delete(m.jobs, id)
+	delete(m.logs, id)
+	delete(m.cancelled, id)
+	delete(m.cancels, id)
+	for i, o := range m.order {
+		if o == id {
+			m.order = append(m.order[:i], m.order[i+1:]...)
+			break
+		}
 	}
 	return nil
 }
@@ -875,11 +917,15 @@ func (m *Manager) finish(id, status, errMsg string) {
 	job.Step = 0
 	job.Total = 0
 	j := *job
-	m.mu.Unlock()
-
+	// The persist sits under the lock: a Delete also holds m.mu while
+	// rewriting history (it refuses non-terminal jobs, so it checks the
+	// status this call is setting) — appending outside the lock would let the
+	// new terminal line land after the delete's rewrite and resurrect the
+	// deleted job in the persisted history.
 	if err := m.opts.Store.AppendHistory(j); err != nil {
 		log.Printf("queue: persist terminal status of job %s: %v", id, err)
 	}
+	m.mu.Unlock()
 	m.broadcast(Event{JobID: id, Status: status, Error: errMsg, Ts: now, Seed: j.Seed})
 }
 

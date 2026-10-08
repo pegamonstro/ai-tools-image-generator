@@ -634,6 +634,8 @@ details.csec[open] > summary::after { transform: rotate(90deg); }
   text-decoration: none;
 }
 .menu-pop button:hover, .menu-pop a:hover { background: var(--surface-2); }
+.menu-pop button.danger { color: var(--danger); }
+.menu-pop button.danger:hover { color: var(--danger); background: rgba(255, 107, 122, 0.08); }
 
 .card-inflight {
   display: flex;

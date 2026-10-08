@@ -129,6 +129,55 @@ func (s *Store) AppendHistory(j Job) error {
 	return err
 }
 
+// DeleteHistory rewrites history.jsonl without any line belonging to id — the
+// inverse of AppendHistory, which can only append. Kept lines are preserved
+// byte-for-byte; a missing file or an id with no matching lines is a no-op.
+func (s *Store) DeleteHistory(id string) error {
+	path := filepath.Join(s.dir, "history.jsonl")
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var kept []byte
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var j Job
+		if err := json.Unmarshal(sc.Bytes(), &j); err != nil {
+			return err
+		}
+		if j.ID == id {
+			continue
+		}
+		kept = append(kept, sc.Bytes()...)
+		kept = append(kept, '\n')
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, kept, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// RemoveImage deletes the stored PNG for id, mirroring SaveImage. A file that
+// is already gone is success, so a retried delete converges.
+func (s *Store) RemoveImage(id string) error {
+	if !ValidImageID(id) {
+		return fmt.Errorf("invalid image id %q", id)
+	}
+	err := os.Remove(filepath.Join(s.dir, "images", id+".png"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // LoadHistory reads history.jsonl (nil if the file does not exist yet). Jobs
 // may be appended more than once (per persisted transition, e.g. queued at
 // submit-time and terminal at finish); records are deduped by id, last record

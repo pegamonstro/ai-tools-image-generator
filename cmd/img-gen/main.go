@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -175,6 +176,18 @@ func newHandler(cfg config) (http.Handler, error) {
 				return
 			}
 			writeJSON(w, map[string]string{"status": "cancelling"})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if err := mgr.Delete(rest); err != nil {
+				if errors.Is(err, queue.ErrJobNotFound) {
+					writeErr(w, http.StatusNotFound, "not found")
+					return
+				}
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, map[string]string{"status": "deleted"})
 			return
 		}
 		j, ok := mgr.Get(rest)

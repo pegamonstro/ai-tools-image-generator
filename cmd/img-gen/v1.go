@@ -78,6 +78,18 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 			d.handleV1Cancel(w, r, strings.TrimSuffix(rest, "/cancel"))
 			return
 		}
+		if r.Method == http.MethodDelete {
+			if err := d.mgr.Delete(rest); err != nil {
+				if errors.Is(err, queue.ErrJobNotFound) {
+					writeV1Err(w, http.StatusNotFound, "job_not_found", "job not found", rest)
+					return
+				}
+				writeV1Err(w, http.StatusBadRequest, "validation_error", err.Error(), rest)
+				return
+			}
+			writeJSON(w, map[string]string{"status": "deleted"})
+			return
+		}
 		j, ok := d.mgr.Get(rest)
 		if !ok {
 			writeV1Err(w, http.StatusNotFound, "job_not_found", "job not found", rest)

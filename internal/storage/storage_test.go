@@ -176,6 +176,99 @@ func TestCopyImageRejectsBadID(t *testing.T) {
 	}
 }
 
+func TestDeleteHistoryRemovesOnlyThatID(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each job persists twice (submit + terminal lines); deletion must drop
+	// both lines of the deleted job and keep its neighbour's.
+	a, aDone := Job{ID: "a", Prompt: "first", Status: "queued"}, Job{ID: "a", Prompt: "first", Status: "done"}
+	b, bDone := Job{ID: "b", Prompt: "second", Status: "queued"}, Job{ID: "b", Prompt: "second", Status: "done"}
+	for _, j := range []Job{a, aDone, b, bDone} {
+		if err := s.AppendHistory(j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteHistory("a"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "b" {
+		t.Fatalf("want only b after deleting a, got %+v", got)
+	}
+}
+
+func TestDeleteHistoryUnknownIDIsANoOp(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(Job{ID: "b", Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteHistory("missing"); err != nil {
+		t.Fatalf("want no-op success for unknown id, got %v", err)
+	}
+	got, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "b" {
+		t.Fatalf("b must survive, got %+v", got)
+	}
+}
+
+func TestDeleteHistoryMissingFileIsANoOp(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteHistory("a"); err != nil {
+		t.Fatalf("want no-op success for missing file, got %v", err)
+	}
+}
+
+func TestRemoveImageDeletesFile(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "0123456789abcdef"
+	if _, err := s.SaveImage(id, []byte("PNG")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveImage(id); err != nil {
+		t.Fatalf("RemoveImage: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, "images", id+".png")); !os.IsNotExist(err) {
+		t.Fatalf("want the PNG gone, got %v", err)
+	}
+}
+
+func TestRemoveImageMissingFileSucceeds(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveImage("0123456789abcdef"); err != nil {
+		t.Fatalf("want already-gone to be success, got %v", err)
+	}
+}
+
+func TestRemoveImageRejectsBadID(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveImage("../../etc/passwd"); err == nil {
+		t.Fatal("want error for invalid id")
+	}
+}
+
 func TestJobProgressJSON(t *testing.T) {
 	inFlight, _ := json.Marshal(Job{ID: "1", Status: "generating", Step: 2, Total: 8})
 	var in map[string]any

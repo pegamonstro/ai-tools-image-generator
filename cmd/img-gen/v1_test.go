@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -391,5 +392,113 @@ func TestV1CancelUnknownJob(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&env)
 	if resp.StatusCode != http.StatusNotFound || env.Error.Code != "job_not_found" {
 		t.Fatalf("cancel = %d %+v", resp.StatusCode, env.Error)
+	}
+}
+
+func TestV1DeleteJobLifecycle(t *testing.T) {
+	srv, _ := newV1Server(t, 0, "")
+	out := v1Submit(t, srv, `{"genre":"landscape","fields":{"setting":"a valley"},"size":"512x512"}`, "")
+	id := out["job_id"].(string)
+	waitForJobDone(t, srv, id)
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/jobs/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete = %d", resp.StatusCode)
+	}
+	var body map[string]any
+	json.NewDecoder(resp.Body).Decode(&body)
+	if body["status"] != "deleted" {
+		t.Fatalf("delete body = %v", body)
+	}
+
+	// The job is gone: GET and a repeat DELETE both 404 with the envelope.
+	get, err := http.Get(srv.URL + "/api/v1/jobs/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer get.Body.Close()
+	var env v1Env
+	json.NewDecoder(get.Body).Decode(&env)
+	if get.StatusCode != http.StatusNotFound || env.Error.Code != "job_not_found" {
+		t.Fatalf("get after delete = %d %+v", get.StatusCode, env.Error)
+	}
+	req2, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/jobs/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var env2 v1Env
+	json.NewDecoder(resp2.Body).Decode(&env2)
+	if resp2.StatusCode != http.StatusNotFound || env2.Error.Code != "job_not_found" {
+		t.Fatalf("repeat delete = %d %+v", resp2.StatusCode, env2.Error)
+	}
+}
+
+func TestV1DeleteNonTerminalJobRefused(t *testing.T) {
+	srv, _ := newV1Server(t, 300*time.Millisecond, "")
+	out := v1Submit(t, srv, `{"genre":"landscape","fields":{"setting":"a valley"},"size":"512x512"}`, "")
+	id := out["job_id"].(string)
+
+	// Wait until the job is running, then refuse the delete.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r, err := http.Get(srv.URL + "/api/v1/jobs/" + id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var j map[string]any
+		json.NewDecoder(r.Body).Decode(&j)
+		r.Body.Close()
+		if j["status"] == "generating" {
+			break
+		}
+		if j["status"] == "done" || j["status"] == "failed" {
+			t.Fatalf("job finished too early: %v", j)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job never started generating: %v", j)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/jobs/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var env v1Env
+	json.NewDecoder(resp.Body).Decode(&env)
+	if resp.StatusCode != http.StatusBadRequest || env.Error.Code != "validation_error" || !strings.Contains(env.Error.Message, "generating") {
+		t.Fatalf("delete running job = %d %+v", resp.StatusCode, env.Error)
+	}
+
+	waitForJobDone(t, srv, id)
+	req2, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/jobs/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("delete after completion = %d", resp2.StatusCode)
 	}
 }

@@ -1282,3 +1282,82 @@ func TestAttachHonoursCancel(t *testing.T) {
 		t.Fatalf("status = %q, want cancelled", j.Status)
 	}
 }
+
+func TestDeleteTerminalJobRemovesEverything(t *testing.T) {
+	dir := t.TempDir()
+	m := New(testOptsAt(t, dir))
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.ImagePath == "" {
+		t.Fatalf("done job missing image path: %+v", j)
+	}
+	if err := m.Delete(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Get(id); ok {
+		t.Fatal("in-memory entry survived Delete")
+	}
+	if got := m.List(); len(got) != 0 {
+		t.Fatalf("list after delete = %+v", got)
+	}
+	hist, err := m.opts.Store.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 0 {
+		t.Fatalf("persisted history survived: %+v", hist)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "images", id+".png")); !os.IsNotExist(err) {
+		t.Fatalf("PNG survived: %v", err)
+	}
+	if err := m.Delete(id); err == nil {
+		t.Fatal("expected error deleting an already-deleted job")
+	}
+}
+
+func TestDeleteUnknownJobFails(t *testing.T) {
+	m := New(testOpts(t))
+	if err := m.Delete("doesnotexist"); err == nil || err.Error() != "job not found" {
+		t.Fatalf("want \"job not found\", got %v", err)
+	}
+}
+
+func TestDeleteNonTerminalJobFails(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	opts := testOpts(t)
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		close(started)
+		<-release
+		return []byte("PNG"), nil, nil
+	}
+	m := New(opts)
+	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
+	<-started
+	if err := m.Delete(id); err == nil || err.Error() != "job is generating" {
+		t.Fatalf("want \"job is generating\", got %v", err)
+	}
+	close(release)
+	waitFor(t, m, id, "done")
+	if err := m.Delete(id); err != nil {
+		t.Fatalf("delete after completion: %v", err)
+	}
+}
+
+func TestDeleteSurvivesListRescue(t *testing.T) {
+	// List re-merges persisted records missing from memory; after a delete the
+	// persisted file must not resurrect the job there.
+	dir := t.TempDir()
+	m := New(testOptsAt(t, dir))
+	id, _ := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
+	waitFor(t, m, id, "done")
+	if err := m.Delete(id); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.List(); len(got) != 0 {
+		t.Fatalf("List resurrected the deleted job: %+v", got)
+	}
+}

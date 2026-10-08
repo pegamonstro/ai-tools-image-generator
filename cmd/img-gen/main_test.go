@@ -592,3 +592,76 @@ func TestDirectImageRouting(t *testing.T) {
 		t.Fatalf("path = %q, want /generate in direct mode", sawPath)
 	}
 }
+
+func TestLegacyDeleteJob(t *testing.T) {
+	h := newTestHandler(t)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	body := []byte(`{"genre":"landscape","fields":{"setting":"a valley"},"size":"512x512"}`)
+	resp, err := http.Post(srv.URL+"/api/jobs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sub struct {
+		JobID string `json:"job_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&sub)
+	resp.Body.Close()
+	if sub.JobID == "" {
+		t.Fatal("no job id")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r, err := http.Get(srv.URL + "/api/jobs/" + sub.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var j map[string]any
+		json.NewDecoder(r.Body).Decode(&j)
+		r.Body.Close()
+		if j["status"] == "done" || j["status"] == "failed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job never finished: %v", j)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/jobs/"+sub.JobID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	del, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer del.Body.Close()
+	var out map[string]any
+	json.NewDecoder(del.Body).Decode(&out)
+	if del.StatusCode != http.StatusOK || out["status"] != "deleted" {
+		t.Fatalf("delete = %d %v", del.StatusCode, out)
+	}
+	get, err := http.Get(srv.URL + "/api/jobs/" + sub.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer get.Body.Close()
+	if get.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after delete = %d", get.StatusCode)
+	}
+	req2, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/jobs/"+sub.JobID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	del2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer del2.Body.Close()
+	if del2.StatusCode != http.StatusNotFound {
+		t.Fatalf("repeat delete = %d", del2.StatusCode)
+	}
+}

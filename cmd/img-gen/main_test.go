@@ -59,14 +59,21 @@ func writePresets(t *testing.T) string {
 	return p
 }
 
+// latticeImageReply is the frontend's OpenAI Images response for one fake PNG.
+func latticeImageReply(img []byte) string {
+	return `{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(img) + `","seed":123}]}`
+}
+
 // newTestHandler builds a handler backed by a fast mock lattice server.
+// ImageRouting stays the production default (lattice), so the mock serves the
+// frontend's OpenAI Images routes — the golden path the runtime actually walks.
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	img := []byte("fake-png-bytes")
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/generate":
-			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/v1/images/generations", "/v1/images/edits":
+			w.Write([]byte(latticeImageReply(img)))
 		case "/v1/chat/completions":
 			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
 		default:
@@ -95,8 +102,8 @@ func TestEndToEnd(t *testing.T) {
 	img := []byte("fake-png-bytes")
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/generate":
-			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/v1/images/generations":
+			w.Write([]byte(latticeImageReply(img)))
 		case "/v1/chat/completions":
 			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
 		default:
@@ -197,8 +204,8 @@ func TestModelsAndExport(t *testing.T) {
 	img := []byte("fake-png-bytes")
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/generate":
-			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/v1/images/generations":
+			w.Write([]byte(latticeImageReply(img)))
 		case "/v1/chat/completions":
 			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
 		default:
@@ -443,10 +450,8 @@ func TestEditRoundTrip(t *testing.T) {
 	img := []byte("fake-png-bytes")
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/generate":
-			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
-		case "/edit":
-			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/v1/images/edits":
+			w.Write([]byte(latticeImageReply(img)))
 		case "/v1/chat/completions":
 			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
 		default:
@@ -509,5 +514,81 @@ func TestEditRoundTrip(t *testing.T) {
 	}
 	if job.Mode != "edit" {
 		t.Fatalf("mode = %q, want edit", job.Mode)
+	}
+}
+
+// The legacy route stays operable as a rollback: IMAGE_ROUTING=direct sends
+// generate to the sidecar's /generate (the direct dialect) instead of the
+// frontend's OpenAI Images route.
+func TestDirectImageRouting(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	sawPath := ""
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		switch r.URL.Path {
+		case "/generate":
+			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+		case "/v1/chat/completions":
+			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mock.Close()
+
+	cfg := config{
+		LatticeURL:    mock.URL,
+		ImageRouting:  "direct",
+		ImageURL:      mock.URL,
+		DataDir:       t.TempDir(),
+		GenresFile:    writeGenres(t),
+		EnhanceModel:  "flux-dev",
+		EnhanceSystem: "sys",
+		ImageTimeout:  5 * time.Second,
+	}
+	h, err := newHandler(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	body := []byte(`{"genre":"landscape","fields":{"setting":"a valley"},"size":"512x512"}`)
+	resp, err := http.Post(srv.URL+"/api/jobs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sub struct {
+		JobID string `json:"job_id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&sub)
+	resp.Body.Close()
+	if sub.JobID == "" {
+		t.Fatal("empty job_id")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var status string
+	for time.Now().Before(deadline) {
+		r, err := http.Get(srv.URL + "/api/jobs/" + sub.JobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var job struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&job)
+		r.Body.Close()
+		if job.Status == "done" || job.Status == "failed" {
+			status = job.Status
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status != "done" {
+		t.Fatalf("status = %q", status)
+	}
+	if sawPath != "/generate" {
+		t.Fatalf("path = %q, want /generate in direct mode", sawPath)
 	}
 }

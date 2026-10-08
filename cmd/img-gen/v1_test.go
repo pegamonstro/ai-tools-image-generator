@@ -26,9 +26,9 @@ func newV1Server(t *testing.T, genDelay time.Duration, token string) (*httptest.
 	img := []byte("fake-png-bytes")
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/generate":
+		case "/v1/images/generations":
 			time.Sleep(genDelay)
-			w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString(img) + `"}`))
+			w.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(img) + `","seed":123}]}`))
 		case "/v1/chat/completions":
 			w.Write([]byte(`{"choices":[{"message":{"content":"enhanced prompt"}}]}`))
 		default:

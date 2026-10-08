@@ -26,6 +26,12 @@ type Client struct {
 	UpscaleURL   string // optional Real-ESRGAN sidecar for /upscale; defaults to ImageURL
 	SDXLImageURL string // optional stable-diffusion.cpp sidecar; spec.Sidecar "sdxl" routes here
 	HTTP         *http.Client
+	// ImagesViaLattice routes Generate/Edit through the frontend's OpenAI
+	// Images routes (all inference through the lattice) instead of direct
+	// sidecar calls. The remaining ops and the job progress/cancel calls stay
+	// direct: the gateway does not proxy /pose, /fill, /redux, /upscale yet,
+	// and the sidecar-side gen id recovery depends on them being reachable.
+	ImagesViaLattice bool
 }
 
 func New(baseURL string) *Client {
@@ -37,6 +43,9 @@ func New(baseURL string) *Client {
 // one). The sidecar takes explicit width/height rather than an OpenAI "size"
 // string, so "1024x576" is split into its dimensions.
 func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	if c.ImagesViaLattice {
+		return c.latticeImage(ctx, "/v1/images/generations", prompt, size, "", 0, spec, sp)
+	}
 	w, h, err := parseSize(size)
 	if err != nil {
 		return nil, nil, err
@@ -55,6 +64,9 @@ func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage
 // while applying the prompt. imageB64 is the source image (base64); strength is
 // the denoise strength in [0,1] (higher departs further from the source).
 func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	if c.ImagesViaLattice {
+		return c.latticeImage(ctx, "/v1/images/edits", prompt, size, imageB64, strength, spec, sp)
+	}
 	w, h, err := parseSize(size)
 	if err != nil {
 		return nil, nil, err
@@ -70,6 +82,69 @@ func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, streng
 		return nil, nil, err
 	}
 	return c.postImage(ctx, "/edit", b, spec.Sidecar)
+}
+
+// latticeImage runs one generate or edit through the frontend's OpenAI Images
+// routes: the model field carries the lattice registry name (the submitted
+// catalog key, falling back to the raw value), the size stays the "WxH" string,
+// and the Lattice extensions (loras + sampling knobs, plus edit's image/strength)
+// pass through so settings survive the proxy to the gateway. data[0] returns the
+// PNG and the seed the engine's run actually used.
+func (c *Client) latticeImage(ctx context.Context, path, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	if c.BaseURL == "" {
+		return nil, nil, errors.New("lattice image routing is on but no lattice base URL is configured (set IMAGE_ROUTING=direct to use sidecars directly)")
+	}
+	body := map[string]any{"prompt": prompt, "size": size, "n": 1, "response_format": "b64_json"}
+	name := spec.LatticeModel
+	if name == "" {
+		name = spec.Model
+	}
+	if name != "" {
+		body["model"] = name
+	}
+	if imageB64 != "" {
+		body["image"] = imageB64
+		body["strength"] = strength
+	}
+	if len(spec.Loras) > 0 {
+		body["loras"] = spec.Loras
+	}
+	applyGenParams(body, sp)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, nil, fmt.Errorf("lattice %s: %s: %s", strings.TrimPrefix(path, "/v1/images/"), resp.Status, msg)
+	}
+	var lr struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+			Seed    *int64 `json:"seed"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+		return nil, nil, err
+	}
+	if len(lr.Data) != 1 {
+		return nil, nil, fmt.Errorf("lattice image: got %d results, want 1", len(lr.Data))
+	}
+	if lr.Data[0].B64JSON == "" {
+		return nil, nil, fmt.Errorf("lattice image: empty image")
+	}
+	png, err := base64.StdEncoding.DecodeString(lr.Data[0].B64JSON)
+	return png, lr.Data[0].Seed, err
 }
 
 // applyModelSpec injects the optional model/LoRA selection into a request body,

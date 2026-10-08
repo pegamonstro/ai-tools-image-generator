@@ -580,3 +580,131 @@ func TestProgressRoutesToSdxlSidecar(t *testing.T) {
 		t.Fatal("progress polled the mflux sidecar")
 	}
 }
+
+// OpenAI Images shape, at the frontend: with ImagesViaLattice on, generate must
+// speak the frontend's /v1/images/generations dialect — model is the registry
+// name (LatticeModel first), size is the "WxH" string, and the Lattice
+// extensions (loras + sampling knobs) pass through so knobs survive the proxy.
+func TestGenerateThroughLattice(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	var got map[string]any
+	sawPath := ""
+	frontend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"created":1,"data":[{"b64_json":"` +
+			base64.StdEncoding.EncodeToString(img) + `","seed":123}]}`))
+	}))
+	defer frontend.Close()
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("direct sidecar called while lattice routing is on")
+	}))
+	defer direct.Close()
+
+	c := New(frontend.URL)
+	c.ImageURL = direct.URL
+	c.ImagesViaLattice = true
+	spec := storage.ModelSpec{
+		Model:        "/Users/m6/flux-dev-4bit",
+		LatticeModel: "persephone",
+		Loras:        []storage.LoraRef{{Name: "shauray/flux-uncensored-lora", Scale: 0.8}},
+	}
+	sp := storage.SamplingParams{Seed: int64PtrL(42), Steps: intPtrL(28), Guidance: float64PtrL(3.5), NegativePrompt: "blurry"}
+	png, seed, err := c.Generate(context.Background(), "a cat", "1024x576", spec, sp)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if sawPath != "/v1/images/generations" {
+		t.Fatalf("path = %q, want /v1/images/generations", sawPath)
+	}
+	if string(png) != string(img) {
+		t.Fatalf("png not decoded from b64_json")
+	}
+	if seed == nil || *seed != 123 {
+		t.Fatalf("seed = %v, want 123", seed)
+	}
+	if got["model"] != "persephone" {
+		t.Errorf("model = %v, want the registry name persephone", got["model"])
+	}
+	if got["size"] != "1024x576" || got["n"] != float64(1) || got["response_format"] != "b64_json" {
+		t.Errorf("openai shape = %v", got)
+	}
+	if _, ok := got["width"]; ok {
+		t.Errorf("width leaked into the lattice body: %v", got)
+	}
+	if loras, _ := got["loras"].([]any); len(loras) != 1 {
+		t.Errorf("loras = %v", got["loras"])
+	}
+	for _, want := range []string{"seed", "steps", "guidance", "negative_prompt"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("lattice extension %q missing: %v", want, got)
+		}
+	}
+}
+
+// Without a catalog key the lattice path sends the raw value as the model
+// name — that works only when the serving host pins the value as a name.
+func TestGenerateThroughLatticeFallsBackToRawValue(t *testing.T) {
+	var got map[string]any
+	frontend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"data":[{"b64_json":"aW1n","seed":9}]}`))
+	}))
+	defer frontend.Close()
+
+	c := New(frontend.URL)
+	c.ImagesViaLattice = true
+	_, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{Model: "flux-dev"}, storage.SamplingParams{})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got["model"] != "flux-dev" {
+		t.Fatalf("model = %v, want the raw value as a pinned name", got["model"])
+	}
+}
+
+// Edit through the lattice keeps the OpenAI `image` field and rides strength
+// as the Lattice extension, exactly as the sidecar's /edit does.
+func TestEditThroughLattice(t *testing.T) {
+	img := []byte("fake-png-bytes")
+	sawPath := ""
+	var got map[string]any
+	frontend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString(img) + `","seed":77}]}`))
+	}))
+	defer frontend.Close()
+
+	c := New(frontend.URL)
+	c.ImagesViaLattice = true
+	png, seed, err := c.Edit(context.Background(), "a cat", "512x512", "aW1n", 0.4, storage.ModelSpec{}, storage.SamplingParams{})
+	if err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	if sawPath != "/v1/images/edits" {
+		t.Fatalf("path = %q, want /v1/images/edits", sawPath)
+	}
+	if string(png) != string(img) || seed == nil || *seed != 77 {
+		t.Fatalf("png=%q seed=%v", png, seed)
+	}
+	if got["image"] != "aW1n" || got["strength"] != float64(0.4) {
+		t.Fatalf("edit fields = %v", got)
+	}
+}
+
+// A lattice-routed client with no frontend URL fails loudly instead of
+// silently generating nowhere.
+func TestGenerateThroughLatticeRequiresBaseURL(t *testing.T) {
+	c := New("")
+	c.ImagesViaLattice = true
+	_, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, storage.SamplingParams{})
+	if err == nil {
+		t.Fatal("expected an error without a lattice base URL")
+	}
+}
+
+func intPtrL(v int) *int             { return &v }
+func int64PtrL(v int64) *int64       { return &v }
+func float64PtrL(v float64) *float64 { return &v }

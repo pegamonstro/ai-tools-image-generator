@@ -27,6 +27,7 @@ var staticFS embed.FS
 
 type config struct {
 	LatticeURL    string
+	ImageRouting  string // "lattice" (default): generate+edit via the frontend; "direct": legacy sidecar calls
 	ImageURL      string
 	FillURL       string
 	ReduxURL      string
@@ -46,6 +47,7 @@ type config struct {
 func loadConfig() config {
 	return config{
 		LatticeURL:    envOr("LATTICE_FRONTEND_URL", "http://127.0.0.1:8080"),
+		ImageRouting:  envOr("IMAGE_ROUTING", "lattice"),
 		ImageURL:      envOr("IMAGE_URL", "http://127.0.0.1:8899"),
 		FillURL:       envOr("FILL_URL", ""),
 		ReduxURL:      envOr("REDUX_URL", ""),
@@ -86,6 +88,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat.ReduxURL = cfg.ReduxURL
 	lat.UpscaleURL = cfg.UpscaleURL
 	lat.SDXLImageURL = cfg.SDXLURL
+	lat.ImagesViaLattice = cfg.ImageRouting != "direct"
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
@@ -293,8 +296,8 @@ func main() {
 		log.Fatalf("startup: %v", err)
 	}
 	addr := envOr("LISTEN", ":8099")
-	log.Printf("img-gen config: lattice=%s image_url=%s upscale_url=%s sdxl_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s api_auth=%t",
-		cfg.LatticeURL, cfg.ImageURL, cfg.UpscaleURL, cfg.SDXLURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr, cfg.APIToken != "")
+	log.Printf("img-gen config: lattice=%s image_routing=%s image_url=%s upscale_url=%s sdxl_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s api_auth=%t",
+		cfg.LatticeURL, cfg.ImageRouting, cfg.ImageURL, cfg.UpscaleURL, cfg.SDXLURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr, cfg.APIToken != "")
 	log.Printf("img-gen listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, h))
 }

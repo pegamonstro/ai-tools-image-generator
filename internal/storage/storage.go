@@ -22,6 +22,10 @@ type ModelSpec struct {
 	Model   string    // model value (checkpoint path / HF id); "" = sidecar default
 	Loras   []LoraRef // lora value list; nil = none
 	Sidecar string    // engine selection ("sdxl" = stable-diffusion.cpp sidecar; "" = default mflux sidecar)
+	// LatticeModel is the submitted catalog key, forwarded as the lattice
+	// model name when generation runs through the frontend (the lattice
+	// routes by registry name, not by file path). Empty = fall back to Model.
+	LatticeModel string
 }
 
 // SamplingParams are optional generation knobs forwarded to the mflux sidecar.
@@ -45,6 +49,7 @@ type Job struct {
 	Size           string            `json:"size"`
 	Enhance        bool              `json:"enhance"`
 	Model          string            `json:"model,omitempty"`
+	ModelKey       string            `json:"model_key,omitempty"`      // submitted catalog key; the lattice routes by this name
 	Loras          []LoraRef         `json:"loras,omitempty"`
 	Sidecar        string            `json:"sidecar,omitempty"`         // engine selection ("sdxl"); lets a restart re-attach on the right sidecar
 	Seed           *int64            `json:"seed,omitempty"`            // seed actually used (sidecar response); nil for inpaint/blend

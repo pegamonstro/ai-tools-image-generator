@@ -442,6 +442,61 @@ func TestSubmitNilCatalogSkipsResolution(t *testing.T) {
 	}
 }
 
+// The submitted catalog key must survive resolution: on the lattice path the
+// frontend routes by registry name (the key), while the resolved value is only
+// the direct-sidecar fallback. Losing the key makes every catalog submit
+// unroutable once generation goes through the lattice.
+func TestSubmitPreservesModelKey(t *testing.T) {
+	opts := testOpts(t)
+	opts.Models = &models.Catalog{
+		Models: []models.Entry{{Key: "persephone", Value: "/m/persephone-4bit"}},
+	}
+	var sawSpec storage.ModelSpec
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		sawSpec = spec
+		return []byte("PNG"), nil, nil
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+		Model: "persephone",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "/m/persephone-4bit" {
+		t.Fatalf("model value not resolved: %q", j.Model)
+	}
+	if j.ModelKey != "persephone" {
+		t.Fatalf("model key lost: %q", j.ModelKey)
+	}
+	if sawSpec.LatticeModel != "persephone" {
+		t.Fatalf("op spec missing the lattice model name: %+v", sawSpec)
+	}
+}
+
+// A raw value has no catalog key: ModelKey stays empty and the lattice path
+// falls back to the value itself (routable only when the serving host pins it).
+func TestSubmitRawModelLeavesModelKeyEmpty(t *testing.T) {
+	opts := testOpts(t)
+	opts.Models = &models.Catalog{
+		Models: []models.Entry{{Key: "persephone", Value: "/m/persephone-4bit"}},
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+		Model: "huggingface/flux-dev",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "huggingface/flux-dev" || j.ModelKey != "" {
+		t.Fatalf("raw submit changed routing identity: model=%q key=%q", j.Model, j.ModelKey)
+	}
+}
+
 func TestSubmitUnknownMode(t *testing.T) {
 	m := New(testOpts(t))
 	if _, err := m.Submit(SubmitRequest{Mode: "nope"}); err == nil {

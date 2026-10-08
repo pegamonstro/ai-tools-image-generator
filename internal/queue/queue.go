@@ -44,6 +44,11 @@ type SubmitRequest struct {
 	// input): the resolved engine selection persisted onto the job.
 	Sidecar string `json:"-"`
 
+	// ModelKey is derived alongside Sidecar when the submitted model matches a
+	// catalog key: the resolved value stays the direct-sidecar fallback, the
+	// key is what the lattice routes by. Derived, not caller input.
+	ModelKey string `json:"-"`
+
 	Seed           *int64   `json:"seed,omitempty"`            // fixed seed; nil = random
 	Steps          *int     `json:"steps,omitempty"`           // diffusion steps; nil = sidecar default
 	Guidance       *float64 `json:"guidance,omitempty"`        // guidance; nil = sidecar default
@@ -454,6 +459,7 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		Size:           req.Size,
 		Enhance:        req.Enhance,
 		Model:          req.Model,
+		ModelKey:       req.ModelKey,
 		Loras:          normalizeLoras(req.Loras),
 		Sidecar:        req.Sidecar,
 		Seed:           req.Seed,
@@ -515,6 +521,7 @@ func resolveModelValues(m *Manager, req *SubmitRequest) {
 	}
 	if req.Model != "" {
 		if v, ok := cat.LookupModel(req.Model); ok {
+			req.ModelKey = req.Model
 			req.Model = v
 		}
 		req.Sidecar = cat.LookupSidecar(req.Model)
@@ -604,7 +611,7 @@ func (m *Manager) run(id string) {
 
 	m.setStatus(id, "generating", "")
 	start := time.Now()
-	spec := storage.ModelSpec{Model: job.Model, Loras: job.Loras, Sidecar: job.Sidecar}
+	spec := storage.ModelSpec{Model: job.Model, LatticeModel: job.ModelKey, Loras: job.Loras, Sidecar: job.Sidecar}
 	sp := storage.SamplingParams{Seed: job.Seed, Steps: job.Steps, Guidance: job.Guidance, NegativePrompt: job.NegativePrompt}
 
 	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)

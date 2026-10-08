@@ -19,7 +19,11 @@ Env vars: `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`) — the latti
 frontend's chat endpoint used for prompt enhancement; `IMAGE_URL` (default
 `http://127.0.0.1:8899`) — the mflux sidecar handling generation; `FILL_URL` and
 `REDUX_URL` — sidecar endpoints for inpaint/outpaint when served separately;
-`UPSCALE_URL` — the Real-ESRGAN sidecar; `IMG_GEN_TOKEN` — require a bearer
+`UPSCALE_URL` — the Real-ESRGAN sidecar; `SDXL_URL` — the optional second
+image engine (a
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) sidecar
+that speaks the same body contract, used only by models whose catalog entry
+carries `"sidecar": "sdxl"`); `IMG_GEN_TOKEN` — require a bearer
 token on `/api/*` (see "Agent API" below); `DATA_DIR` (`./data`), `GENRES_FILE`
 (`./genres.json`), `MODELS_FILE` (`./models.json`), `PRESETS_FILE`
 (`./presets.json`), `EXPORT_DIR`, `ENHANCE_MODEL`
@@ -65,7 +69,13 @@ The pickers are populated from `models.json` (served at `GET /api/models`):
 
 Each entry has a `key` (unused by the runtime, kept for clarity), a `label`
 (shown in the picker), and a `value` — an mflux `--model`/`--lora` value, either
-a local path or a HuggingFace id. LoRA applies to generate/edit only (the
+a local path or a HuggingFace id. Model entries may also carry an optional
+`"sidecar"` engine selection: `"sdxl"` routes that model to the
+stable-diffusion.cpp sidecar (`SDXL_URL`) instead of mflux, falling back to the
+default sidecar when `SDXL_URL` is unset. The engine is derived from the
+catalog at submit time — requests never supply it directly — and only the
+`generate` and `edit` modes are accepted on the sdxl engine (other modes get a
+400 `validation_error`). LoRA applies to generate/edit only (the
 fill/redux CLIs hardcode their own model config).
 
 ## History gallery

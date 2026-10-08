@@ -172,9 +172,27 @@ e2e through `/api/v1/generate` with catalog key `fluxedup` done.
 ### Phase 3 (user-selected, implemented 2026-10-08): second sidecar
 
 SDXL/Pony/Illustrious-class models need a non-mflux backend (different
-VAE/scheduler stack) — a new sidecar, new model hosting, new endpoints. Not
-recommended now; only revisit if FLUX-native outputs remain unsatisfactory
-after phases 1–2.
+VAE/scheduler stack) — a new sidecar, new model hosting, new endpoints.
+
+**Outcome:** shipped. Engine is
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)
+(arm64 Metal build on the sidecar host), wrapped in a mflux-contract-compatible
+sidecar on port 8902. img-gen selects the engine per model, from the catalog:
+`models.json` model entries carry `"sidecar": "sdxl"`; the engine is resolved
+at submit time (never caller input), persisted on the job for restart
+recovery, and routed there by `SDXL_URL` while other modes keep the default
+sidecar. Submitting a mode the engine doesn't support (sdxl = generate/edit
+only) is a submit-time 400 `validation_error`. Checkpoints installed (all
+byte-verified, anonymous HF mirrors, ungated): SDXL base 1.0 (6,938,078,334 B,
+sd_xl_base_1.0.safetensors, CreativeML Open RAIL++-M), Pony Diffusion V6 XL
+(6,938,041,050 B, Pony_DiffusionV6XL_v6StartWithThisOne.safetensors, CDLA
+Permissive 2.0 per the mirror card, cross-mirror byte-identical),
+Illustrious-XL v0.1 (6,938,040,760 B,
+Illustrious-XL-v0.1.safetensors, FAIPL-SD). All three pass 512px 20-step CLI
+smokes at ~1.4 it/s on the sidecar host; generate e2e through
+`/api/v1/generate` with catalog keys (`sdxl-base`, `sdxl-pony`) returns `done`
+jobs with the engine recorded, and ESRGAN upscaling of an sdxl-engine output
+reaches the esrgan sidecar untouched (512x768 → 2048x3072).
 
 ## Tasks
 
@@ -192,6 +210,10 @@ after phases 1–2.
 
 - [SCG-Anatomy-Flux1.d (CivArchive mirror)](https://civarchive.com/models/640156?modelVersionId=715962)
 - [Flux-Uncensored v1 README (HF)](https://huggingface.co/enhanceaiteam/Flux-uncensored)
+- [stable-diffusion.cpp (engine)](https://github.com/leejet/stable-diffusion.cpp)
+- [SDXL base 1.0 checkpoint mirror (HF)](https://huggingface.co/ckpt/sd_xl_base_1.0)
+- [Pony Diffusion V6 XL mirror (HF)](https://huggingface.co/LyliaEngine/Pony_Diffusion_V6_XL)
+- [Illustrious-XL v0.1 (HF)](https://huggingface.co/OnomaAIResearch/Illustrious-xl-early-release-v0)
 - [kenerateai/Flux-uncensored (HF)](https://huggingface.co/kenerateai/Flux-uncensored)
 - [shauray/flux.1-dev-uncensored-q4 (HF)](https://huggingface.co/shauray/flux.1-dev-uncensored-q4)
 - [NSFW UNLOCKED V2.0 FP8 (CivArchive)](https://civarchive.com/models/2119037?modelVersionId=2421111)

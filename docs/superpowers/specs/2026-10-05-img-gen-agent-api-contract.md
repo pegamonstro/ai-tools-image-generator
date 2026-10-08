@@ -28,7 +28,7 @@
 | `GET /api/v1/images/{id}.png` | `?download=1` |
 | `POST /api/v1/export` | unchanged body |
 
-`mode` ∈ {generate, edit, inpaint, outpaint, blend, upscale, pose}; statuses {queued, enhancing, generating, done, failed, cancelled}.
+`mode` ∈ {generate, edit, inpaint, outpaint, blend, upscale, pose}; statuses {queued, enhancing, generating, done, failed, cancelled}. The engine is catalog-derived (`models.json` model entries may carry `"sidecar": "sdxl"`); submitting a mode the selected engine doesn't support (sdxl: generate/edit only) fails at submit with `validation_error` (`mode <x> is not supported on engine sdxl`).
 
 ## MCP server: `cmd/img-gen-mcp`
 

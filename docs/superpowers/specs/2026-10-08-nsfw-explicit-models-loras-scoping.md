@@ -116,7 +116,10 @@ directly (`IMAGE_URL` / fill / redux / upscale env routing); the lattice
 gateway is a **chat-only** touchpoint used solely for prompt enhancement
 (`lattice.Client.BaseURL`, `ENHANCE_SYSTEM` env). Image traffic never crosses
 the gateway, and catalogs live in img-gen (`models.json`) while the sidecar
-resolves values. Consequences:
+resolves values. *(Update 2026-10-08, shipped: generate/edit now cross the
+lattice by registry name via `IMAGE_ROUTING=lattice`; this section's
+consequences still hold — see
+`2026-10-08-lattice-image-routing.md`.)* Consequences:
 
 1. **LoRA additions = zero gateway changes, zero code.** Add a file on the
    sidecar host (or use an HF repo id) + one `models.json` entry + restart.
@@ -181,7 +184,8 @@ sidecar on port 8902. img-gen selects the engine per model, from the catalog:
 `models.json` model entries carry `"sidecar": "sdxl"`; the engine is resolved
 at submit time (never caller input), persisted on the job for restart
 recovery, and routed there by `SDXL_URL` while other modes keep the default
-sidecar. Submitting a mode the engine doesn't support (sdxl = generate/edit
+sidecar. *(Update 2026-10-08: on the lattice path the engine identity travels
+through the registry name — see `2026-10-08-lattice-image-routing.md`.)* Submitting a mode the engine doesn't support (sdxl = generate/edit
 only) is a submit-time 400 `validation_error`. Checkpoints installed (all
 byte-verified, anonymous HF mirrors, ungated): SDXL base 1.0 (6,938,078,334 B,
 sd_xl_base_1.0.safetensors, CreativeML Open RAIL++-M), Pony Diffusion V6 XL

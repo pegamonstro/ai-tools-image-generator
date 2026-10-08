@@ -12,12 +12,20 @@ genre-keyed editable field sets and an async single-slot queue.
 
     go run ./cmd/img-gen
 
-Image generation talks to the mflux sidecar (`IMAGE_URL`), prompt enhancement
-talks to the lattice frontend's chat endpoint (`LATTICE_FRONTEND_URL`).
+Image generation goes through the lattice like every other inference: generate
+and edit are submitted to the lattice frontend's OpenAI Images routes, and the
+lattice routes each request by the model's registry name (the catalog `key`,
+e.g. `persephone` or `sdxl-base`) to the host pinned to serve it. Prompt
+enhancement talks to the lattice frontend's chat endpoint. The direct sidecar
+URLs remain the fallback route and the transport for the remaining modes.
 
-Env vars: `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`) — the lattice
-frontend's chat endpoint used for prompt enhancement; `IMAGE_URL` (default
-`http://127.0.0.1:8899`) — the mflux sidecar handling generation; `FILL_URL` and
+Env vars: `IMAGE_ROUTING` (`lattice`, default) — generate/edit go through the
+lattice (`LATTICE_FRONTEND_URL`); set `direct` to restore legacy direct-sidecar
+calls, in which case the lattice is only used for chat enhancement;
+`LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`) — the lattice frontend
+the lattice-routed generate/edit and chat enhancement go through; `IMAGE_URL`
+(default `http://127.0.0.1:8899`) — the mflux sidecar (direct mode, plus
+pose/blend/upscale which stay direct); `FILL_URL` and
 `REDUX_URL` — sidecar endpoints for inpaint/outpaint when served separately;
 `UPSCALE_URL` — the Real-ESRGAN sidecar; `SDXL_URL` — the optional second
 image engine (a
@@ -30,9 +38,12 @@ token on `/api/*` (see "Agent API" below); `DATA_DIR` (`./data`), `GENRES_FILE`
 (`huihui_ai/dolphin3-abliterated:latest`), `ENHANCE_SYSTEM`, `IMAGE_TIMEOUT_S`
 (`7200`), `LISTEN` (`:8099`).
 
-The sidecar URLs and any private hosts are passed only on the install command
-line or in the environment — never committed (see `deploy/` for the
-placeholder-based install scripts).
+On the lattice path the submitted catalog key is the lattice model name, so the
+serving host's lattice registry must pin each catalog key to a checkpoint
+(`persephone`, `fluxedup`, `dev`, plus `sdxl-base`/`sdxl-pony`/
+`sdxl-illustrious`); LoRA values and sampling knobs ride the request through to
+the engine. A raw model value (advanced override) is sent as-is and only
+generates if the serving host pins that exact name.
 
 ## Modes
 

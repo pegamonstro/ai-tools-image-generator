@@ -155,13 +155,21 @@ resolves values. Consequences:
 3. Keep persona/kink-specific additions out of the default catalog
    (free-text covers them) — carried over from the 2026-10-05 ruling.
 
-### Phase 2 (optional, only if phase 1 disappoints): alternate explicit base
+### Phase 2 (user-selected, implemented 2026-10-08): alternate explicit base
 
 Convert **Fluxed Up FP8** (or Project Gaia NF4) via the proven recipe and
 install as a second selectable base model. Identity-LoRA compatibility
 (fnc, etc.) must be re-tested against the new base before exposing it.
 
-### Phase 3 (out of scope unless evidence demands): second sidecar
+**Outcome:** deployed. FP8 single file (FluxedUp v2.5, 11.9 GB, HF mirror
+`eqtgeqw/Fluxed_Up_2.5devfp8`, clean card; Civitai direct + CivArchive +
+civitai.red backends all signature-gated 401/400) → proven convert recipe →
+assembled around dev encoders → `mflux-save --quantize 4` bake → 9.0 GB
+`fluxedup-4bit` model dir. Verified live: explicit anatomy straight from
+the base (no LoRA), 79 s first gen; LoRA-compat (illustration @0.8) clean;
+e2e through `/api/v1/generate` with catalog key `fluxedup` done.
+
+### Phase 3 (user-selected, implemented 2026-10-08): second sidecar
 
 SDXL/Pony/Illustrious-class models need a non-mflux backend (different
 VAE/scheduler stack) — a new sidecar, new model hosting, new endpoints. Not

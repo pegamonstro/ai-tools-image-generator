@@ -64,7 +64,7 @@ mirror downloads, launchd agents on the sidecar host.
       ```bash
       ssh $M6 '~/flux-train-venv/bin/python - <<PY
       from safetensors import safe_open
-      with safe_open("/Users/igor/mflux-models/loras/nsfw-booster.safetensors", framework="numpy") as f:
+      with safe_open("~/mflux-models/loras/nsfw-booster.safetensors", framework="numpy") as f:
           ks = list(f.keys())
       import collections
       heads = collections.Counter(k.split(".")[0] for k in ks)
@@ -153,7 +153,7 @@ mirror downloads, launchd agents on the sidecar host.
 
 - [ ] Parameterize the recipe for the new checkpoint:
       ```bash
-      ssh $M6 'mkdir -p ~/fluxedup-download && cp ~/persephone-download/convert.py ~/fluxedup-download/ && sed -i -e "s|^SRC = .*|SRC = \"/Users/igor/fluxedup-download/<downloaded>.safetensors\",|" 2>/dev/null true'
+      ssh $M6 'mkdir -p ~/fluxedup-download && cp ~/persephone-download/convert.py ~/fluxedup-download/ && sed -i -e "s|^SRC = .*|SRC = \"~/fluxedup-download/<downloaded>.safetensors\",|" 2>/dev/null true'
       ```
       (concrete sed verified against convert.py's actual SRC/OUT lines at run
       time; OUT_DIR becomes `~/mflux-models/fluxedup/transformer`).
@@ -307,7 +307,7 @@ mirror downloads, launchd agents on the sidecar host.
 - Memory: update `img-gen-routing.md` (+ new phase-3 sidecar memory if needed)
   and `MEMORY.md` index.
 
-- [ ] Repo scrub check: `grep -rn "192\\.168\\|100\\.[0-9]\\|archcore\\|igor" --include=*`
+- [ ] Repo scrub check: `grep -rn "192\\.168\\|100\\.[0-9]\\|<local-user>" --include=*`
       over changed files → empty; then commit img-gen.
 - [ ] LLM-router commits (sidecar + plist template) — same scrub check.
 - [ ] Final report to user: what was installed / blocked-needs-token (Civitai

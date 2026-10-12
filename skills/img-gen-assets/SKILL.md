@@ -32,7 +32,7 @@ must be reproducible while a design iterates.
    `manifest.json`. Delivery never overwrites: clear the destination file
    and retry if you need to replace one.
 4. Inspect or re-fetch anything later with `read_export` (MCP) or
-   `GET /api/v1/sets/{id}`.
+   `GET /api/v1/sets/{set_id}`.
 
 ## Example
 

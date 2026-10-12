@@ -11,6 +11,7 @@ opencode_cmds="${OPENCODE_CMDS_DIR:-$HOME/.opencode/commands}"
 mkdir -p "$claude_skills" "$opencode_cmds"
 
 for skill_dir in "$repo_dir"/skills/*/; do
+  [ -e "$skill_dir" ] || continue
   name="$(basename "$skill_dir")"
   rm -rf "$claude_skills/$name"
   cp -R "$skill_dir" "$claude_skills/$name"

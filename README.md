@@ -152,7 +152,8 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   (a fixed 20-class wang tileset: h/v lines, outer/inner corners, T's,
   cross, caps, single), or `atlas` (2–64 frame sheet + TexturePacker-style
   JSON). Every asset needs a prompt and a 16-multiple `WxH` size. A
-  `manifest.json` lands in the set with per-asset files, seeds and errors.
+  `manifest.json` lands in the set with per-asset files and errors (per-asset
+  seeds ride the child jobs).
 - **GIFs** — `POST /api/v1/gifs` with `source.type` `from_frames`
   (assemble existing job ids, data-dir paths, or inline base64),
   `from_spec` (img-gen generates the 2–64 frames at `seed+i`),
@@ -163,8 +164,8 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
 
 Both endpoints accept `wait_seconds`; with `0` (default) they return
 `202 {"job_id","set_id"}` immediately. Fetch results via
-`GET /api/v1/sets/{id}` (job + file list) and
-`GET /api/v1/sets/{id}/files/{name}` (bytes, content-typed; `?download=1`
+`GET /api/v1/sets/{set_id}` (job + file list) and
+`GET /api/v1/sets/{set_id}/files/{name}` (bytes, content-typed; `?download=1`
 for a download header). `files[].primary` marks the asset the job points
 at. Sets live under `DATA_DIR/sets/{set_id}/`; `dest` delivers copies
 into an agent's project directory (absolute path required — delivery

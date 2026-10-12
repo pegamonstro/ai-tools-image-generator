@@ -3378,10 +3378,11 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `cmd/img-gen/v1.go`
+- Modify: `cmd/img-gen/main.go` (one line: `ExportDir` in the `queue.New` literal)
 - Test: `cmd/img-gen/v1_compose_test.go` (create)
 
 **Interfaces:**
-- Consumes: Task 8 `queue.SubmitAssetSet`, Task 9 `queue.SubmitGIF`; `mgr.Wait` (existing); `v1SubmitErr`/`writeV1Err` (existing, v1.go).
+- Consumes: Task 8 `queue.SubmitAssetSet`, Task 9 `queue.SubmitGIF`; Task 7 `queue.Options.ExportDir`; `mgr.Wait` (existing); `v1SubmitErr`/`writeV1Err` (existing, v1.go).
 - Produces:
   - `POST /api/v1/asset-sets` with body `{"name","dest?","seed","assets":[...],"wait_seconds"?}` → 202 `{"job_id","set_id"}` (both equal) or, when `wait_seconds > 0`, 200 with the final job JSON / 504 `sidecar_timeout`.
   - `POST /api/v1/gifs` with body `{"name","dest?","delay_ms?","loop?","formats?","source":{...},"wait_seconds"?}` → same contract.
@@ -3623,10 +3624,27 @@ v1.go already imports everything used (`encoding/json`, `net/http`, `time`, `que
 Run: `go test ./cmd/img-gen/ -v`
 Expected: PASS (all existing tests too — legacy `/api/*` untouched).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Wire EXPORT_DIR into the queue's delivery fallback**
+
+`queue.Options.ExportDir` (Task 7) is the compose-delivery fallback when a
+request omits dest (`resolveExportDest`). The v1 export endpoint already
+consumes `cfg.ExportDir`, but `queue.New`'s literal in `newHandler`
+(cmd/img-gen/main.go:98) never set it — without this line every compose
+delivery silently degrades to `~/Downloads/img-gen` and `EXPORT_DIR` is
+ignored for sets/GIFs.
+
+In `cmd/img-gen/main.go`, find the `queue.New(queue.Options{ ... })` literal
+in `newHandler` (around line 98, after `Store: store,`) and add one field to
+that literal (gofmt will align it with the neighboring fields):
+
+```go
+ExportDir: cfg.ExportDir,
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add cmd/img-gen/v1.go cmd/img-gen/v1_compose_test.go
+git add cmd/img-gen/v1.go cmd/img-gen/main.go cmd/img-gen/v1_compose_test.go
 git commit -m "feat(v1): asset-set and gif submit endpoints with wait_seconds
 
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"

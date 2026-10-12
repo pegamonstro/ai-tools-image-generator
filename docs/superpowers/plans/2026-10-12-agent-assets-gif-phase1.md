@@ -4721,7 +4721,9 @@ description: Build animated GIFs with the img-gen service — assemble frames fr
 ## Timing and formats
 
 `delay_ms` 10-5000 (default 100; GIF delays are centiseconds, so 100ms =
-10). `loop: 0` loops forever. `formats: ["gif","webp"]` also writes an
+10). Values under 20ms round UP to 20ms — GIF frame delays have a
+2-centisecond browser-safe floor, so 10-19 render one step slower than
+asked. `loop: 0` loops forever. `formats: ["gif","webp"]` also writes an
 animated WebP when `gif2webp` is on the server's PATH — otherwise the
 skip is recorded in `manifest.json` (`gif.webp`), not an error.
 
@@ -4731,7 +4733,9 @@ skip is recorded in `manifest.json` (`gif.webp`), not an error.
    JSON; the GIF itself arrives as an inline preview.
 2. `read_export` (MCP) returns the job view, the GIF, and `manifest.json`.
 3. Deliver with `"dest"` or copy from the set dir
-   (`DATA_DIR/sets/{set_id}/<name>.gif`).
+   (`DATA_DIR/sets/{set_id}/<name>.gif`). A delivered GIF set contains:
+   `<name>.gif`, the optional `.webp` variant, `manifest.json`, and the
+   source frames (`source-frame-NNNN.png`, from-frames sources only).
 ```
 
 - [ ] **Step 5: Create the opencode commands**

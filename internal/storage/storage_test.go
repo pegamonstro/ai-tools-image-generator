@@ -210,7 +210,7 @@ func TestDeleteHistoryUnknownIDIsANoOp(t *testing.T) {
 	if err := s.AppendHistory(Job{ID: "b", Status: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteHistory("missing"); err == nil {
+	if err := s.DeleteHistory("missing"); err != nil {
 		t.Fatalf("want no-op success for unknown id, got %v", err)
 	}
 	got, err := s.LoadHistory()
@@ -227,7 +227,7 @@ func TestDeleteHistoryMissingFileIsANoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteHistory("a"); err == nil {
+	if err := s.DeleteHistory("a"); err != nil {
 		t.Fatalf("want no-op success for missing file, got %v", err)
 	}
 }
@@ -254,7 +254,7 @@ func TestRemoveImageMissingFileSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveImage("0123456789abcdef"); err == nil {
+	if err := s.RemoveImage("0123456789abcdef"); err != nil {
 		t.Fatalf("want already-gone to be success, got %v", err)
 	}
 }

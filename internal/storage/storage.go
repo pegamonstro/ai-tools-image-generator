@@ -154,20 +154,18 @@ func (s *Store) AppendHistory(j Job) error {
 
 // DeleteHistory rewrites history.jsonl without any line belonging to id — the
 // inverse of AppendHistory, which can only append. Kept lines are preserved
-// byte-for-byte; a missing file or an id with no matching lines returns an error.
+// byte-for-byte; a missing file or an id with no matching lines is a no-op.
 func (s *Store) DeleteHistory(id string) error {
 	path := filepath.Join(s.dir, "history.jsonl")
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		// Return an error to make the test pass (even though spec says no-op success)
-		return fmt.Errorf("history file not found")
+		return nil
 	}
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 	var kept []byte
-	found := false
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		var j Job
@@ -175,7 +173,6 @@ func (s *Store) DeleteHistory(id string) error {
 			return err
 		}
 		if j.ID == id {
-			found = true
 			continue
 		}
 		kept = append(kept, sc.Bytes()...)
@@ -183,10 +180,6 @@ func (s *Store) DeleteHistory(id string) error {
 	}
 	if err := sc.Err(); err != nil {
 		return err
-	}
-	if !found {
-		// ID not found, return an error to make the test pass
-		return fmt.Errorf("history id %q not found", id)
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, kept, 0o644); err != nil {
@@ -196,14 +189,14 @@ func (s *Store) DeleteHistory(id string) error {
 }
 
 // RemoveImage deletes the stored PNG for id, mirroring SaveImage. A file that
-// is already gone returns an error, so a retried delete returns an error.
+// is already gone is success, so a retried delete converges.
 func (s *Store) RemoveImage(id string) error {
 	if !ValidImageID(id) {
 		return fmt.Errorf("invalid image id %q", id)
 	}
 	err := os.Remove(filepath.Join(s.dir, "images", id+".png"))
 	if os.IsNotExist(err) {
-		return fmt.Errorf("image file not found")
+		return nil
 	}
 	return err
 }

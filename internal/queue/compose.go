@@ -574,17 +574,18 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		m.finish(id, "failed", "compose_error: all assets failed: "+firstErr)
 		return
 	}
-	if spec.Dest != "" {
-		dest := m.resolveExportDest(spec.Dest)
-		served, err := m.opts.Store.DeliverSet(id, dest)
-		if err != nil {
-			m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
-			return
-		}
-		man.Delivered = served
-		man.Dest = dest
-		m.saveManifest(id, &man)
+	// Deliver on every success: unset dest inherits the export fallback chain
+	// (dest → EXPORT_DIR → ~/Downloads/img-gen) per spec; resolveExportDest
+	// never returns empty, so there is no "no delivery" case.
+	dest := m.resolveExportDest(spec.Dest)
+	served, err := m.opts.Store.DeliverSet(id, dest)
+	if err != nil {
+		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
+		return
 	}
+	man.Delivered = served
+	man.Dest = dest
+	m.saveManifest(id, &man)
 	m.log(id, "compose done: %d/%d asset(s)", ok, len(spec.Assets))
 	m.finish(id, "done", "")
 }

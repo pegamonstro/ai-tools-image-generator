@@ -42,7 +42,10 @@ func (c *genCapture) add(prompt, size string, seed *int64, img []byte) {
 }
 
 // composeTestOpts returns Options whose Generate returns a real 8x8 PNG (the
-// parent composes from child bytes, so "PNG" byte strings won't do).
+// parent composes from child bytes, so "PNG" byte strings won't do). Delivery
+// is unconditional on compose success, so the helper pins a scratch ExportDir
+// too — otherwise unset-dest tests would write into the real
+// ~/Downloads/img-gen fallback chain.
 func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
 	t.Helper()
 	s, err := storage.New(dir)
@@ -50,8 +53,9 @@ func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
 		t.Fatal(err)
 	}
 	return Options{
-		Genres: testCatalog(),
-		Store:  s,
+		Genres:    testCatalog(),
+		Store:     s,
+		ExportDir: filepath.Join(t.TempDir(), "exports"),
 		Ops: ImageOps{
 			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 				img := image.NewRGBA(image.Rect(0, 0, 8, 8))
@@ -559,6 +563,31 @@ func TestSubmitAssetSetDeliveryCollision(t *testing.T) {
 	j, _ := m.Get(id)
 	if !strings.Contains(j.Error, "compose_error") || !strings.Contains(j.Error, "already exists") {
 		t.Fatalf("error: %q", j.Error)
+	}
+}
+
+func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
+	// Spec: unset dest inherits the export fallback chain (EXPORT_DIR →
+	// ~/Downloads/img-gen). The executor delivers on every success, so with
+	// Options.ExportDir pinned to a scratch dir the set lands there.
+	cap := &genCapture{}
+	dest := filepath.Join(t.TempDir(), "exports")
+	opts := composeTestOpts(t, t.TempDir(), cap)
+	opts.ExportDir = dest
+	m := New(opts)
+	seed := int64(21)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "export", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "export", Prompt: "e", Size: "32x32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	for _, name := range []string{"export.png", "manifest.json"} {
+		if _, err := os.ReadFile(filepath.Join(dest, name)); err != nil {
+			t.Fatalf("delivered %s: %v", name, err)
+		}
 	}
 }
 

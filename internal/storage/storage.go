@@ -339,7 +339,7 @@ func (s *Store) DeliverSet(setID, destDir string) ([]string, error) {
 		}
 		dst := filepath.Join(destDir, name)
 		if _, err := os.Lstat(dst); err == nil {
-			return out, fmt.Errorf("compose_error: destination file %s already exists", dst)
+			return out, fmt.Errorf("destination file %s already exists", dst)
 		} else if !os.IsNotExist(err) {
 			return out, err
 		}

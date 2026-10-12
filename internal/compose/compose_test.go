@@ -157,3 +157,55 @@ func TestMarshalAtlasShape(t *testing.T) {
 		t.Fatalf("unexpected doc: %s", b)
 	}
 }
+
+func pngBytes(t *testing.T, img image.Image) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestUnmixAlpha(t *testing.T) {
+	fg := color.NRGBA{200, 100, 50, 127}
+	wr := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	br := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	r8 := func(v uint32) uint8 { return uint8(v >> 8) } // 16->8 bit
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 2; x++ {
+			r, g, b, _ := fg.RGBA() // premultiplied 16-bit
+			pr, pg, pb := int(r8(r)), int(r8(g)), int(r8(b))
+			// observed = p + (1-alpha)*bg — the (1-alpha) weight uses the ALPHA (fg.A=127), not the premultiplied value
+			obs := func(p int, bg uint8) uint8 { return uint8(p + (255-int(fg.A))*int(bg)/255) }
+			wr.SetNRGBA(x, y, color.NRGBA{R: obs(pr, 255), G: obs(pg, 255), B: obs(pb, 255), A: 255})
+			br.SetNRGBA(x, y, color.NRGBA{R: obs(pr, 0), G: obs(pg, 0), B: obs(pb, 0), A: 255})
+		}
+	}
+	out, err := UnmixAlpha(pngBytes(t, wr), pngBytes(t, br))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := png.Decode(bytes.NewReader(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, gr, b, a := got.At(0, 0).RGBA()
+	cr, cg, cb, ca := fg.RGBA()
+	want := [][2]int{
+		{int(r >> 8), int(cr >> 8)}, {int(gr >> 8), int(cg >> 8)},
+		{int(b >> 8), int(cb >> 8)}, {int(a >> 8), int(ca >> 8)},
+	}
+	for _, p := range want {
+		if d := p[0] - p[1]; d < -2 || d > 2 {
+			t.Fatalf("recovered channel off by %d: got/want %v (all %v)", d, p, want)
+		}
+	}
+}
+
+func TestUnmixAlphaBounds(t *testing.T) {
+	red := pngBytes(t, solid(4, 4, color.RGBA{10, 10, 10, 255}))
+	if _, err := UnmixAlpha(red, pngBytes(t, solid(8, 8, color.RGBA{0, 0, 0, 255}))); err == nil {
+		t.Fatal("want error for bounds mismatch")
+	}
+}

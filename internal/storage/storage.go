@@ -312,11 +312,11 @@ func (s *Store) RemoveSet(setID string) error {
 	return nil
 }
 
-// DeliverSet copies every set file into dest under its own name. A file that
-// already exists at the destination is a collision error: delivered names are
-// semantic ("panel.png", "tilekit-cross.png") and silently overwriting a
-// project file is worse than making the caller pick another dest. Returns the
-// written destination paths.
+// DeliverSet copies every set file into dest under its own name, creating
+// dest when it does not exist. A file that already exists at the destination
+// is a collision error: delivered names are semantic ("panel.png",
+// "tilekit-cross.png") and silently overwriting a project file is worse than
+// making the caller pick another dest. Returns the written destination paths.
 //
 // Traversal and symlink safety fall out of the collision rule: set-file names
 // match setFileRe (a leading alphanumeric followed by [._-]-only runes), so no
@@ -326,6 +326,9 @@ func (s *Store) RemoveSet(setID string) error {
 func (s *Store) DeliverSet(setID, destDir string) ([]string, error) {
 	names, err := s.ListSetFiles(setID)
 	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return nil, err
 	}
 	var out []string

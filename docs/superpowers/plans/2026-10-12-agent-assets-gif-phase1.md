@@ -2355,7 +2355,10 @@ func TestSubmitAssetSetAtlas(t *testing.T) {
 	var atlas struct {
 		Frames map[string]struct {
 			Frame struct {
-				X, Y, W, H int `json:"x,y,w,h"`
+				X int `json:"x"`
+				Y int `json:"y"`
+				W int `json:"w"`
+				H int `json:"h"`
 			} `json:"frame"`
 		} `json:"frames"`
 	}

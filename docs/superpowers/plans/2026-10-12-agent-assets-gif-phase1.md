@@ -538,7 +538,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `image/png` decode.
-- Produces: `UnmixAlpha(whitePNG, blackPNG []byte) ([]byte, error)` — returns an NRGBA PNG. Per pixel with premultiplied-alpha compositing (`observed = alpha*F + (1-alpha)*background`): `alpha = (white - black)/255` averaged across channels and clamped to `[0,255]`; `F = black * 255 / alpha` per channel, clamped. `alpha == 0` → fully transparent pixel with color 0. Bounds mismatch → error. This is the v1 transparency technique (LayerDiffuse stays out — SDXL-only upstream, and phase 3).
+- Produces: `UnmixAlpha(whitePNG, blackPNG []byte) ([]byte, error)` — returns an NRGBA PNG. Per pixel with premultiplied-alpha compositing (`observed = alpha*F + (1-alpha)*background`): premultiplication gives `black = alpha*F` and `white = alpha*F + (1-alpha)*255`, so `alpha = 255 - (white - black)` averaged across channels and clamped to `[0,255]`; `F = black * 255 / alpha` per channel, clamped. `alpha == 0` → fully transparent pixel with color 0. Bounds mismatch → error. This is the v1 transparency technique (LayerDiffuse stays out — SDXL-only upstream, and phase 3).
 
 - [ ] **Step 1: Write the failing test** (append to `compose_test.go`; adds `image/png` import plus the shared `pngBytes` helper — later tasks reuse it)
 
@@ -561,8 +561,8 @@ func TestUnmixAlpha(t *testing.T) {
 		for x := 0; x < 2; x++ {
 			r, g, b, _ := fg.RGBA() // premultiplied 16-bit
 			pr, pg, pb := int(r8(r)), int(r8(g)), int(r8(b))
-			// observed = P + (1 - P/255)*bg
-			obs := func(p int, bg uint8) uint8 { return uint8(p + (255-p)*int(bg)/255) }
+			// observed = p + (1-alpha)*bg — the (1-alpha) weight uses the ALPHA (fg.A=127), not the premultiplied value
+			obs := func(p int, bg uint8) uint8 { return uint8(p + (255-int(fg.A))*int(bg)/255) }
 			wr.SetNRGBA(x, y, color.NRGBA{R: obs(pr, 255), G: obs(pg, 255), B: obs(pb, 255), A: 255})
 			br.SetNRGBA(x, y, color.NRGBA{R: obs(pr, 0), G: obs(pg, 0), B: obs(pb, 0), A: 255})
 		}
@@ -619,7 +619,7 @@ import (
 // UnmixAlpha recovers an RGBA image from two renders of the same prompt/seed
 // composited on pure white and pure black. With premultiplied alpha the
 // observed pixel is alpha*F + (1-alpha)*background, so per pixel
-// alpha = (white - black)/255 and F = black*255/alpha. The two renders differ
+// alpha = 255 - (white - black) (white - black = (1-alpha)*255) and F = black*255/alpha. The two renders differ
 // by more than the background (the prompt differs by the background clause),
 // so the math is noisy at edges; everything clamps. Only the element kind
 // uses this; it doubles generation cost for transparent assets.
@@ -644,7 +644,7 @@ func UnmixAlpha(whitePNG, blackPNG []byte) ([]byte, error) {
 			dr := int(wr>>8) - int(br>>8)
 			dg := int(wg>>8) - int(bg>>8)
 			db := int(wb>>8) - int(bb>>8)
-			a := (dr + dg + db) / 3
+			a := 255 - (dr + dg + db) / 3
 			if a > 255 {
 				a = 255
 			}

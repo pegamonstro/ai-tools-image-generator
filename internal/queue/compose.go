@@ -109,8 +109,11 @@ func (m *Manager) submitComposeParent(parentID string, spec composeSpec, childre
 }
 
 // abandonCompose unwinds a half-submitted parent: drop the in-memory parent
-// so later child finishes no-op (childFinished finds no parent job), and
-// cancel whatever children already went out.
+// so later child finishes no-op (childFinished finds no parent job), drop the
+// parent's persisted history too — the parent went down as "queued" in
+// history.jsonl before any child was submitted (submitComposeParent), so
+// leaving it would strand a queued ghost that Cancel/Delete reject and a
+// restart would recompose — and cancel whatever children already went out.
 func (m *Manager) abandonCompose(parentID string, submitted []string) {
 	m.mu.Lock()
 	delete(m.jobs, parentID)
@@ -122,6 +125,9 @@ func (m *Manager) abandonCompose(parentID string, submitted []string) {
 		}
 	}
 	m.mu.Unlock()
+	if err := m.opts.Store.DeleteHistory(parentID); err != nil {
+		log.Printf("queue: drop abandoned compose parent %s history: %v", parentID, err)
+	}
 	for _, cid := range submitted {
 		_ = m.Cancel(cid) // best effort: terminal children were their own story
 	}

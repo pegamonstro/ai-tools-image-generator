@@ -838,3 +838,37 @@ func TestSubmitGIFValidation(t *testing.T) {
 		t.Fatalf("failed submits left %d job(s) registered", n)
 	}
 }
+
+func TestSubmitGIFFromSpecGhostParent(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(9)
+	_, err := m.SubmitGIF(GifRequest{
+		Name: "ghost",
+		Source: GifSource{
+			Type:    "from_spec",
+			Request: &SubmitRequest{Mode: "asset", Prompt: "p", Size: "32x32", Seed: &seed, Style: "bogus"},
+			Count:   2,
+		},
+	})
+	// submitOne's validation error carries the code unknown_style but its
+	// Error() is the Msg alone: `unknown style "bogus"`.
+	if err == nil || !strings.Contains(err.Error(), "unknown style") {
+		t.Fatalf("child submit: %v", err)
+	}
+	// The base request passes SubmitGIF's pre-validation (style is only checked
+	// per-child in submitOne), so the parent WAS persisted "queued" before the
+	// child was rejected — the unwind must leave neither memory nor history.
+	if n := len(m.List()); n != 0 {
+		t.Fatalf("ghost parent registered: %d", n)
+	}
+	hist, err := m.opts.Store.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range hist {
+		if j.Mode == "compose" {
+			t.Fatalf("ghost compose parent in history: %+v", j)
+		}
+	}
+}

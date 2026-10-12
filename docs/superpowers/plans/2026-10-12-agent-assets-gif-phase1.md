@@ -1593,7 +1593,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
   - `abandonCompose(parentID, submitted []string)` — on mid-submit failure: drop the parent, cancel submitted children.
   - `run()` short-circuits `mode == "compose"` to `runCompose`.
   - `Cancel(id)` on a compose parent also cancels its non-terminal children (children scan via `ComposeParent == id`); `Delete(id)` on a compose parent removes the set dir.
-  - `restore()` second pass: non-terminal compose parents get `childLeft` = count of non-terminal children; if none remain, the parent is enqueued immediately (recompose from whatever persisted results survived; from-frames GIFs recompose from their saved sources).
+  - `restore()` second pass: non-terminal compose parents get `childLeft` = count of non-terminal children; if none remain, the parent is enqueued immediately (recompose from whatever persisted results survived; from-frames GIFs recompose from their saved sources). `restore()`'s first pass exempts `Mode == "compose"` from the GenID-empty failed-flip — parents are not sidecar jobs, so the second pass owns them; `childFinished` requires the `childLeft` key (a late child finish with no pending handoff is a no-op, never a resurrection).
 
 - [ ] **Step 1: Write the failing tests** (append to `compose_test.go`)
 
@@ -1833,10 +1833,16 @@ func (m *Manager) childFinished(childID string) {
 		m.mu.Unlock()
 		return
 	}
-	if m.childLeft[parent] > 0 {
-		m.childLeft[parent]--
+	left, ok := m.childLeft[parent]
+	if !ok {
+		// No pending handoff: the parent already composed, or restore's
+		// first pass failed it — enqueueing would resurrect it past a
+		// terminal record.
+		m.mu.Unlock()
+		return
 	}
-	if m.childLeft[parent] > 0 {
+	if left > 1 {
+		m.childLeft[parent] = left - 1
 		m.mu.Unlock()
 		return
 	}
@@ -2089,6 +2095,14 @@ becomes
 ```
 
 The child-side of restore needs no extra work: children rehydrated as `"generating"` (with a `GenID`) carry `ComposeParent` on their record and finish through `attach`, firing the hook; children honestly failed above got `Status = "failed"` without calling `finish()`, so they won't double-decrement — the second pass counted them as already-terminal.
+
+(h) `restore()`'s pre-existing FIRST pass flips every non-terminal record with an empty `GenID` to failed — compose parents never carry a GenID, so exempt them there:
+
+```go
+			if j.GenID == "" && j.Mode != "compose" {
+```
+
+(Parents are not sidecar jobs; "never learned its sidecar gen id" is not their failure mode. The second pass above owns them: it either presets `childLeft` from the surviving children or enqueues immediately. Together with childFinished's key-required guard this also closes the resurrection path: a late-landing child can never re-enqueue a parent the first pass failed — the guard makes a child finish a no-op when no handoff is pending.)
 
 - [ ] **Step 5: Run tests, verify pass**
 

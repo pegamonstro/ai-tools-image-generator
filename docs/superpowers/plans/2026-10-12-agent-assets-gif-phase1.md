@@ -3502,6 +3502,7 @@ func newV1ComposeServer(t *testing.T) (*httptest.Server, string) {
 		LatticeURL:   mock.URL,
 		ImageURL:     mock.URL,
 		DataDir:      t.TempDir(),
+		ExportDir:    t.TempDir(),
 		GenresFile:   writeGenres(t),
 		ModelsFile:   writeModels(t),
 		PresetsFile:  writePresets(t),
@@ -3594,7 +3595,7 @@ func TestV1ComposeValidationEnvelope(t *testing.T) {
 }
 ```
 
-Note the writeModels/writeGenres/writePresets helpers and `waitForJobDone` come from the existing test files in this package — no duplicates.
+Note the writeModels/writeGenres/writePresets helpers and `waitForJobDone` come from the existing test files in this package — no duplicates. `config.ExportDir` is pinned to a scratch `t.TempDir()` because dest-less compose bodies inherit the delivery fallback chain at `resolveExportDest` — without the pin, these tests would write the real `~/Downloads/img-gen` (the Task 8 composeTestOptsFail leak class).
 
 - [ ] **Step 2: Run tests, verify failure**
 

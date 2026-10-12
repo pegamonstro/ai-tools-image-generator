@@ -283,6 +283,15 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeJSONStatus is writeJSON with an explicit status: the Content-Type
+// header must be set before WriteHeader, or Go's sniffer serves the JSON body
+// as text/plain.
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	http.Error(w, msg, code)
 }

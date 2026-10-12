@@ -244,8 +244,7 @@ func (d *v1Deps) handleV1Generate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.WaitSeconds <= 0 {
-		w.WriteHeader(http.StatusAccepted)
-		writeJSON(w, map[string]string{"job_id": id})
+		writeJSONStatus(w, http.StatusAccepted, map[string]string{"job_id": id})
 		return
 	}
 	j, done := d.mgr.Wait(id, time.Duration(req.WaitSeconds)*time.Second)
@@ -269,8 +268,7 @@ func (d *v1Deps) handleV1Cancel(w http.ResponseWriter, r *http.Request, id strin
 		writeV1Err(w, http.StatusBadRequest, "validation_error", err.Error(), id)
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
-	writeJSON(w, map[string]string{"status": "cancelling"})
+	writeJSONStatus(w, http.StatusAccepted, map[string]string{"status": "cancelling"})
 }
 
 func handleV1SSE(w http.ResponseWriter, r *http.Request, mgr *queue.Manager, id string) {
@@ -426,8 +424,7 @@ func (d *v1Deps) handleV1GIF(w http.ResponseWriter, r *http.Request) {
 // 504 sidecar_timeout when wait_seconds elapses first.
 func waitForCompose(w http.ResponseWriter, mgr *queue.Manager, id string, waitSeconds int) {
 	if waitSeconds <= 0 {
-		w.WriteHeader(http.StatusAccepted)
-		writeJSON(w, map[string]string{"job_id": id, "set_id": id})
+		writeJSONStatus(w, http.StatusAccepted, map[string]string{"job_id": id, "set_id": id})
 		return
 	}
 	j, done := mgr.Wait(id, time.Duration(waitSeconds)*time.Second)

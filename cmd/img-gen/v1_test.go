@@ -284,11 +284,56 @@ func TestV1GenerateNoWaitPending(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", resp.StatusCode)
 	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
 	var out map[string]any
 	json.NewDecoder(resp.Body).Decode(&out)
 	if id, _ := out["job_id"].(string); id != "" {
 		waitForJobDone(t, srv, id)
 	}
+}
+
+func TestV1CancelAccepted202(t *testing.T) {
+	// A cancel of an in-flight job answers 202; the status must go out with
+	// the JSON Content-Type already set, or Go's sniffer serves the body as
+	// text/plain.
+	srv, _ := newV1Server(t, time.Second, "")
+	sub := v1Submit(t, srv, `{"genre":"landscape","fields":{"setting":"a valley"},"size":"512x512"}`, "")
+	id := sub["job_id"].(string)
+	resp, err := http.Post(srv.URL+"/api/v1/jobs/"+id+"/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("cancel = %d, want 202", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	if out["status"] != "cancelling" {
+		t.Fatalf("cancel body: %v", out)
+	}
+	// Drain to the terminal cancelled status so the worker is done before
+	// TempDir cleanup races its writes.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		r, err := http.Get(srv.URL + "/api/v1/jobs/" + id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var j map[string]any
+		json.NewDecoder(r.Body).Decode(&j)
+		r.Body.Close()
+		if j["status"] == "cancelled" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job %s never cancelled", id)
 }
 
 func TestV1AuthRequired(t *testing.T) {

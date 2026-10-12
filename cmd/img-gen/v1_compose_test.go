@@ -92,9 +92,22 @@ func TestV1AssetSetAndWait(t *testing.T) {
 func TestV1AssetSetNoWait(t *testing.T) {
 	srv, _ := newV1ComposeServer(t)
 	body := strings.Replace(assetSetBody, `"wait_seconds":15`, `"wait_seconds":0`, 1)
-	code, out := postV1(t, srv, "/api/v1/asset-sets", body)
-	if code != http.StatusAccepted {
-		t.Fatalf("status %d: %v", code, out)
+	// The 202 must go out with the JSON Content-Type already set, or Go's
+	// sniffer serves the body as text/plain.
+	resp, err := http.Post(srv.URL+"/api/v1/asset-sets", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status %d, want 202", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
 	id, ok := out["job_id"].(string)
 	if !ok || id == "" || out["set_id"] != id {

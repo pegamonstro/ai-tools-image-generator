@@ -163,15 +163,14 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   renders three direction views (down/up/right suffixes fixed, left
   mirrored from right) into a 4-row RPG-Maker-order sheet
   `<name>-walk.png` with individual cells. Standing views, not walk
-  animation.). Every asset needs a prompt and a 16-multiple `WxH` size. A
+  animation). Every asset needs a prompt and a 16-multiple `WxH` size. A
   `manifest.json` lands in the set with per-asset files and errors (per-asset
   seeds ride the child jobs). Setting `"palette_lock": true` builds one
   shared palette (up to 255 colors) over every composed image of the set and
   remaps each pixel to its CIEDE2000-nearest palette color — batch coherence
   is won in post, not generation. The set ships `<name>.palette.json` with
   the colors (`{"colors":["#0f766e",...]}`), an ordinary set file delivered
-  flat like the rest. GIFs composed from a locked set's deliverable files
-  (composite sources with `{set, file}` refs) inherit the coherence;
+  flat like the rest. GIFs composed from a locked set's deliverable files (any source with `{set, file}` refs, whether composite sources or `from_frames` refs) inherit the coherence;
   `from_frames` refs by job id read the raw pre-remap renders instead.
 - **GIFs** — `POST /api/v1/gifs` with `source.type` `from_frames`
   (assemble existing job ids, data-dir paths, or inline base64),

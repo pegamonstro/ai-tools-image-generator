@@ -4847,25 +4847,29 @@ Expected: PASS everywhere. If a package fails, fix at the failing task's code an
 
 - [ ] **Step 3: Manual smoke against a real server**
 
-Start the server as usual (e.g. `DATA_DIR=$(mktemp -d) IMG_ROUTING... LISTEN=:9100 go run ./cmd/img-gen`, using whatever env you normally use) and then, with real engine latency in mind (an 8-asset kit can take a few minutes on mflux):
+Start the server from scratch env — all scratch paths pin explicit tempdirs (`export data=$(mktemp -d); export scratch=$(mktemp -d)` then `DATA_DIR=$data EXPORT_DIR=$scratch LISTEN=:9100 go run ./cmd/img-gen`) — and then, with real engine latency in mind (an 8-asset kit can take a few minutes on mflux; use `wait_seconds: 600` on the submit and let the server wait for you):
 
 ```bash
-curl -s http://127.0.0.1:9100/api/v1/asset-sets -d '{"name":"smoke","seed":42,"assets":[{"kind":"element","name":"dot","prompt":"flat red dot, minimal","size":"64x64"}],"wait_seconds":0}'
+curl -s http://127.0.0.1:9100/api/v1/asset-sets -d '{"name":"smoke","seed":42,"assets":[{"kind":"element","name":"dot","prompt":"flat red dot, minimal","size":"64x64"}],"wait_seconds":600}'
 ```
-Expected: `{"job_id":"...","set_id":"..."}` — poll `GET /api/v1/jobs/{id}` to `done`, then:
+Expected: blocks until the set completes, then `200` job JSON with status `done` — then:
 ```bash
 curl -s http://127.0.0.1:9100/api/v1/sets/{set_id}
-curl -s -o /tmp/dot.png http://127.0.0.1:9100/api/v1/sets/{set_id}/files/dot.png
-curl -s http://127.0.0.1:9100/api/v1/gifs -d '{"name":"twirl","source":{"type":"from_spec","request":{"mode":"asset","prompt":"spinning star","size":"64x64","seed":9},"count":3},"delay_ms":200,"wait_seconds":0}'
+curl -s -o "$scratch/dot.png" http://127.0.0.1:9100/api/v1/sets/{set_id}/files/dot.png
+curl -s http://127.0.0.1:9100/api/v1/gifs -d '{"name":"twirl","source":{"type":"from_spec","request":{"mode":"asset","prompt":"spinning star","size":"64x64","seed":9},"count":3},"delay_ms":200,"wait_seconds":600}'
 ```
-Expected: the set view shows `files: [{name:"dot.png","primary":true}]`; the GIF compose job completes with `twirl.gif` as primary. Confirm `DATA_DIR/sets/{set_id}/manifest.json` exists and parses. Then delete both parents via `DELETE /api/v1/jobs/{id}` and confirm the set dir is gone.
+Expected: the set view shows `files: [{name:"dot.png","primary":true}]`; the GIF compose job completes with `twirl.gif` as primary. Confirm `$data/sets/{set_id}/manifest.json` exists and parses. Then delete both parents via `DELETE /api/v1/jobs/{id}` and confirm the set dir is gone. Afterwards kill the server and `rm -rf` both tempdirs, and verify `~/Downloads/img-gen` does not exist (EXPORT_DIR was pinned; this is the leak check).
+
+If the sidecar on the default `IMAGE_URL` is not actually responsive to the `/generate` contract (probe first: `POST /generate` with `{}` should be a fast 400, not a 404), skip the generation-dependent steps — the unit/integration tests already cover the composition paths with decodable stubs — and note honestly in the PR which smoke steps were actually executed.
 
 Skip what cannot run in this environment (no sidecar): the unit/integration tests already cover the composition paths with decodable stubs — note honestly in the PR which smoke steps were actually executed.
 
 - [ ] **Step 4: Commit (only if fixes were needed)**
 
+Never `git add -A` — stage only the file(s) actually fixed (scratch dirs and a copied `models.json` must not ride along):
+
 ```bash
-git add -A
+git add <the fixed file(s)>
 git commit -m "fix: adjustments found in phase 1 smoke verification
 
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"

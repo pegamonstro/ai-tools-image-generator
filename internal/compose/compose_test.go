@@ -72,3 +72,34 @@ func TestEncodeGIFSizeMismatch(t *testing.T) {
 		t.Fatal("want error for mismatched frame sizes")
 	}
 }
+
+func TestEncodeGIFDeterministicPalette(t *testing.T) {
+	// Colors that tie on red channel (100) but differ in green and blue.
+	c1 := color.RGBA{100, 0, 0, 255}
+	c2 := color.RGBA{100, 255, 0, 255}
+	c3 := color.RGBA{100, 0, 255, 255}
+	frames := []image.Image{
+		solid(16, 16, c1),
+		solid(16, 16, c2),
+		solid(16, 16, c3),
+	}
+	out1, err := EncodeGIF(frames, 100, 0)
+	if err != nil {
+		t.Fatalf("first encode: %v", err)
+	}
+	out2, err := EncodeGIF(frames, 100, 0)
+	if err != nil {
+		t.Fatalf("second encode: %v", err)
+	}
+	if !bytes.Equal(out1, out2) {
+		t.Fatalf("palette not deterministic: outputs differ")
+	}
+	// Additionally, verify that we can decode and get three frames.
+	g, err := gif.DecodeAll(bytes.NewReader(out1))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(g.Image) != 3 {
+		t.Fatalf("expected 3 frames, got %d", len(g.Image))
+	}
+}

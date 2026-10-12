@@ -81,20 +81,24 @@ func EncodeGIF(frames []image.Image, delayMS, loop int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// px is a pixel color (R,G,B) used for histogram building.
-type px struct{ r, g, b uint8 }
-
-// entry holds a color and its frequency.
-type entry struct {
-	p     px
-	count int
-}
-
 // sharedPalette builds a fixed-stride histogram across every frame and median
 // cuts it into at most n colors (plus the reserved transparent entry 0 that
 // callers prepend elsewhere — this function returns opaque colors only, and
 // EncodeGIF places them at index >= 1).
 func sharedPalette(frames []image.Image, n int) color.Palette {
+	type px struct{ r, g, b uint8 }
+	type entry struct {
+		p     px
+		count int
+	}
+	// sortEntries sorts entries in-place by the given key function.
+	sortEntries := func(b []entry, key func(entry) int) {
+		for i := 1; i < len(b); i++ {
+			for j := i; j > 0 && key(b[j]) < key(b[j-1]); j-- {
+				b[j], b[j-1] = b[j-1], b[j]
+			}
+		}
+	}
 	counts := map[px]int{}
 	for _, f := range frames {
 		b := f.Bounds()
@@ -115,6 +119,12 @@ func sharedPalette(frames []image.Image, n int) color.Palette {
 	if len(all) == 0 {
 		all = append(all, entry{p: px{255, 255, 255}, count: 1})
 	}
+	// Sort entries deterministically by (r,g,b) before median-cut.
+	sortEntries(all, func(e entry) int {
+		// Lexicographic order over (r,g,b) as a single integer.
+		// Since each component is uint8, we can compute r<<16 | g<<8 | b.
+		return int(e.p.r)<<16 | int(e.p.g)<<8 | int(e.p.b)
+	})
 	boxes := [][]entry{all}
 	for len(boxes) < n {
 		bi, bc, best := -1, 0, 0
@@ -125,12 +135,24 @@ func sharedPalette(frames []image.Image, n int) color.Palette {
 			var lo, hi px
 			lo, hi = b[0].p, b[0].p
 			for _, e := range b {
-				lo.r = min(lo.r, e.p.r)
-				hi.r = max(hi.r, e.p.r)
-				lo.g = min(lo.g, e.p.g)
-				hi.g = max(hi.g, e.p.g)
-				lo.b = min(lo.b, e.p.b)
-				hi.b = max(hi.b, e.p.b)
+				if e.p.r < lo.r {
+					lo.r = e.p.r
+				}
+				if e.p.r > hi.r {
+					hi.r = e.p.r
+				}
+				if e.p.g < lo.g {
+					lo.g = e.p.g
+				}
+				if e.p.g > hi.g {
+					hi.g = e.p.g
+				}
+				if e.p.b < lo.b {
+					lo.b = e.p.b
+				}
+				if e.p.b > hi.b {
+					hi.b = e.p.b
+				}
 			}
 			ch, span := 0, int(hi.r)-int(lo.r)
 			if int(hi.g)-int(lo.g) > span {
@@ -147,12 +169,13 @@ func sharedPalette(frames []image.Image, n int) color.Palette {
 			break
 		}
 		b := boxes[bi]
+		// Sort the selected box along the axis of greatest spread.
 		switch bc {
 		case 0:
 			sortEntries(b, func(e entry) int { return int(e.p.r) })
 		case 1:
 			sortEntries(b, func(e entry) int { return int(e.p.g) })
-		default:
+		default: // bc == 2
 			sortEntries(b, func(e entry) int { return int(e.p.b) })
 		}
 		mid := len(b) / 2
@@ -175,20 +198,4 @@ func sharedPalette(frames []image.Image, n int) color.Palette {
 		pal = append(pal, color.RGBA{R: uint8(r / w), G: uint8(g / w), B: uint8(bl / w), A: 255})
 	}
 	return pal
-}
-
-func sortEntries(b []entry, key func(entry) int) {
-	for i := 1; i < len(b); i++ {
-		for j := i; j > 0 && key(b[j]) < key(b[j-1]); j-- {
-			b[j], b[j-1] = b[j-1], b[j]
-		}
-	}
-}
-
-// min returns the smaller of two uint8 values.
-func min(a, b uint8) uint8 {
-	if a < b {
-		return a
-	}
-	return b
 }

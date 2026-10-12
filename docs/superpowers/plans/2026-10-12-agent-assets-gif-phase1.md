@@ -2137,6 +2137,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `internal/queue/compose.go` (append; replaces the Task 7 honest-failure executor stubs)
+- Modify: `internal/storage/storage.go` (DeliverSet: `os.MkdirAll` the destination directory — see Step 5)
 - Test: `internal/queue/compose_test.go` (append)
 
 **Interfaces:**
@@ -2278,8 +2279,14 @@ func TestSubmitAssetSetTransparent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := im.(*image.NRGBA); !ok {
-		t.Fatalf("unmixed output should be NRGBA, got %T", im)
+	// The stub's white and black renders are identical transparent black, so
+	// UnmixAlpha takes the ill-conditioned fallback (dr=dg=db=0 → a=255,
+	// F=black): the output is opaque black. The stdlib PNG writer upgrades a
+	// fully-opaque NRGBA to truecolor, so decode may return *image.RGBA —
+	// assert pixels, not the concrete decode type.
+	r, g, b, a := im.At(0, 0).RGBA()
+	if r != 0 || g != 0 || b != 0 || a != 0xffff {
+		t.Fatalf("unmixed output should be opaque black, got %d %d %d %d", r, g, b, a)
 	}
 }
 
@@ -2377,7 +2384,7 @@ func TestSubmitAssetSetValidation(t *testing.T) {
 		{Name: "x", Assets: []AssetSpecIn{{Kind: "element", Name: "a", Prompt: "p", Size: "64x64"}}},                      // seed required
 		{Name: "x", Seed: ptr64(1)},                                                                                      // no assets
 		{Name: "x", Seed: ptr64(1), Assets: tooMany},                                                                     // 9 assets
-		{Name: "x/..", Seed: ptr64(1), Assets: one},                                                                      // name sanitizes to empty
+		{Name: ".", Seed: ptr64(1), Assets: one},                                                                        // name sanitizes to empty
 		{Name: "x", Seed: ptr64(1), Dest: "rel/path", Assets: one},                                                       // dest not absolute
 		{Name: "x", Seed: ptr64(1), Assets: []AssetSpecIn{{Kind: "element", Name: "a", Prompt: "p", Size: "250x250"}}},   // 16-multiple
 		{Name: "x", Seed: ptr64(1), Assets: []AssetSpecIn{{Kind: "element", Name: "a", Prompt: "", Size: "64x64"}}},      // prompt required
@@ -2474,7 +2481,9 @@ func TestSubmitAssetSetDelivery(t *testing.T) {
 	mraw, _ := m.opts.Store.ReadSetFile(id, "manifest.json")
 	var man setManifest
 	_ = json.Unmarshal(mraw, &man)
-	if len(man.Delivered) != 1 || man.Delivered[0] != filepath.Join(dest, "icon.png") {
+	// DeliverSet delivers every set file (icon.png + manifest.json, sorted)
+	// and has created the not-yet-existing dest directory.
+	if len(man.Delivered) != 2 || man.Delivered[0] != filepath.Join(dest, "icon.png") || man.Delivered[1] != filepath.Join(dest, "manifest.json") {
 		t.Fatalf("delivered record: %+v", man.Delivered)
 	}
 }
@@ -2665,7 +2674,7 @@ func kitChildren(prompt, negative, size string, seed int64) []SubmitRequest {
 }
 
 // atlasChildren builds one job per animation frame, seeded seed+i.
-func atlasChildren(prompt, negative, size string, seed, frames int) []SubmitRequest {
+func atlasChildren(prompt, negative, size string, seed int64, frames int) []SubmitRequest {
 	kids := make([]SubmitRequest, 0, frames)
 	for i := 0; i < frames; i++ {
 		s := seed + int64(i)
@@ -2848,15 +2857,34 @@ func primaryName(refs []storage.FileRef) string {
 
 Note on `compose` import: Task 7 added `var _ = compose.KitClasses` as a compile hold — **delete that line** now that real references exist.
 
-- [ ] **Step 4: Run tests, verify pass**
+- [ ] **Step 4: Amend DeliverSet — it must create the destination directory**
 
-Run: `go test ./internal/queue/ -v`
-Expected: PASS — all `TestSubmitAssetSet*`, plus Task 6/7 tests.
+Read the existing `DeliverSet` in `internal/storage/storage.go` first. Today it
+copies `ListSetFiles(setID)` straight into `destDir`, so a delivery into a
+not-yet-existing directory fails ENOENT (Task 8's delivery test uses
+`filepath.Join(t.TempDir(), "proj")`, which does not exist yet). Add one line
+before the copy loop and extend the doc comment's first line to say the
+directory is created:
 
-- [ ] **Step 5: Commit**
+```go
+if err := os.MkdirAll(destDir, 0o755); err != nil {
+	return nil, err
+}
+```
+
+`TestDeliverSetCollision` is unaffected: it pre-creates both `dest` and the
+colliding file, and `MkdirAll` on an existing directory is a no-op — `Lstat`
+still refuses the pre-placed destination.
+
+- [ ] **Step 5: Run tests, verify pass**
+
+Run: `go test ./... -v`
+Expected: PASS — all `TestSubmitAssetSet*`, plus storage and Task 6/7 tests.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add internal/queue/compose.go internal/queue/compose_test.go
+git add internal/queue/compose.go internal/queue/compose_test.go internal/storage/storage.go
 git commit -m "feat(queue): asset-set submission, composition, manifest, delivery
 
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"

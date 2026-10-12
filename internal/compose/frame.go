@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/draw"
 	"image/color"
+	"image/draw"
 	"image/png"
 )
 

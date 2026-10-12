@@ -36,5 +36,5 @@ skip is recorded in `manifest.json` (`gif.webp`), not an error.
 2. `read_export` (MCP) returns the job view, the GIF, and `manifest.json`.
 3. Deliver with `"dest"` or copy from the set dir
    (`DATA_DIR/sets/{set_id}/<name>.gif`). A delivered GIF set contains:
-   `<name>.gif`, the optional `.webp` variant, `manifest.json`, and the
+   `<name>.gif`, the optional `.webp` variant, `<name>.manifest.json`, and the
    source frames (`source-frame-NNNN.png`, from-frames sources only).

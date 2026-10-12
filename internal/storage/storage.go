@@ -312,21 +312,27 @@ func (s *Store) RemoveSet(setID string) error {
 	return nil
 }
 
-// DeliverSet copies every set file into dest under its own name, creating
-// dest when it does not exist. A file that already exists at the destination
-// is a collision error: delivered names are semantic ("panel.png",
+// DeliverSet copies every set file into dest under its own name, renaming
+// the set's manifest.json to "<setName>.manifest.json" so two sets delivered
+// into one dest do not collide on a fixed-name file. Dest is created when it
+// does not exist. A file that already exists at the destination is a
+// collision error: delivered names are semantic ("panel.png",
 // "tilekit-cross.png") and silently overwriting a project file is worse than
 // making the caller pick another dest. Returns the written destination paths.
 //
-// Traversal and symlink safety fall out of the collision rule: set-file names
-// match setFileRe (a leading alphanumeric followed by [._-]-only runes), so no
-// name contains a separator or a whole ".." segment, and an existing entry —
-// including a planted symlink pointing anywhere — is refused before any write,
-// never followed.
-func (s *Store) DeliverSet(setID, destDir string) ([]string, error) {
+// Traversal and symlink safety: set-file names match setFileRe (no
+// separators, no ".." segment), the constructed manifest name is re-checked
+// against the same rule (setName arrives from callers unvalidated), and an
+// existing entry — including a planted symlink pointing anywhere — is
+// refused before any write, never followed.
+func (s *Store) DeliverSet(setID, setName, destDir string) ([]string, error) {
 	names, err := s.ListSetFiles(setID)
 	if err != nil {
 		return nil, err
+	}
+	manifestFile := setName + ".manifest.json"
+	if !validSetFile(manifestFile) {
+		return nil, fmt.Errorf("invalid set name %q for manifest delivery", setName)
 	}
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return nil, err
@@ -337,7 +343,11 @@ func (s *Store) DeliverSet(setID, destDir string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		dst := filepath.Join(destDir, name)
+		delivered := name
+		if name == "manifest.json" {
+			delivered = manifestFile
+		}
+		dst := filepath.Join(destDir, delivered)
 		if _, err := os.Lstat(dst); err == nil {
 			return out, fmt.Errorf("destination file %s already exists", dst)
 		} else if !os.IsNotExist(err) {

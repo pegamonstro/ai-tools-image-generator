@@ -531,7 +531,7 @@ func TestSubmitAssetSetDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, m, id, "done")
-	for _, name := range []string{"icon.png", "manifest.json"} {
+	for _, name := range []string{"icon.png", "icon.manifest.json"} {
 		if _, err := os.ReadFile(filepath.Join(dest, name)); err != nil {
 			t.Fatalf("delivered %s: %v", name, err)
 		}
@@ -539,9 +539,10 @@ func TestSubmitAssetSetDelivery(t *testing.T) {
 	mraw, _ := m.opts.Store.ReadSetFile(id, "manifest.json")
 	var man setManifest
 	_ = json.Unmarshal(mraw, &man)
-	// DeliverSet delivers every set file (icon.png + manifest.json, sorted)
-	// and has created the not-yet-existing dest directory.
-	if len(man.Delivered) != 2 || man.Delivered[0] != filepath.Join(dest, "icon.png") || man.Delivered[1] != filepath.Join(dest, "manifest.json") {
+	// DeliverSet delivers every set file (icon.png + the manifest renamed to
+	// icon.manifest.json, sorted) and has created the not-yet-existing dest
+	// directory.
+	if len(man.Delivered) != 2 || man.Delivered[0] != filepath.Join(dest, "icon.png") || man.Delivered[1] != filepath.Join(dest, "icon.manifest.json") {
 		t.Fatalf("delivered record: %+v", man.Delivered)
 	}
 }
@@ -572,8 +573,8 @@ func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 	// Spec: unset dest inherits the export fallback chain (EXPORT_DIR →
 	// ~/Downloads/img-gen). The executor delivers on every success, so with
 	// Options.ExportDir pinned to a scratch dir the set lands there — under a
-	// set-id subdirectory, because two fallback sets share the root and every
-	// set ships a fixed-name manifest.json.
+	// set-id subdirectory, because two fallback sets share the root and
+	// identically named deliverables collide.
 	cap := &genCapture{}
 	dest := filepath.Join(t.TempDir(), "exports")
 	opts := composeTestOpts(t, t.TempDir(), cap)
@@ -588,7 +589,7 @@ func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, m, id, "done")
-	for _, name := range []string{"export.png", "manifest.json"} {
+	for _, name := range []string{"export.png", "export.manifest.json"} {
 		if _, err := os.ReadFile(filepath.Join(dest, id, name)); err != nil {
 			t.Fatalf("delivered %s: %v", name, err)
 		}
@@ -600,7 +601,7 @@ func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 	if man.Dest != filepath.Join(dest, id) {
 		t.Fatalf("manifest dest = %q, want %q", man.Dest, filepath.Join(dest, id))
 	}
-	if len(man.Delivered) != 2 || man.Delivered[1] != filepath.Join(dest, id, "manifest.json") {
+	if len(man.Delivered) != 2 || man.Delivered[1] != filepath.Join(dest, id, "export.manifest.json") {
 		t.Fatalf("delivered record: %+v", man.Delivered)
 	}
 }
@@ -638,7 +639,7 @@ func TestSubmitSetFallbackDestNoCollision(t *testing.T) {
 	for _, s := range []struct {
 		id    string
 		names []string
-	}{{first, []string{"one.png", "manifest.json"}}, {second, []string{"two.png", "manifest.json"}}} {
+	}{{first, []string{"one.png", "one.manifest.json"}}, {second, []string{"two.png", "two.manifest.json"}}} {
 		for _, name := range s.names {
 			if _, err := os.ReadFile(filepath.Join(root, s.id, name)); err != nil {
 				t.Fatalf("set %s delivered %s: %v", s.id, name, err)

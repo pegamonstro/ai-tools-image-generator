@@ -28,9 +28,10 @@ must be reproducible while a design iterates.
    REST surface). One tool call returns the composed job plus an inline
    preview of the primary file.
 3. Deliver into the project: pass `"dest": "/abs/path/to/project/assets"` —
-   delivery copies the files there and records the destination in
-   `manifest.json`. Delivery never overwrites: clear the destination file
-   and retry if you need to replace one.
+   delivery copies the files there, ships the manifest as
+   `<name>.manifest.json` so two sets can share one destination, and
+   records the destination in it. Delivery never overwrites: clear the
+   destination file and retry if you need to replace one.
 4. Inspect or re-fetch anything later with `read_export` (MCP) or
    `GET /api/v1/sets/{set_id}`.
 

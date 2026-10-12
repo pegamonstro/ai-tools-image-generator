@@ -168,8 +168,10 @@ Both endpoints accept `wait_seconds`; with `0` (default) they return
 `GET /api/v1/sets/{set_id}/files/{name}` (bytes, content-typed; `?download=1`
 for a download header). `files[].primary` marks the asset the job points
 at. Sets live under `DATA_DIR/sets/{set_id}/`; `dest` delivers copies
-into an agent's project directory (absolute path required — delivery
-refuses to overwrite, so retry after clearing the destination).
+into an agent's project directory — the manifest ships as
+`<name>.manifest.json`, so two sets can share one destination (absolute
+path required — delivery refuses to overwrite, so retry after clearing
+the destination).
 
 MCP tools: `request_asset_set`, `make_gif`, `read_export`.
 

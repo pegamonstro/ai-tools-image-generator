@@ -4801,10 +4801,10 @@ done
 Run:
 ```bash
 bash -n deploy/install-skills.sh
-grep -c "asset-sets" docs/openapi.yaml
-grep -c "request_asset_set" README.md docs/openapi.yaml skills/img-gen-assets/SKILL.md
+python3 -c "import yaml,sys; d=yaml.safe_load(open('docs/openapi.yaml')); [sys.exit(1) for p in ('/api/v1/asset-sets','/api/v1/gifs','/api/v1/sets/{set_id}','/api/v1/sets/{set_id}/files/{name}') if p not in d['paths']]" && echo paths-ok
+grep -c "request_asset_set" README.md skills/img-gen-assets/SKILL.md
 ```
-Expected: `bash -n` silent; openapi count ≥ 4 (paths + description); each grep ≥ 1. Also `python3 -c "import yaml,sys; d=yaml.safe_load(open('docs/openapi.yaml')); assert '/api/v1/asset-sets' in d['paths']"` to prove the YAML still parses on any machine with PyYAML (skip if python3/yaml is absent — do not install anything).
+Expected: `bash -n` silent; `paths-ok` prints (the spec's real goal — openapi mentions every shipped endpoint — is checked by the four path keys, NOT by substring counts: openapi is REST-only, so MCP tool names appear 0 times there by design). tool-name grep: README.md 1, SKILL.md 2 — each ≥ 1. (The pre-fix version also grepped `asset-sets` counts in openapi.yaml and expected ≥4; the verbatim docs content produces exactly 2 — path key + description — so that greps-as-thresholds check was replaced by the path-coverage assertion.) PyYAML absence → skip, do not install anything.
 
 (No CI exists in this repo — no `.github/workflows` — so the spec's "CI grep that openapi.yaml mentions every shipped endpoint" runs here as a plain step instead; Task 14 Step 1 re-runs the full suite over everything.)
 

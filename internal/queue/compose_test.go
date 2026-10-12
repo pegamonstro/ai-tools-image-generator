@@ -154,3 +154,38 @@ func TestComposeParentCancel(t *testing.T) {
 	}
 	waitFor(t, m, parentID, "cancelled")
 }
+
+func TestComposeParentRestore(t *testing.T) {
+	cap := &genCapture{}
+	opts := composeTestOpts(t, t.TempDir(), cap)
+	m := New(opts)
+	// Seed the store's history with a mid-flight compose parent and its
+	// already-done child, exactly as a restart would find them: the parent is
+	// non-terminal with no GenID (compose parents are not sidecar jobs), so
+	// restore's first pass must leave it alone and the second pass must
+	// re-enqueue it.
+	jparent := storage.Job{
+		ID:     "p1",
+		Mode:   "compose",
+		Status: "queued",
+		SetID:  "p1",
+		Prompt: "compose asset-set",
+		ComposeSpec: `{"kind":"asset-set","name":"demo",` +
+			`"assets":[{"kind":"element","name":"a","prompt":"a","size":"16x16","children":1}]}`,
+	}
+	jchild := storage.Job{ID: "c1", Mode: "asset", Status: "done", ComposeParent: "p1"}
+	if err := m.opts.Store.AppendHistory(jparent); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.opts.Store.AppendHistory(jchild); err != nil {
+		t.Fatal(err)
+	}
+	m.restore()
+	// The parent reaching "failed" with the stub's error proves restore
+	// RE-ENQUEUED it (runCompose ran): the first pass would instead have
+	// failed it with "interrupted by a service restart…".
+	j := waitFor(t, m, "p1", "failed")
+	if !strings.Contains(j.Error, "compose_error: asset-set executor not implemented") {
+		t.Fatalf("parent error = %q", j.Error)
+	}
+}

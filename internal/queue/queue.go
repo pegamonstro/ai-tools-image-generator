@@ -176,7 +176,7 @@ func (m *Manager) restore() {
 	var attachIDs []string
 	for _, j := range hist {
 		if !isTerminal(j.Status) {
-			if j.GenID == "" {
+			if j.GenID == "" && j.Mode != "compose" {
 				j.Status = "failed"
 				j.Error = "interrupted by a service restart before completion; submit the job again (same seed and params reproduce the image)"
 				j.Step = 0
@@ -185,7 +185,9 @@ func (m *Manager) restore() {
 				if err := m.opts.Store.AppendHistory(j); err != nil {
 					log.Printf("queue: persist corrected status of interrupted job %s: %v", j.ID, err)
 				}
-			} else {
+			} else if j.Mode != "compose" {
+				// Compose parents never attach (no sidecar gen id of their
+				// own); restore's second pass below owns them entirely.
 				j.Status = "generating"
 				j.Step = 0
 				j.Total = 0

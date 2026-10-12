@@ -157,10 +157,16 @@ func (m *Manager) childFinished(childID string) {
 		m.mu.Unlock()
 		return
 	}
-	if m.childLeft[parent] > 0 {
-		m.childLeft[parent]--
+	left, ok := m.childLeft[parent]
+	if !ok {
+		// No pending handoff: the parent already composed, or restore's
+		// first pass failed it — enqueueing would resurrect it past a
+		// terminal record.
+		m.mu.Unlock()
+		return
 	}
-	if m.childLeft[parent] > 0 {
+	if left > 1 {
+		m.childLeft[parent] = left - 1
 		m.mu.Unlock()
 		return
 	}

@@ -50,8 +50,8 @@ func PackGrid(name string, frames []image.Image, columns int) ([]byte, []AtlasFr
 	for i, f := range frames {
 		col, row := i%columns, i/columns
 		b := f.Bounds()
-		ox := col*cw
-		oy := row*ch
+		ox := col*cw + (cw-b.Dx())/2
+		oy := row*ch + (ch-b.Dy())/2
 		draw.Draw(sheet, image.Rect(ox, oy, ox+b.Dx(), oy+b.Dy()), f, b.Min, draw.Src)
 		metas = append(metas, AtlasFrame{
 			Name:  fmt.Sprintf("%s-%04d", name, i),

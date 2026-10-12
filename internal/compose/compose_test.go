@@ -129,12 +129,13 @@ func TestPackGrid(t *testing.T) {
 	if metas[1].Name != "spark-0001" || metas[1].Frame.Y != 4 || metas[1].Frame.W != 8 {
 		t.Fatalf("meta1: %+v", metas[1])
 	}
-	// cell contents: blue placed at left of the cell (since we left-align)
-	// The blue frame is 4x4, so the pixel at (1,5) is inside it.
-	// The red channel of the blue color is 40, which in 16-bit is 40*257 = 10280.
-	dr, _, _, _ := img.At(1, 5).RGBA()
-	if dr != 40*257 {
-		t.Fatalf("blue frame not placed as expected: got %d, want %d", dr, 40*257)
+	// blue 4x4 is centered in the 8-wide cell: gutter at (1,5) is transparent,
+	// far edge (5,5) is blue — distinguishes centering from left-alignment
+	if _, _, _, a := img.At(1, 5).RGBA(); a != 0 {
+		t.Fatalf("pixel (1,5): want transparent gutter")
+	}
+	if dr, _, _, _ := img.At(5, 5).RGBA(); dr != 40*257 {
+		t.Fatalf("blue frame not centered: (5,5) red channel %d, want %d", dr, 40*257)
 	}
 }
 

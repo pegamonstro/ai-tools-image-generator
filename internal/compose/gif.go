@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/gif"
+	"sort"
 )
 
 // EncodeGIF assembles frames into an animated GIF: one global median-cut
@@ -91,14 +92,6 @@ func sharedPalette(frames []image.Image, n int) color.Palette {
 		p     px
 		count int
 	}
-	// sortEntries sorts entries in-place by the given key function.
-	sortEntries := func(b []entry, key func(entry) int) {
-		for i := 1; i < len(b); i++ {
-			for j := i; j > 0 && key(b[j]) < key(b[j-1]); j-- {
-				b[j], b[j-1] = b[j-1], b[j]
-			}
-		}
-	}
 	counts := map[px]int{}
 	for _, f := range frames {
 		b := f.Bounds()
@@ -119,11 +112,16 @@ func sharedPalette(frames []image.Image, n int) color.Palette {
 	if len(all) == 0 {
 		all = append(all, entry{p: px{255, 255, 255}, count: 1})
 	}
-	// Sort entries deterministically by (r,g,b) before median-cut.
-	sortEntries(all, func(e entry) int {
+	// Sort entries deterministically by (r,g,b) before median-cut. Keys here
+	// are distinct (the map collapsed duplicate colors), so this is a total
+	// order; the single-channel box sorts below are stable, so ties keep this
+	// lexicographic order and the median-cut emission is reproducible.
+	sort.SliceStable(all, func(i, j int) bool {
 		// Lexicographic order over (r,g,b) as a single integer.
 		// Since each component is uint8, we can compute r<<16 | g<<8 | b.
-		return int(e.p.r)<<16 | int(e.p.g)<<8 | int(e.p.b)
+		ki := int(all[i].p.r)<<16 | int(all[i].p.g)<<8 | int(all[i].p.b)
+		kj := int(all[j].p.r)<<16 | int(all[j].p.g)<<8 | int(all[j].p.b)
+		return ki < kj
 	})
 	boxes := [][]entry{all}
 	for len(boxes) < n {
@@ -170,13 +168,15 @@ func sharedPalette(frames []image.Image, n int) color.Palette {
 		}
 		b := boxes[bi]
 		// Sort the selected box along the axis of greatest spread.
+		// SliceStable keeps the box's existing (r,g,b) lexicographic order on
+		// channel ties, matching the insertion sort it replaces.
 		switch bc {
 		case 0:
-			sortEntries(b, func(e entry) int { return int(e.p.r) })
+			sort.SliceStable(b, func(i, j int) bool { return b[i].p.r < b[j].p.r })
 		case 1:
-			sortEntries(b, func(e entry) int { return int(e.p.g) })
+			sort.SliceStable(b, func(i, j int) bool { return b[i].p.g < b[j].p.g })
 		default: // bc == 2
-			sortEntries(b, func(e entry) int { return int(e.p.b) })
+			sort.SliceStable(b, func(i, j int) bool { return b[i].p.b < b[j].p.b })
 		}
 		mid := len(b) / 2
 		boxes[bi] = b[:mid]

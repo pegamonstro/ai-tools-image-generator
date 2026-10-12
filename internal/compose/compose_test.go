@@ -2,9 +2,11 @@ package compose
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/gif"
+	"image/png"
 	"testing"
 )
 
@@ -101,5 +103,56 @@ func TestEncodeGIFDeterministicPalette(t *testing.T) {
 	}
 	if len(g.Image) != 3 {
 		t.Fatalf("expected 3 frames, got %d", len(g.Image))
+	}
+}
+
+func TestPackGrid(t *testing.T) {
+	red := solid(8, 4, color.RGBA{220, 40, 40, 255})
+	blue := solid(4, 4, color.RGBA{40, 40, 220, 255})
+	sheet, metas, err := PackGrid("spark", []image.Image{red, blue}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 2 {
+		t.Fatalf("want 2 metas, got %d", len(metas))
+	}
+	img, err := png.Decode(bytes.NewReader(sheet))
+	if err != nil {
+		t.Fatalf("sheet is not a PNG: %v", err)
+	}
+	if img.Bounds().Dx() != 8 || img.Bounds().Dy() != 8 {
+		t.Fatalf("want 8x8 sheet from 8x4 cell, got %v", img.Bounds())
+	}
+	if metas[0].Name != "spark-0000" || metas[0].Frame.W != 8 || metas[0].Frame.Y != 0 {
+		t.Fatalf("meta0: %+v", metas[0])
+	}
+	if metas[1].Name != "spark-0001" || metas[1].Frame.Y != 4 || metas[1].Frame.W != 8 {
+		t.Fatalf("meta1: %+v", metas[1])
+	}
+	// cell contents: blue placed at left of the cell (since we left-align)
+	// The blue frame is 4x4, so the pixel at (1,5) is inside it.
+	// The red channel of the blue color is 40, which in 16-bit is 40*257 = 10280.
+	dr, _, _, _ := img.At(1, 5).RGBA()
+	if dr != 40*257 {
+		t.Fatalf("blue frame not placed as expected: got %d, want %d", dr, 40*257)
+	}
+}
+
+func TestMarshalAtlasShape(t *testing.T) {
+	b, err := MarshalAtlas([]AtlasFrame{{Name: "spark-0000", Frame: Rect{0, 0, 8, 4}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Frames map[string]struct {
+			Frame Rect `json:"frame"`
+		} `json:"frames"`
+		Meta map[string]string `json:"meta"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Frames["spark-0000"].Frame.W != 8 || doc.Meta["app"] != "img-gen compose" {
+		t.Fatalf("unexpected doc: %s", b)
 	}
 }

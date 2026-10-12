@@ -47,12 +47,14 @@ routing.
 - **Compose coordinator in `internal/queue`** (new; see "Queue coordination"
   below): a non-slotted watcher job type that enqueues child generation jobs
   and finalizes when they all land. It never occupies the single worker slot.
-- **v1 endpoints** in `cmd/img-gen/v1.go`: `POST /api/v1/asset-set`,
-  `POST /api/v1/gif`, plus `GET /api/v1/sets/{id}` and
+- **v1 endpoints** in `cmd/img-gen/v1.go`: `POST /api/v1/asset-sets`,
+  `POST /api/v1/gifs`, plus `GET /api/v1/sets/{id}` and
   `GET /api/v1/sets/{id}/files/{name}` for multi-file composite retrieval
   (see Storage).
 - **docs/openapi.yaml** gain the two new endpoints' paths and schemas, the
-  `compose_error` code in the error-code enum, the set-retrieval endpoints,
+  `not_implemented` code in the error-code enum (async composite failures
+  surface as failed job JSON with `error` prefixed `compose_error:` — not an
+  envelope code), the set-retrieval endpoints,
   and the expanded job record shape (the file is hand-maintained and must
   stay in sync with v1.go per its own header note).
 - **MCP tools** in `cmd/img-gen-mcp/main.go`: `request_asset_set`,
@@ -127,7 +129,7 @@ adds a real layout rather than pretending the existing one covers it:
 
 ## Asset-set pipeline
 
-`POST /api/v1/asset-set`
+`POST /api/v1/asset-sets`
 
 Request:
 
@@ -266,7 +268,7 @@ Children go through normal lattice routing and the single-slot queue
 
 ## GIF pipeline
 
-`POST /api/v1/gif`
+`POST /api/v1/gifs`
 
 Request:
 
@@ -314,18 +316,19 @@ Request:
 
 Three new tools in `cmd/img-gen-mcp`, same thin-wrapper pattern:
 
-- **`request_asset_set`** → `POST /api/v1/asset-set` (+ `wait_seconds`
+- **`request_asset_set`** → `POST /api/v1/asset-sets` (+ `wait_seconds`
   blocking). Returns text (set id, absolute delivered paths, per-asset
   manifest summary) **plus one inline base64 preview image** of the set's
   primary artifact — the verified dominant convention among agent-facing MCP
   servers (inspect inline, deliver as files).
-- **`make_gif`** → `POST /api/v1/gif` (+ `wait_seconds`), returns text (path,
+- **`make_gif`** → `POST /api/v1/gifs` (+ `wait_seconds`), returns text (path,
   frame count, delay, formats) plus an inline preview of the GIF's first
   frame (MCP image blocks are static).
-- **`read_export`** — returns base64 bytes for one file of a **completed
-  composite set** (set id + file name, validated inside
-  `DATA_DIR/sets/{id}/`) or of an ordinary job image (job id). Read roots are
-  only ever `DATA_DIR` trees — the earlier "previously-supplied dest" idea is
+- **`read_export`** — returns everything in one completed composite set: the
+  set view JSON as text (job + FileRef list), then each composed file as its
+  own content block (images inline; JSON files like `manifest.json` as text).
+  One call covers discovery and retrieval. Read roots are
+  only ever `DATA_DIR/sets/{id}` trees — the earlier "previously-supplied dest" idea is
   dropped: the server keeps no per-caller dest memory, and agents wanting
   bytes from an already-delivered project file can read that file themselves.
   This keeps the trusted read scope unchanged.
@@ -406,8 +409,8 @@ Typed v1 envelopes throughout, consistent with the existing surface:
 ## Phasing
 
 1. **Phase 1** — `internal/compose` + queue coordinator + child-submit
-   (`asset` path) + storage sets/Files/retrieval endpoints + `/api/v1/asset-set`
-   (kind: element (with alpha), kit, atlas) + `/api/v1/gif`
+   (`asset` path) + storage sets/Files/retrieval endpoints + `/api/v1/asset-sets`
+   (kind: element (with alpha), kit, atlas) + `/api/v1/gifs`
    (from_frames, from_spec) + MCP tools + skills + delivery + openapi.yaml +
    README. `kind: tile` rejected with a phase notice; `keyframes` rejected
    with the RIFE notice.

@@ -157,8 +157,13 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   prompt renders the fill; `fill_states` 1..100, ≤16 ascending, default
   25/50/75/100 render as horizontal clips `<name>-fill-<NNN>.png`; the
   track interior punches transparent via `frame_margins`; sidecar
-  `<name>.bar.json`). Every asset needs a prompt and a 16-multiple
-  `WxH` size. A
+  `<name>.bar.json`), or **`npc`** (`shape: "variants"` packs per-variant
+  sprites — every variant renders with the SAME set seed and a `", "` +
+  suffix prompt — into `<name>-sheet.png` + atlas JSON; `shape: "walk4"`
+  renders three direction views (down/up/right suffixes fixed, left
+  mirrored from right) into a 4-row RPG-Maker-order sheet
+  `<name>-walk.png` with individual cells. Standing views, not walk
+  animation.). Every asset needs a prompt and a 16-multiple `WxH` size. A
   `manifest.json` lands in the set with per-asset files and errors (per-asset
   seeds ride the child jobs). Setting `"palette_lock": true` builds one
   shared palette (up to 255 colors) over every composed image of the set and

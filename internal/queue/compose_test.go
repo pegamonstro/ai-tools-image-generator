@@ -666,6 +666,104 @@ func TestSubmitAssetSetBarKind(t *testing.T) {
 	}
 }
 
+func TestSubmitAssetSetNPCVariants(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(41)
+
+	bad := AssetSetRequest{Name: "n", Seed: &seed, Assets: []AssetSpecIn{{Kind: "npc", Name: "vg", Prompt: "villager", Size: "32x32"}}}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want npc shape required error")
+	}
+	bad.Assets[0].Shape = "variants"
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want variants 2..64 error")
+	}
+
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "npc", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "npc", Name: "villager", Prompt: "villager sprite", Size: "32x32",
+			Shape: "variants", Variants: []string{"idle", "wave", "angry"}, Columns: 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	// Pinned seed: every child at the set seed, suffix appended.
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	wantP := []string{"villager sprite, idle", "villager sprite, wave", "villager sprite, angry"}
+	for i, wp := range wantP {
+		if cap.Prompts[i] != wp {
+			t.Fatalf("prompt %d = %q, want %q", i, cap.Prompts[i], wp)
+		}
+		if cap.Seeds[i] != 41 {
+			t.Fatalf("seed %d = %d, want pinned 41", i, cap.Seeds[i])
+		}
+	}
+	if _, err := m.opts.Store.ReadSetFile(id, "villager-sheet.png"); err != nil {
+		t.Fatalf("variant sheet: %v", err)
+	}
+
+	// Ruling R-6: the manifest asset entry must record the variants list
+	// itself, not merely show a successful sheet composition.
+	mraw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(mraw, &man); err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Assets) != 1 || man.Assets[0].Error != "" {
+		t.Fatalf("manifest assets: %+v", man.Assets)
+	}
+	got := man.Assets[0].Variants
+	if len(got) != 3 || got[0] != "idle" || got[1] != "wave" || got[2] != "angry" {
+		t.Fatalf("manifest variants = %q, want [idle wave angry]", got)
+	}
+}
+
+func TestSubmitAssetSetNPCWalk4(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(41)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "npcw", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "npc", Name: "guard", Prompt: "town guard", Size: "32x32", Shape: "walk4"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	cap.mu.Lock()
+	wantP := []string{
+		"town guard, full front view, facing the viewer",
+		"town guard, rear view, facing away from the viewer",
+		"town guard, side profile view, facing right",
+	}
+	for i, wp := range wantP {
+		if cap.Prompts[i] != wp {
+			t.Fatalf("prompt %d = %q, want %q", i, cap.Prompts[i], wp)
+		}
+		if cap.Seeds[i] != 41 {
+			t.Fatalf("seed %d = %d, want pinned 41", i, cap.Seeds[i])
+		}
+	}
+	cap.mu.Unlock()
+	for _, name := range []string{"guard-walk.png", "guard-atlas.json", "guard-down.png", "guard-left.png", "guard-right.png", "guard-up.png"} {
+		if _, err := m.opts.Store.ReadSetFile(id, name); err != nil {
+			t.Fatalf("set file %s: %v", name, err)
+		}
+	}
+}
+
 func TestSubmitAssetSetValidation(t *testing.T) {
 	cap := &genCapture{}
 	m := New(composeTestOpts(t, t.TempDir(), cap))

@@ -34,17 +34,19 @@ type composeSpec struct {
 }
 
 type assetSpec struct {
-	Kind         string `json:"kind"`
-	Name         string `json:"name"`
-	Prompt       string `json:"prompt"`
-	Size         string `json:"size"`
-	Frames       int    `json:"frames,omitempty"`
-	Columns      int    `json:"columns,omitempty"`
-	Transparent  bool   `json:"transparent,omitempty"`
-	FrameMargins int    `json:"frame_margins,omitempty"`
-	BarFill      string `json:"bar_fill,omitempty"`
-	FillStates   []int  `json:"fill_states,omitempty"`
-	Children     int    `json:"children"` // generation jobs this asset owns, in order
+	Kind         string   `json:"kind"`
+	Name         string   `json:"name"`
+	Prompt       string   `json:"prompt"`
+	Size         string   `json:"size"`
+	Frames       int      `json:"frames,omitempty"`
+	Columns      int      `json:"columns,omitempty"`
+	Transparent  bool     `json:"transparent,omitempty"`
+	FrameMargins int      `json:"frame_margins,omitempty"`
+	BarFill      string   `json:"bar_fill,omitempty"`
+	FillStates   []int    `json:"fill_states,omitempty"`
+	Shape        string   `json:"shape,omitempty"`    // npc: "variants" | "walk4"
+	Variants     []string `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
+	Children     int      `json:"children"`           // generation jobs this asset owns, in order
 }
 
 type gifPayload struct {
@@ -334,17 +336,19 @@ type AssetSetRequest struct {
 }
 
 type AssetSpecIn struct {
-	Kind         string `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
-	Name         string `json:"name"`
-	Prompt       string `json:"prompt"`
-	Negative     string `json:"negative,omitempty"`
-	Size         string `json:"size"`                    // WxH, multiples of 16
-	Frames       int    `json:"frames,omitempty"`        // atlas: 2..64
-	Columns      int    `json:"columns,omitempty"`       // atlas: 0 = single row
-	Transparent  bool   `json:"transparent,omitempty"`   // element: white+black double pass
-	FrameMargins int    `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
-	BarFill      string `json:"bar_fill,omitempty"`      // bar: fill art prompt
-	FillStates   []int  `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
+	Kind         string   `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
+	Name         string   `json:"name"`
+	Prompt       string   `json:"prompt"`
+	Negative     string   `json:"negative,omitempty"`
+	Size         string   `json:"size"`                    // WxH, multiples of 16
+	Frames       int      `json:"frames,omitempty"`        // atlas: 2..64
+	Columns      int      `json:"columns,omitempty"`       // atlas: 0 = single row
+	Transparent  bool     `json:"transparent,omitempty"`   // element: white+black double pass
+	FrameMargins int      `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
+	BarFill      string   `json:"bar_fill,omitempty"`      // bar: fill art prompt
+	FillStates   []int    `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
+	Shape        string   `json:"shape,omitempty"`         // npc: "variants" | "walk4"
+	Variants     []string `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -447,6 +451,24 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			built = append(elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent),
 				elementChildren(a.BarFill, a.Negative, a.Size, *req.Seed, false)...)
 			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, BarFill: a.BarFill, FillStates: uniq}
+		case "npc":
+			switch a.Shape {
+			case "variants":
+				if len(a.Variants) < 2 || len(a.Variants) > 64 {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc variants takes 2..64 suffixes", an)}
+				}
+				for i, v := range a.Variants {
+					if strings.TrimSpace(v) == "" {
+						return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc variant %d is empty", an, i)}
+					}
+				}
+			case "walk4":
+				// Fixed direction suffixes; any provided variants list is ignored.
+			default:
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc shape must be variants or walk4", an)}
+			}
+			built = npcChildren(prompt, a.Negative, a.Size, *req.Seed, a.Shape, a.Variants)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants}
 		default:
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
 		}
@@ -502,6 +524,27 @@ func atlasChildren(prompt, negative, size string, seed int64, frames int) []Subm
 	return kids
 }
 
+// npcChildren builds one job per npc variant, ALL at the pinned set seed —
+// no +i increment. Same composition scaffold, per-variant content: the
+// variant-family mechanic (walk4 gets the three fixed direction suffixes;
+// left is mirrored downstream, never rendered).
+func npcChildren(prompt, negative, size string, seed int64, shape string, variants []string) []SubmitRequest {
+	suffixes := variants
+	if shape == "walk4" {
+		suffixes = []string{
+			"full front view, facing the viewer",
+			"rear view, facing away from the viewer",
+			"side profile view, facing right",
+		}
+	}
+	kids := make([]SubmitRequest, 0, len(suffixes))
+	for _, v := range suffixes {
+		s := seed
+		kids = append(kids, SubmitRequest{Mode: "asset", Prompt: prompt + ", " + v, NegativePrompt: negative, Size: size, Seed: &s})
+	}
+	return kids
+}
+
 // parseAssetSize parses a size that already passed validAssetSize ("WxH",
 // multiples of 16) into pixel ints, for post-processing bounds checks.
 func parseAssetSize(size string) (w, h int, err error) {
@@ -531,12 +574,13 @@ type setManifest struct {
 }
 
 type manifestAsset struct {
-	Kind   string   `json:"kind"`
-	Name   string   `json:"name"`
-	Prompt string   `json:"prompt,omitempty"`
-	Size   string   `json:"size,omitempty"`
-	Files  []string `json:"files,omitempty"`
-	Error  string   `json:"error,omitempty"`
+	Kind     string   `json:"kind"`
+	Name     string   `json:"name"`
+	Prompt   string   `json:"prompt,omitempty"`
+	Size     string   `json:"size,omitempty"`
+	Variants []string `json:"variants,omitempty"`
+	Files    []string `json:"files,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 type manifestGIF struct {
@@ -572,7 +616,7 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 	var files []storage.FileRef
 	outsByAsset := make([][]compose.OutputFile, len(spec.Assets))
 	for ai, a := range spec.Assets {
-		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size}
+		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size, Variants: a.Variants}
 		end := cursor + a.Children
 		if cursor+a.Children > len(children) {
 			ma.Error = fmt.Sprintf("expected %d child job(s), found %d", a.Children, len(children)-cursor)
@@ -626,6 +670,12 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 					trackBlack = imgs[1]
 				}
 				outs, err = compose.ComposeBar(a.Name, imgs[0], trackBlack, a.Transparent && len(imgs) == 3, a.FrameMargins, fill, a.FillStates)
+			case "npc":
+				if a.Shape == "walk4" {
+					outs, err = compose.ComposeNPCWalk4(a.Name, imgs[0], imgs[1], imgs[2])
+				} else {
+					outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
+				}
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
 			}

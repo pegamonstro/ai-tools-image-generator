@@ -18,6 +18,7 @@ the MCP tools `request_asset_set` / `read_export`, or REST against
 | `atlas` | prompt, size, frames 2-64, columns | `<name>-sheet.png` + `<name>-atlas.json` |
 | `frame` | prompt, size, `frame_margins` 1..size/2-1 | `<name>.png` (interior punched transparent) + `<name>.frame.json` |
 | `bar` | prompt (track), `bar_fill` (fill), `frame_margins`, `fill_states` | `<name>-track.png`, `<name>-fill.png`, `<name>-fill-<NNN>.png`, `<name>.bar.json` |
+| `npc` | prompt, `shape` ("variants"|"walk4"), `variants` (suffixes) | variants: `<name>-sheet.png` + `<name>-atlas.json`; walk4: `<name>-walk.png`, 4 cells, `<name>-atlas.json` |
 
 Sizes must be `WxH` with both multiples of 16. `seed` is required — a set
 must be reproducible while a design iterates.
@@ -65,3 +66,23 @@ element families, sprite groups.
 **Party pattern** (a group of distinct NPCs with coherent color): N `element`
 assets in one set, each with its own prompt, `palette_lock: true`. Delivery
 is Kenney-style separate sprites; no special kind.
+
+## NPC sheets
+
+Two shapes, both with every child seeded at the SET seed (pinned — the
+researched mechanic for consistent characters without image conditioning):
+
+- `shape: "variants"`, `variants: ["idle", "wave", ...]` — one render per
+  suffix (`prompt + ", " + suffix`), packed by the atlas rules (`columns`
+  sizes the grid). RPG-Maker face grids: 96x96 cells, `columns: 4`.
+- `shape: "walk4"` — three renders with fixed direction suffixes (down/up/
+  right); left = horizontal mirror of right. Delivers `<name>-walk.png`
+  (rows in RPG-Maker order: down, left, right, up), the four cells, and the
+  atlas JSON.
+
+**Honesty contract:** walk4 delivers four standing direction views whose
+palette and composition form a family — NOT a walk animation, and not
+guaranteed single-identity across directions (direction-prompt drift is the
+researched failure mode). True walk cycles need anchor-image conditioning,
+which the text+seed engine does not have. An NPC party (N distinct NPCs) is
+the palette-lock party pattern above: N elements, `palette_lock: true`.

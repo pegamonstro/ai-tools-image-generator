@@ -144,16 +144,13 @@ func EncodeWebP(gifBytes []byte) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gif2webp", "-m", in, "-o", out)
+	cmd := exec.CommandContext(ctx, "gif2webp", "-mixed", in, "-o", out)
 	if ob, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("gif2webp: %v: %s", err, truncate(ob, 200))
+		msg := string(ob)
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return nil, fmt.Errorf("gif2webp: %v: %s", err, msg)
 	}
 	return os.ReadFile(out)
-}
-
-func truncate(b []byte, n int) string {
-	if len(b) > n {
-		return string(b[:n])
-	}
-	return string(b)
 }

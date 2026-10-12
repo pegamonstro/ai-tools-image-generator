@@ -18,7 +18,7 @@
 - Existing `queue.ValidationError` msgs must not change; new code adds new ones freely.
 - Hard limits (spec): assets per set ≤ 8; total generation children per parent ≤ 64; GIF/frames count 2..64; atlas frames 2..64; `delay_ms` 10..5000 (default 100); `loop` ≥ 0 (0 = forever); asset sizes must be valid `WxH` **and** multiples of 16 (both engines tile latents at 16px).
 - Seed derivations (exact): kit class seed = `seed + KitClass.SeedOffset`; atlas frame seed = `seed + frameIndex`; GIF `from_spec` frame seed = `seed + i`. `generation.seed` is REQUIRED for asset sets and `from_spec` GIFs.
-- Transparent elements are 2 generation jobs (same base seed, prompt suffixed `", on a plain solid white background"` / `", on a plain solid black background"`).
+- Transparent elements are 2 generation jobs (same base seed, prompt suffixed `", isolated on plain white background"` / `", isolated on plain black background"` — these exact constants from Task 8's executor; no other task re-quotes them differently).
 - Partial success: a set completes if ANY asset succeeded; per-asset failures are recorded in `manifest.json`.
 - Delivery into `dest` refuses collisions (destination file exists → compose fails with `compose_error`); internal `SaveSetFile` may overwrite (restart re-compose works).
 - Compose parents are never persisted with a worker slot: children re-enqueue the parent when the last child turns terminal.

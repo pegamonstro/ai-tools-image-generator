@@ -2509,7 +2509,37 @@ func TestSubmitAssetSetDeliveryCollision(t *testing.T) {
 		t.Fatalf("error: %q", j.Error)
 	}
 }
+
+func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
+	// Spec: unset dest inherits the export fallback chain (EXPORT_DIR →
+	// ~/Downloads/img-gen). The executor delivers on every success, so with
+	// Options.ExportDir pinned to a scratch dir the set lands there.
+	cap := &genCapture{}
+	dest := filepath.Join(t.TempDir(), "exports")
+	opts := composeTestOpts(t, t.TempDir(), cap)
+	opts.ExportDir = dest
+	m := New(opts)
+	seed := int64(21)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "export", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "export", Prompt: "e", Size: "32x32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	for _, name := range []string{"export.png", "manifest.json"} {
+		if _, err := os.ReadFile(filepath.Join(dest, name)); err != nil {
+			t.Fatalf("delivered %s: %v", name, err)
+		}
+	}
+}
 ```
+
+Test-infrastructure note (fix round 1): the now-unconditional delivery touches
+`composeTestOpts`'s users — the helper gains a scratch `ExportDir`
+(`filepath.Join(t.TempDir(), "exports")`) so compose tests never write into
+the real `~/Downloads/img-gen` fallback.
 
 Also append these tiny helpers used above (package-level, `compose_test.go`):
 
@@ -2826,14 +2856,16 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		m.finish(id, "failed", "compose_error: all assets failed: "+firstErr)
 		return
 	}
-	if spec.Dest != "" {
-		dest := m.resolveExportDest(spec.Dest)
-		served, err := m.opts.Store.DeliverSet(id, dest)
-		if err != nil {
-			m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
-			return
-		}
-		man.Delivered = served
+	// Deliver on every success: unset dest inherits the export fallback chain
+	// (dest → EXPORT_DIR → ~/Downloads/img-gen) per spec; resolveExportDest
+	// never returns empty, so there is no "no delivery" case.
+	dest := m.resolveExportDest(spec.Dest)
+	served, err := m.opts.Store.DeliverSet(id, dest)
+	if err != nil {
+		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
+		return
+	}
+	man.Delivered = served
 		man.Dest = dest
 		m.saveManifest(id, &man)
 	}
@@ -2875,6 +2907,14 @@ if err := os.MkdirAll(destDir, 0o755); err != nil {
 `TestDeliverSetCollision` is unaffected: it pre-creates both `dest` and the
 colliding file, and `MkdirAll` on an existing directory is a no-op — `Lstat`
 still refuses the pre-placed destination.
+
+Also strip the queue-namespace prefix from DeliverSet's collision error while
+in the file: `fmt.Errorf("destination file %s already exists", dst)` — drop
+the leading `"compose_error: "`. The executors wrap delivery failures with
+`compose_error: ` themselves, so today's string surfaces to callers as
+`compose_error: compose_error: …`. `TestDeliverSetCollision` pins only
+`already exists`; the queue collision test pins `compose_error` on the
+wrapped error — both keep passing.
 
 - [ ] **Step 5: Run tests, verify pass**
 
@@ -3366,14 +3406,16 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 	}
 	m.mu.Unlock()
 	m.saveManifest(id, &man)
-	if spec.Dest != "" {
-		dest := m.resolveExportDest(spec.Dest)
-		served, err := m.opts.Store.DeliverSet(id, dest)
-		if err != nil {
-			m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
-			return
-		}
-		man.Delivered = served
+	// Deliver on every success: unset dest inherits the export fallback chain
+	// (dest → EXPORT_DIR → ~/Downloads/img-gen) per spec; resolveExportDest
+	// never returns empty, so there is no "no delivery" case.
+	dest := m.resolveExportDest(spec.Dest)
+	served, err := m.opts.Store.DeliverSet(id, dest)
+	if err != nil {
+		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
+		return
+	}
+	man.Delivered = served
 		man.Dest = dest
 		m.saveManifest(id, &man)
 	}

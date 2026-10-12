@@ -96,10 +96,11 @@ func newHandler(cfg config) (http.Handler, error) {
 		return lat.Chat(ctx, cfg.EnhanceModel, msgs)
 	}
 	mgr := queue.New(queue.Options{
-		Genres:  catalog,
-		Presets: presetCatalog,
-		Models:  modelCatalog,
-		Store:   store,
+		Genres:    catalog,
+		Presets:   presetCatalog,
+		Models:    modelCatalog,
+		Store:     store,
+		ExportDir: cfg.ExportDir,
 		Ops: queue.ImageOps{
 			Generate:   lat.Generate,
 			Edit:       lat.Edit,

@@ -114,6 +114,22 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 	mux.HandleFunc("/api/v1/export", func(w http.ResponseWriter, r *http.Request) {
 		d.handleV1Export(w, r, d.exportDir)
 	})
+
+	mux.HandleFunc("/api/v1/asset-sets", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeV1Err(w, http.StatusMethodNotAllowed, "validation_error", "method not allowed", "")
+			return
+		}
+		d.handleV1AssetSet(w, r)
+	})
+
+	mux.HandleFunc("/api/v1/gifs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeV1Err(w, http.StatusMethodNotAllowed, "validation_error", "method not allowed", "")
+			return
+		}
+		d.handleV1GIF(w, r)
+	})
 }
 
 // v1SubmitResponse is the shared POST-body shape: {"job_id"} or {"job_ids"}.
@@ -343,6 +359,64 @@ func (d *v1Deps) handleV1Export(w http.ResponseWriter, r *http.Request, exportDi
 		copied = append(copied, dst)
 	}
 	writeJSON(w, map[string]any{"copied": copied, "skipped": skipped})
+}
+
+type setAndWaitRequest struct {
+	queue.AssetSetRequest
+	WaitSeconds int `json:"wait_seconds"`
+}
+
+type gifAndWaitRequest struct {
+	queue.GifRequest
+	WaitSeconds int `json:"wait_seconds"`
+}
+
+// handleV1AssetSet submits an asset set. wait_seconds > 0 blocks on the
+// parent job; otherwise the caller gets the ids and polls. The set id equals
+// the job id, so GET /api/v1/sets/{id} takes either value.
+func (d *v1Deps) handleV1AssetSet(w http.ResponseWriter, r *http.Request) {
+	var req setAndWaitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeV1Err(w, http.StatusBadRequest, "validation_error", "bad body", "")
+		return
+	}
+	id, err := d.mgr.SubmitAssetSet(req.AssetSetRequest)
+	if err != nil {
+		v1SubmitErr(w, err)
+		return
+	}
+	waitForCompose(w, d.mgr, id, req.WaitSeconds)
+}
+
+func (d *v1Deps) handleV1GIF(w http.ResponseWriter, r *http.Request) {
+	var req gifAndWaitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeV1Err(w, http.StatusBadRequest, "validation_error", "bad body", "")
+		return
+	}
+	id, err := d.mgr.SubmitGIF(req.GifRequest)
+	if err != nil {
+		v1SubmitErr(w, err)
+		return
+	}
+	waitForCompose(w, d.mgr, id, req.WaitSeconds)
+}
+
+// waitForCompose is the shared wait branch for the compose endpoints:
+// 202 {"job_id","set_id"} when not waiting, the final job JSON otherwise,
+// 504 sidecar_timeout when wait_seconds elapses first.
+func waitForCompose(w http.ResponseWriter, mgr *queue.Manager, id string, waitSeconds int) {
+	if waitSeconds <= 0 {
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, map[string]string{"job_id": id, "set_id": id})
+		return
+	}
+	j, done := mgr.Wait(id, time.Duration(waitSeconds)*time.Second)
+	if !done {
+		writeV1Err(w, http.StatusGatewayTimeout, "sidecar_timeout", "not terminal within wait_seconds", id)
+		return
+	}
+	writeJSON(w, j)
 }
 
 // serveStoredImage is the shared image-file handler (legacy + v1). errf styles

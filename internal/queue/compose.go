@@ -588,14 +588,6 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 	// one root would collide (the second set's parent finishes failed despite
 	// composing fine). Fallback deliveries therefore namespace by set id; the
 	// resolved root never comes up empty, so there is no "no delivery" case.
-	// Deliver on every success. Explicit dest keeps the flat documented
-	// contract: delivered names are semantic project files. An unset dest
-	// inherits the export fallback chain (dest → EXPORT_DIR →
-	// ~/Downloads/img-gen), and that root is SHARED by every fallback set —
-	// each ships a fixed-name manifest.json, so two fallback deliveries into
-	// one root would collide (the second set's parent finishes failed despite
-	// composing fine). Fallback deliveries therefore namespace by set id; the
-	// resolved root never comes up empty, so there is no "no delivery" case.
 	dest := m.resolveExportDest(spec.Dest)
 	if spec.Dest == "" {
 		dest = filepath.Join(dest, id)

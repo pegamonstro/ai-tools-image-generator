@@ -751,6 +751,42 @@ func TestSubmitGIFFromSpec(t *testing.T) {
 	}
 }
 
+func TestComposeGifNilGifSpecFailsParent(t *testing.T) {
+	// composeGIF dereferenced spec.GIF before any nil check, so a
+	// hand-corrupted history.jsonl line — a compose parent whose spec parses
+	// as {"kind":"gif"} with no gif block — panicked the worker goroutine and
+	// crashed the whole process on restart. The corrupted parent must finish
+	// failed instead (the injection pattern mirrors
+	// TestRestoreMarksInterruptedJobsFailed).
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(storage.Job{
+		ID: "0123456789abcdef", SetID: "0123456789abcdef", Mode: "compose",
+		Prompt: "compose gif", Status: "queued",
+		ComposeSpec: `{"kind":"gif","name":"corrupt"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := composeTestOpts(t, dir, &genCapture{})
+	opts.Store = g
+	m := New(opts)
+	if _, ok := m.Get("0123456789abcdef"); !ok {
+		t.Fatal("corrupt parent not restored")
+	}
+	j := waitFor(t, m, "0123456789abcdef", "failed")
+	if j.Status != "failed" || !strings.Contains(j.Error, "gif spec missing gif block") {
+		t.Fatalf("corrupt parent: %s %q", j.Status, j.Error)
+	}
+}
+
 func TestSubmitGIFPathRef(t *testing.T) {
 	cap := &genCapture{}
 	dir := t.TempDir()

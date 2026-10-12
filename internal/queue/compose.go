@@ -82,10 +82,6 @@ func (m *Manager) submitComposeParent(parentID string, spec composeSpec, childre
 	if len(children) == 0 {
 		// No generation children (a from-frames GIF): compose immediately.
 		m.enqueueCompose(parentID)
-		m.mu.Lock()
-		j := *parent
-		m.mu.Unlock()
-		_ = j
 		return parentID, nil
 	}
 	var ids []string
@@ -798,6 +794,13 @@ func specFrames(base SubmitRequest, count int) []SubmitRequest {
 // parent. webp unavailability is recorded, not fatal.
 func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 	gp := spec.GIF
+	if gp == nil {
+		// A corrupted history record can rehydrate a gif parent whose spec
+		// parsed without a gif block; failing here is the "neither frames nor
+		// children" precedent, not a panic inside the worker goroutine.
+		m.finish(id, "failed", "compose_error: gif spec missing gif block")
+		return
+	}
 	man := setManifest{SetID: id, Kind: "gif", Name: spec.Name, CreatedAt: time.Now(),
 		GIF: &manifestGIF{Name: spec.Name, DelayMS: gp.DelayMS, Loop: gp.Loop, Formats: gp.Formats}}
 	var frames []image.Image

@@ -106,8 +106,8 @@ var tools = []tool{
 	},
 	{
 		name:        "make_gif",
-		description: "Build an animated GIF: from_frames (given sources), from_spec (generates the frames), or keyframes (interpolation needs the phase-3 RIFE sidecar and is rejected). Returns the parent job JSON plus an inline preview of the GIF.",
-		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen GifRequest: name, dest, delay_ms (10-5000, default 100), loop (>=0), formats [gif,webp], source{type: from_frames|from_spec|keyframes, frames[{job|path|b64}], request, count}"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
+		description: "Build an animated GIF: from_frames (given sources), from_spec (generates the frames), composite (statics composited over a 2-64-frame animation), or keyframes (interpolation needs the phase-3 RIFE sidecar and is rejected). Returns the parent job JSON plus an inline preview of the GIF.",
+		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen GifRequest: name, dest, delay_ms (10-5000, default 100), loop (>=0), formats [gif,webp], source{type: from_frames|from_spec|composite|keyframes, frames[{job|path|b64|set+file}], request, count, composite{anim[2-64 refs], statics[{from, pos[x,y]}] up to 8}}"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
 	},
 	{
 		name:        "read_export",

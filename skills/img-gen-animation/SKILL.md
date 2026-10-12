@@ -11,7 +11,8 @@ description: Build animated GIFs with the img-gen service — assemble frames fr
 
 - `from_frames` — assemble given images. Each frame is
   `{job: <img-gen job id>}` or `{path: "<data-dir-relative path>"}` or
-  `{b64: "<base64 png>"}`. 2-64 frames.
+  `{b64: "<base64 png>"}` or `{set: "<set id>", file: "<set file>"}`.
+  2-64 frames.
 - `from_spec` — img-gen generates the frames: `{"type":"from_spec",
   "request":{"mode":"asset","prompt":"<subject>","size":"64x64","seed":7},
   "count":8}`. Frames get `seed+i` and a frame-index suffix; keep prompts
@@ -19,6 +20,13 @@ description: Build animated GIFs with the img-gen service — assemble frames fr
   motion).
 - `keyframes` — interpolation between keyframes needs the RIFE sidecar;
   rejected with `not_implemented` until phase 3.
+- `composite` — layer statics under an animation: `{"type":"composite",
+  "composite":{"anim":[<2-64 frame refs>],"statics":[{"from":<frame ref>,
+  "pos":[x,y]}, ...]}}`. The overlay must fit inside the anim canvas or the
+  GIF fails at compose (named error, no silent crop). Compositing happens
+  pre-quantization, so 1-bit GIF alpha stays halo-free; statics stay crisp
+  across frames. Combine with palette-locked sets for coherent title
+  screens.
 
 ## Timing and formats
 
@@ -37,4 +45,5 @@ skip is recorded in `manifest.json` (`gif.webp`), not an error.
 3. Deliver with `"dest"` or copy from the set dir
    (`DATA_DIR/sets/{set_id}/<name>.gif`). A delivered GIF set contains:
    `<name>.gif`, the optional `.webp` variant, `<name>.manifest.json`, and the
-   source frames (`source-frame-NNNN.png`, from-frames sources only).
+   source frames (`source-frame-NNNN.png` — from-frames and composite anim)
+   plus composite static layers (`static-layer-NN.png`).

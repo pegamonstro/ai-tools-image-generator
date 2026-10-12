@@ -170,11 +170,17 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   remaps each pixel to its CIEDE2000-nearest palette color — batch coherence
   is won in post, not generation. The set ships `<name>.palette.json` with
   the colors (`{"colors":["#0f766e",...]}`), an ordinary set file delivered
-  flat like the rest. GIFs built from locked sets inherit the coherence.
+  flat like the rest. GIFs composed from a locked set's deliverable files
+  (composite sources with `{set, file}` refs) inherit the coherence;
+  `from_frames` refs by job id read the raw pre-remap renders instead.
 - **GIFs** — `POST /api/v1/gifs` with `source.type` `from_frames`
   (assemble existing job ids, data-dir paths, or inline base64),
   `from_spec` (img-gen generates the 2–64 frames at `seed+i`),
-  or `keyframes` (needs the phase-3 RIFE sidecar; rejected with
+  `composite` (one animated base of 2–64 frames plus up to 8 static
+  layers, each `{from: <frame ref>, pos: [x,y]}`, alpha-composited
+  pre-quantization — statics from already-rendered sets cost zero renders;
+  frame refs accept `{job}`, `{path}`, `{b64}`, or `{set, file}` for set
+  files), and `keyframes` (needs the phase-3 RIFE sidecar; rejected with
   `not_implemented` until then). `delay_ms` 10–5000 (default 100),
   `loop` >= 0, optional `formats: ["gif","webp"]` (`webp` is a
   best-effort extra — gif2webp on PATH or the skip is recorded).

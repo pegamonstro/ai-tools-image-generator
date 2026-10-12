@@ -49,11 +49,19 @@ type assetSpec struct {
 	Children     int      `json:"children"`           // generation jobs this asset owns, in order
 }
 
+// compositeLayerSpec is one persisted static layer: its set file (saved at
+// submit time) and the position to blit it at each frame during a recompose.
+type compositeLayerSpec struct {
+	File string `json:"file"`
+	Pos  [2]int `json:"pos"`
+}
+
 type gifPayload struct {
-	Frames  []string `json:"frames,omitempty"` // set-relative source files (from_frames)
-	DelayMS int      `json:"delay_ms"`
-	Loop    int      `json:"loop"`
-	Formats []string `json:"formats"`
+	Frames    []string             `json:"frames,omitempty"` // set-relative source files (from_frames/composite anim)
+	Composite []compositeLayerSpec `json:"composite,omitempty"`
+	DelayMS   int                  `json:"delay_ms"`
+	Loop      int                  `json:"loop"`
+	Formats   []string             `json:"formats"`
 }
 
 // --- parent registration --------------------------------------------------
@@ -318,6 +326,7 @@ func validComposeAssetName(s string) string {
 const (
 	maxAssetsPerSet    = 8
 	maxComposeChildren = 64
+	maxComposeStatics  = 8
 )
 
 const (
@@ -829,8 +838,9 @@ const (
 	maxGifDelayMS     = 5000
 )
 
-// GifRequest builds an animated GIF. Three source modes:
+// GifRequest builds an animated GIF. Four source modes:
 // from_frames (assemble given images), from_spec (generate the frames here),
+// composite (statics blitted over every frame of an animation),
 // keyframes (interpolate between keyframes — requires the phase-3 RIFE
 // sidecar and is rejected with not_implemented for now).
 type GifRequest struct {
@@ -843,18 +853,36 @@ type GifRequest struct {
 }
 
 type GifSource struct {
-	Type    string         `json:"type"`              // from_frames | from_spec | keyframes
-	Frames  []FrameRef     `json:"frames,omitempty"`  // from_frames: 2..64 sources
-	Request *SubmitRequest `json:"request,omitempty"` // from_spec: base asset request
-	Count   int            `json:"count,omitempty"`   // from_spec: 2..64 frames
+	Type      string           `json:"type"`              // from_frames | from_spec | composite | keyframes
+	Frames    []FrameRef       `json:"frames,omitempty"`  // from_frames: 2..64 sources
+	Request   *SubmitRequest   `json:"request,omitempty"` // from_spec: base asset request
+	Count     int              `json:"count,omitempty"`   // from_spec: 2..64 frames
+	Composite *CompositeSource `json:"composite,omitempty"`
+}
+
+// CompositeSource layers one animated frame list (the base canvas) under
+// static RGBA elements composited in list order, pre-quantization.
+type CompositeSource struct {
+	Anim    []FrameRef    `json:"anim"`              // 2..64 frame refs — the base canvas
+	Statics []StaticLayer `json:"statics,omitempty"` // 0..8
+}
+
+// StaticLayer places one static element: From is any frame ref form, Pos is
+// the x,y origin on the anim canvas — the overlay must fit inside it.
+type StaticLayer struct {
+	From FrameRef `json:"from"`
+	Pos  [2]int   `json:"pos"`
 }
 
 // FrameRef is one source frame: exactly one of Job (an img-gen job id),
-// Path (data-dir-relative, no "..", no absolute paths), or B64 (inline PNG).
+// Path (data-dir-relative, no "..", no absolute paths), B64 (inline PNG),
+// or the pair Set (storage set id) + File (set file name).
 type FrameRef struct {
 	Job  string `json:"job,omitempty"`
 	Path string `json:"path,omitempty"`
 	B64  string `json:"b64,omitempty"`
+	Set  string `json:"set,omitempty"`
+	File string `json:"file,omitempty"`
 }
 
 // resolveFrameRef fetches the PNG bytes for a source frame. Decodability is
@@ -866,8 +894,24 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 			set++
 		}
 	}
-	if set != 1 {
-		return nil, fmt.Errorf("frame source needs exactly one of job, path, b64")
+	switch {
+	case ref.Set != "" || ref.File != "":
+		if ref.Set == "" || ref.File == "" {
+			return nil, fmt.Errorf("set frame source needs both set and file")
+		}
+		if set != 0 {
+			return nil, fmt.Errorf("frame source needs exactly one of job, path, b64, set+file")
+		}
+		data, serr := m.opts.Store.ReadSetFile(ref.Set, ref.File)
+		if serr != nil {
+			return nil, serr
+		}
+		if _, derr := png.Decode(bytes.NewReader(data)); derr != nil {
+			return nil, fmt.Errorf("frame is not a decodable PNG: %v", derr)
+		}
+		return data, nil
+	case set != 1:
+		return nil, fmt.Errorf("frame source needs exactly one of job, path, b64, set+file")
 	}
 	var data []byte
 	var err error
@@ -892,9 +936,10 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 }
 
 // SubmitGIF registers the compose parent and queues frame generation when
-// the source is from_spec. from_frames resolves and persists every source
-// into the set at submit time (source-frame-%04d.png) so a restart can
-// recompose without re-fetching.
+// the source is from_spec. from_frames and composite resolve and persist
+// every source into the set at submit time (source-frame-%04d.png; composite
+// statics additionally as static-layer-%02d.png with their positions kept in
+// the persisted spec) so a restart can recompose without re-fetching.
 func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 	name := validComposeAssetName(req.Name)
 	if name == "" {
@@ -965,8 +1010,55 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 			return "", &ValidationError{Code: "validation_error", Msg: "gif frames must be 2..64"}
 		}
 		return m.submitComposeParent(newID(), spec, specFrames(*base, req.Source.Count))
+	case "composite":
+		cs := req.Source.Composite
+		if cs == nil {
+			return "", &ValidationError{Code: "validation_error", Msg: "composite source needs source.composite"}
+		}
+		if len(cs.Anim) < 2 || len(cs.Anim) > 64 {
+			return "", &ValidationError{Code: "validation_error", Msg: "composite anim takes 2..64 frames"}
+		}
+		if len(cs.Statics) > maxComposeStatics {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("composite takes at most %d static layers", maxComposeStatics)}
+		}
+		id := newID()
+		names := make([]string, 0, len(cs.Anim))
+		for i, ref := range cs.Anim {
+			data, err := m.resolveFrameRef(ref)
+			if err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("anim frame %d: %v", i, err)}
+			}
+			fname := fmt.Sprintf("source-frame-%04d.png", i)
+			if err := m.opts.Store.SaveSetFile(id, fname, data); err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("anim frame %d: %v", i, err)}
+			}
+			names = append(names, fname)
+		}
+		statics := make([]compositeLayerSpec, 0, len(cs.Statics))
+		for i, l := range cs.Statics {
+			if l.Pos[0] < 0 || l.Pos[1] < 0 {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("static layer %d: pos must be non-negative", i)}
+			}
+			data, err := m.resolveFrameRef(l.From)
+			if err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("static layer %d: %v", i, err)}
+			}
+			sname := fmt.Sprintf("static-layer-%02d.png", i)
+			if err := m.opts.Store.SaveSetFile(id, sname, data); err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("static layer %d: %v", i, err)}
+			}
+			statics = append(statics, compositeLayerSpec{File: sname, Pos: l.Pos})
+		}
+		spec.GIF.Frames = names
+		spec.GIF.Composite = statics
+		return m.submitComposeParent(id, spec, nil)
 	default:
-		return "", &ValidationError{Code: "validation_error", Msg: "source.type must be from_frames, from_spec, or keyframes"}
+		return "", &ValidationError{Code: "validation_error", Msg: "source.type must be from_frames, from_spec, or composite"}
 	}
 }
 
@@ -1036,6 +1128,31 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 	default:
 		m.finish(id, "failed", "compose_error: gif spec has neither frames nor children")
 		return
+	}
+	// Composite statics (F5): blit each persisted static layer over every
+	// frame BEFORE quantization — 1-bit GIF alpha stays halo-free and the
+	// palette covers overlay colors too. Each layer is one PNG read plus one
+	// decode; the blit itself runs per frame. An overhang (or any layer
+	// failure) fails the parent naming the file — never a silent crop.
+	for _, l := range gp.Composite {
+		data, err := m.opts.Store.ReadSetFile(id, l.File)
+		if err != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: static layer %s: %v", l.File, err))
+			return
+		}
+		ov, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: static layer %s: %v", l.File, err))
+			return
+		}
+		for i := range frames {
+			out, berr := compose.BlitImage(frames[i], ov, l.Pos[0], l.Pos[1])
+			if berr != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: static layer %s: %v", l.File, berr))
+				return
+			}
+			frames[i] = out
+		}
 	}
 	outs, _, webpStatus, err := compose.ComposeGIF(spec.Name, frames, gp.DelayMS, gp.Loop, gp.Formats)
 	if err != nil {

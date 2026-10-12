@@ -3,10 +3,12 @@ package queue
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/gif"
 	"image/png"
 	"os"
@@ -1007,6 +1009,16 @@ var bigChildren = func() []AssetSpecIn {
 	return out
 }()
 
+var nineStatics = func() []StaticLayer {
+	// StaticLayer forms are not validated until resolution, so B64 "AA"
+	// (undecodable) is fine — the statics-count check fires first.
+	var out []StaticLayer
+	for i := 0; i < 9; i++ {
+		out = append(out, StaticLayer{From: FrameRef{B64: "AA"}})
+	}
+	return out
+}()
+
 func TestSubmitGIFFromFrames(t *testing.T) {
 	cap := &genCapture{}
 	m := New(composeTestOpts(t, t.TempDir(), cap))
@@ -1240,6 +1252,10 @@ func TestSubmitGIFValidation(t *testing.T) {
 		{"format", GifRequest{Name: "k", Formats: []string{"apng"}, Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "formats"},
 		{"dest", GifRequest{Name: "k", Dest: "rel", Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "absolute"},
 		{"multi source", GifRequest{Name: "k", Source: GifSource{Type: "from_frames", Frames: []FrameRef{{Job: "a", B64: "AA"}, {Job: "b"}}}}, "exactly one"},
+		// composite source validation: pointer, anim bounds, statics cap.
+		{"composite missing", GifRequest{Name: "k", Source: GifSource{Type: "composite"}}, "source.composite"},
+		{"composite anim low", GifRequest{Name: "k", Source: GifSource{Type: "composite", Composite: &CompositeSource{Anim: []FrameRef{{B64: "AA"}}}}}, "2..64"},
+		{"statics high", GifRequest{Name: "k", Source: GifSource{Type: "composite", Composite: &CompositeSource{Anim: []FrameRef{{B64: "AA"}, {B64: "AA"}}, Statics: nineStatics}}}, "static layers"},
 	}
 	for _, tc := range cases {
 		_, err := m.SubmitGIF(tc.req)
@@ -1299,5 +1315,139 @@ func TestSubmitGIFFromSpecGhostParent(t *testing.T) {
 		if j.Mode == "compose" {
 			t.Fatalf("ghost compose parent in history: %+v", j)
 		}
+	}
+}
+
+// b64PNG renders a solid-color WxH PNG as inline base64, the {b64} frame-ref
+// form for composite sources.
+func b64PNG(t *testing.T, w, h int, c color.NRGBA) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: c}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func TestGifCompositeSource(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	red := b64PNG(t, 32, 32, color.NRGBA{R: 255, A: 255})
+	blue := b64PNG(t, 8, 8, color.NRGBA{B: 255, A: 255})
+	teal := b64PNG(t, 4, 4, color.NRGBA{B: 255, G: 255, A: 255})
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "title",
+		Source: GifSource{Type: "composite", Composite: &CompositeSource{
+			Anim: []FrameRef{{B64: red}, {B64: red}},
+			Statics: []StaticLayer{
+				{From: FrameRef{B64: blue}, Pos: [2]int{24, 24}},
+				{From: FrameRef{B64: teal}, Pos: [2]int{0, 0}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	j, ok := m.Get(id)
+	if !ok {
+		t.Fatal("job not registered")
+	}
+	if j.ImagePath == "" {
+		t.Fatal("gif not composed")
+	}
+	// Set artifacts: two anim frames, both static layers (list order = file
+	// order), the animation.
+	for _, name := range []string{"source-frame-0000.png", "source-frame-0001.png", "static-layer-00.png", "static-layer-01.png", "title.gif"} {
+		if _, err := m.opts.Store.ReadSetFile(id, name); err != nil {
+			t.Fatalf("set file %s: %v", name, err)
+		}
+	}
+	// The composed frame carries the overlay: the saved source frames are
+	// pre-composite anim frames; the GIF is the proof. Verify the static
+	// layer round-trips as a readable PNG of the right size.
+	data, err := m.opts.Store.ReadSetFile(id, "static-layer-00.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	// Ruling R-8: decode the produced GIF — the frame count matches the anim
+	// list and the canvas is the animation's frame dims (statics blit inside,
+	// never resize).
+	raw, err := m.opts.Store.ReadSetFile(id, "title.gif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gif.DecodeAll(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("title.gif not a GIF: %v", err)
+	}
+	if len(g.Image) != 2 {
+		t.Fatalf("gif frames = %d, want 2", len(g.Image))
+	}
+	if g.Config.Width != 32 || g.Config.Height != 32 {
+		t.Fatalf("gif canvas %dx%d, want 32x32", g.Config.Width, g.Config.Height)
+	}
+}
+
+func TestGifCompositeOverhangFailsCompose(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	red := b64PNG(t, 32, 32, color.NRGBA{R: 255, A: 255})
+	blue := b64PNG(t, 8, 8, color.NRGBA{B: 255, A: 255})
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "badlayer",
+		Source: GifSource{Type: "composite", Composite: &CompositeSource{
+			Anim:    []FrameRef{{B64: red}, {B64: red}},
+			Statics: []StaticLayer{{From: FrameRef{B64: blue}, Pos: [2]int{28, 28}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "failed")
+	j, ok := m.Get(id)
+	if !ok {
+		t.Fatal("job not registered")
+	}
+	if !strings.Contains(j.Error, "static-layer") {
+		t.Fatalf("overhang error must name the file: %q", j.Error)
+	}
+}
+
+func TestResolveFrameRefSetFile(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(1)
+	sid, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "src", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "dot", Prompt: "dot", Size: "16x16"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, sid, "done")
+
+	data, err := m.resolveFrameRef(FrameRef{Set: sid, File: "dot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.resolveFrameRef(FrameRef{Set: sid}); err == nil {
+		t.Fatal("want error for set without file")
+	}
+	if _, err := m.resolveFrameRef(FrameRef{Set: sid, File: "nope.png"}); err == nil {
+		t.Fatal("want error for missing file")
+	}
+	if _, err := m.resolveFrameRef(FrameRef{Set: sid, File: "dot.png", Path: "x"}); err == nil {
+		t.Fatal("want error for mixed source kinds")
 	}
 }

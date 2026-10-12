@@ -2956,7 +2956,8 @@ func TestSubmitGIFFromSpec(t *testing.T) {
 
 func TestSubmitGIFPathRef(t *testing.T) {
 	cap := &genCapture{}
-	store, err := storage.New(t.TempDir())
+	dir := t.TempDir()
+	store, err := storage.New(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2966,10 +2967,10 @@ func TestSubmitGIFPathRef(t *testing.T) {
 	if err := png.Encode(&buf, img); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveImage("abcdef0123456789", buf.Bytes()); err != nil {
+	if _, err := store.SaveImage("abcdef0123456789", buf.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	m := New(composeTestOpts(t, store.dir, cap)) // store shared by queue and refs
+	m := New(composeTestOpts(t, dir, cap)) // same data dir the Path refs resolve against
 	id, err := m.SubmitGIF(GifRequest{
 		Name: "via-path",
 		DelayMS: 50,

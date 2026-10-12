@@ -53,6 +53,10 @@ type SubmitRequest struct {
 	Steps          *int     `json:"steps,omitempty"`           // diffusion steps; nil = sidecar default
 	Guidance       *float64 `json:"guidance,omitempty"`        // guidance; nil = sidecar default
 	NegativePrompt string   `json:"negative_prompt,omitempty"` // things to avoid; "" = none
+
+	// ComposeParent is set by the compose submission path; submitOne copies it
+	// onto the job so the child can re-enqueue its parent at terminal state.
+	ComposeParent string `json:"compose_parent,omitempty"`
 }
 
 // ValidationError is a submit-time rejection carrying the v1 error-envelope
@@ -405,6 +409,14 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		if inputs.Strength == 0 {
 			inputs.Strength = 0.7
 		}
+	case "asset":
+		// compose generation child: free prompt, engine size, no genre/fields
+		if strings.TrimSpace(req.Prompt) == "" {
+			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for asset"}
+		}
+		if !validAssetSize(req.Size) {
+			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q for asset (want WxH, both multiples of 16)", req.Size)}
+		}
 	default:
 		return "", &ValidationError{Code: "unknown_mode", Msg: fmt.Sprintf("unknown mode %q", mode)}
 	}
@@ -446,7 +458,7 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 
 	resolveModelValues(m, &req)
 
-	if req.Sidecar == "sdxl" && mode != "generate" && mode != "edit" {
+	if req.Sidecar == "sdxl" && mode != "generate" && mode != "edit" && mode != "asset" {
 		return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("mode %s is not supported on engine sdxl", mode)}
 	}
 
@@ -470,12 +482,13 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		Steps:          req.Steps,
 		Guidance:       req.Guidance,
 		NegativePrompt: req.NegativePrompt,
+		ComposeParent:  req.ComposeParent,
 		Status:         "queued",
 		CreatedAt:      time.Now(),
 	}
 	m.mu.Lock()
 	m.jobs[id] = job
-	if mode != "generate" {
+	if mode != "generate" && mode != "asset" {
 		m.inputs[id] = inputs
 	}
 	m.order = append(m.order, id)
@@ -500,6 +513,19 @@ func validSize(size string) bool {
 	wi, err1 := strconv.Atoi(w)
 	hi, err2 := strconv.Atoi(h)
 	return err1 == nil && err2 == nil && wi > 0 && hi > 0
+}
+
+// validAssetSize is validSize plus the engines' 16px latent granularity —
+// both sidecars accept sizes that tile (FLUX latent grid, SDXL multiples of
+// 8; 16 is the safe common denominator) and atlases assume stable cells.
+func validAssetSize(size string) bool {
+	if !validSize(size) {
+		return false
+	}
+	w, h, _ := strings.Cut(size, "x")
+	wi, _ := strconv.Atoi(w)
+	hi, _ := strconv.Atoi(h)
+	return wi%16 == 0 && hi%16 == 0
 }
 
 func normalizeStrengths(ws []float64, n int) []float64 {

@@ -99,6 +99,21 @@ var tools = []tool{
 		description: "Fetch a generated image by job id as base64 PNG.",
 		schema:      `{"type":"object","required":["id"],"properties":{"id":{"type":"string"},"download":{"type":"boolean","default":false}}}`,
 	},
+	{
+		name:        "request_asset_set",
+		description: "Submit an asset set (element | 20-class wang kit | atlas) and block until composed. Returns the parent job JSON plus an inline preview of the primary file. Files deliver to dest, else EXPORT_DIR, else ~/Downloads/img-gen.",
+		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen AssetSetRequest: name, seed (required), dest, assets[{kind, name, prompt, size (WxH, multiples of 16), negative, frames (atlas: 2-64), columns, transparent}]"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
+	},
+	{
+		name:        "make_gif",
+		description: "Build an animated GIF: from_frames (given sources), from_spec (generates the frames), or keyframes (interpolation needs the phase-3 RIFE sidecar and is rejected). Returns the parent job JSON plus an inline preview of the GIF.",
+		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen GifRequest: name, dest, delay_ms (10-5000, default 100), loop (>=0), formats [gif,webp], source{type: from_frames|from_spec|keyframes, frames[{job|path|b64}], request, count}"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
+	},
+	{
+		name:        "read_export",
+		description: "Fetch one set (asset set or GIF) by id: the job view text, every composed file (images inline as content, JSON as text), and manifest.json.",
+		schema:      `{"type":"object","required":["set_id"],"properties":{"set_id":{"type":"string"}}}`,
+	},
 }
 
 func schemaOf(name string) map[string]any {
@@ -256,6 +271,19 @@ func callTool(c mcpcfg, name string, args map[string]any) toolResult {
 			MimeType: "image/png",
 		}}}
 
+	case "request_asset_set":
+		return c.composeCall("/api/v1/asset-sets", args)
+
+	case "make_gif":
+		return c.composeCall("/api/v1/gifs", args)
+
+	case "read_export":
+		id, _ := args["set_id"].(string)
+		if id == "" {
+			return errResult("set_id is required")
+		}
+		return c.readExport(id)
+
 	default:
 		return errResult("unknown tool " + name)
 	}
@@ -289,6 +317,126 @@ func (c mcpcfg) textCall(method, path string, body any) toolResult {
 	}
 	// Pass the img-gen JSON through untouched: callers get the exact contract.
 	return toolResult{Content: []content{{Type: "text", Text: string(raw)}}}
+}
+
+// jobView is the subset of the parent job JSON the compose tools act on.
+type jobView struct {
+	ID     string        `json:"id"`
+	SetID  string        `json:"set_id"`
+	Status string        `json:"status"`
+	Error  string        `json:"error,omitempty"`
+	Files  []fileRefView `json:"files,omitempty"`
+}
+
+type fileRefView struct {
+	Name    string `json:"name"`
+	Primary bool   `json:"primary,omitempty"`
+}
+
+// mimeBySuffix mirrors the content types img-gen serves for set files.
+func mimeBySuffix(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".png"):
+		return "image/png"
+	case strings.HasSuffix(name, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(name, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(name, ".json"):
+		return "application/json"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// composeCall wraps the two compose POST endpoints: request passthrough,
+// default wait, then a preview of the finished set's primary file.
+func (c mcpcfg) composeCall(path string, args map[string]any) toolResult {
+	req, ok := args["request"].(map[string]any)
+	if !ok {
+		return errResult("request object is required")
+	}
+	body := map[string]any{}
+	for k, v := range req {
+		body[k] = v
+	}
+	wait := defaultWaitSecs
+	if w, ok := args["wait_seconds"].(float64); ok && w >= 1 {
+		wait = int(w)
+	}
+	body["wait_seconds"] = wait
+	res := c.textCall(http.MethodPost, path, body)
+	if res.IsError {
+		return res
+	}
+	return c.withPreview(res)
+}
+
+// withPreview appends the primary set file as an image content block when
+// the set finished. Not-done or preview fetch failure keeps the text result.
+func (c mcpcfg) withPreview(res toolResult) toolResult {
+	var jv jobView
+	if len(res.Content) == 0 || res.Content[0].Type != "text" {
+		return res
+	}
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &jv); err != nil || jv.SetID == "" || jv.Status != "done" {
+		return res
+	}
+	primary := ""
+	for _, f := range jv.Files {
+		if f.Primary {
+			primary = f.Name
+			break
+		}
+	}
+	if primary == "" {
+		return res
+	}
+	raw, err := c.raw(http.MethodGet, "/api/v1/sets/"+jv.SetID+"/files/"+primary, nil)
+	if err != nil {
+		return res
+	}
+	return toolResult{Content: append(res.Content, content{
+		Type:     "image",
+		Data:     base64.StdEncoding.EncodeToString(raw),
+		MimeType: mimeBySuffix(primary),
+	})}
+}
+
+// readExport gathers one set: the set view JSON as text, then every composed
+// file in FileRef order (images inline, json as text), then manifest.json.
+func (c mcpcfg) readExport(id string) toolResult {
+	raw, err := c.raw(http.MethodGet, "/api/v1/sets/"+id, nil)
+	if err != nil {
+		return errResult(err.Error())
+	}
+	var sv struct {
+		Files []fileRefView `json:"files"`
+	}
+	if err := json.Unmarshal(raw, &sv); err != nil {
+		return errResult("bad set JSON: " + err.Error())
+	}
+	tr := toolResult{Content: []content{{Type: "text", Text: string(raw)}}}
+	for _, f := range sv.Files {
+		fraw, ferr := c.raw(http.MethodGet, "/api/v1/sets/"+id+"/files/"+f.Name, nil)
+		if ferr != nil {
+			continue
+		}
+		mt := mimeBySuffix(f.Name)
+		if mt == "application/json" {
+			tr.Content = append(tr.Content, content{Type: "text", Text: string(fraw)})
+		} else {
+			tr.Content = append(tr.Content, content{
+				Type:     "image",
+				Data:     base64.StdEncoding.EncodeToString(fraw),
+				MimeType: mt,
+			})
+		}
+	}
+	if mraw, merr := c.raw(http.MethodGet, "/api/v1/sets/"+id+"/files/manifest.json", nil); merr == nil {
+		tr.Content = append(tr.Content, content{Type: "text", Text: string(mraw)})
+	}
+	return tr
 }
 
 // ---------------------------------------------------------------- protocol

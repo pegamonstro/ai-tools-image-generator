@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -250,5 +252,130 @@ func TestGenerateAndWaitDefaultWait(t *testing.T) {
 	}
 	if body["genre"] != "landscape" {
 		t.Fatalf("request fields not merged into body: %v", body)
+	}
+}
+
+// composeMock backs a backend with the compose REST surface and a real PNG
+// for previews. It returns the mock and the last asset-set body it saw.
+func composeMock(t *testing.T) (*httptest.Server, *string) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	seen := new(string)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/asset-sets":
+			b, _ := io.ReadAll(r.Body)
+			*seen = string(b)
+			w.Write([]byte(`{"id":"set0001","set_id":"set0001","status":"done","files":[{"name":"bolt.png","primary":true}]}`))
+		case r.URL.Path == "/api/v1/gifs":
+			b, _ := io.ReadAll(r.Body)
+			*seen = string(b)
+			w.Write([]byte(`{"id":"set0002","set_id":"set0002","status":"done","files":[{"name":"spin.gif","primary":true}]}`))
+		case r.URL.Path == "/api/v1/sets/set0001":
+			w.Write([]byte(`{"set_id":"set0001","job":{"id":"set0001","status":"done"},"files":[{"name":"bolt.png","primary":true},{"name":"walk-atlas.json","primary":false}]}`))
+		case r.URL.Path == "/api/v1/sets/set0001/files/bolt.png":
+			w.Write(buf.Bytes())
+		case r.URL.Path == "/api/v1/sets/set0001/files/walk-atlas.json":
+			w.Write([]byte(`{"frames":{}}`))
+		case r.URL.Path == "/api/v1/sets/set0002/files/spin.gif":
+			w.Write(buf.Bytes())
+		case strings.HasPrefix(r.URL.Path, "/api/v1/sets/set0001/files/") && strings.HasSuffix(r.URL.Path, "manifest.json"):
+			w.Write([]byte(`{"set_id":"set0001","kind":"asset-set"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(mock.Close)
+	return mock, seen
+}
+
+func callOnce(t *testing.T, mockURL, args string) map[string]any {
+	t.Helper()
+	resp := roundTrip(t, mcpcfg{baseURL: mockURL},
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"request_asset_set","arguments":`+args+`}}`)
+	if resp[0]["error"] != nil {
+		t.Fatalf("protocol error: %v", resp[0]["error"])
+	}
+	return resp[0]["result"].(map[string]any)
+}
+
+func TestRequestAssetSetTool(t *testing.T) {
+	mock, seen := composeMock(t)
+	r := callOnce(t, mock.URL, `{"request":{"name":"bolt","seed":1,"assets":[{"kind":"element","name":"bolt","prompt":"hex bolt","size":"16x16"}]}}`)
+	cs := r["content"].([]any)
+	if len(cs) != 2 {
+		t.Fatalf("want text + preview, got %d: %v", len(cs), cs)
+	}
+	text := cs[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, `"set_id":"set0001"`) {
+		t.Fatalf("text: %s", text)
+	}
+	img := cs[1].(map[string]any)
+	if img["type"] != "image" || img["mimeType"] != "image/png" {
+		t.Fatalf("preview: %v", img)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(*seen), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["wait_seconds"] != float64(defaultWaitSecs) {
+		t.Fatalf("default wait: %v", body["wait_seconds"])
+	}
+	if _, ok := body["name"].(string); !ok || body["name"] != "bolt" {
+		t.Fatalf("request passthrough: %v", body)
+	}
+}
+
+func TestRequestAssetSetNotDone(t *testing.T) {
+	// status generating → text only, no preview call
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"id":"set0009","set_id":"set0009","status":"queued"}`))
+	}))
+	defer mock.Close()
+	r := callOnce(t, mock.URL, `{"request":{"name":"x","seed":1,"assets":[]}}`)
+	if cs := r["content"].([]any); len(cs) != 1 {
+		t.Fatalf("no preview before done: %v", cs)
+	}
+}
+
+func TestMakeGifTool(t *testing.T) {
+	mock, seen := composeMock(t)
+	resp := roundTrip(t, mcpcfg{baseURL: mock.URL},
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"make_gif","arguments":{"request":{"name":"spin","source":{"type":"from_spec","request":{"mode":"asset","prompt":"p","size":"16x16","seed":5},"count":3}}}}}`)
+	res := resp[0]["result"].(map[string]any)
+	cs := res["content"].([]any)
+	if len(cs) != 2 || cs[1].(map[string]any)["mimeType"] != "image/gif" {
+		t.Fatalf("gif preview: %v", cs)
+	}
+	var body map[string]any
+	json.Unmarshal([]byte(*seen), &body)
+	if _, ok := body["source"].(map[string]any); !ok {
+		t.Fatalf("source passthrough: %v", body)
+	}
+}
+
+func TestReadExportTool(t *testing.T) {
+	mock, _ := composeMock(t)
+	resp := roundTrip(t, mcpcfg{baseURL: mock.URL},
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_export","arguments":{"set_id":"set0001"}}}`)
+	res := resp[0]["result"].(map[string]any)
+	cs := res["content"].([]any)
+	// set view text, bolt.png image, walk-atlas.json text, manifest.json text
+	if len(cs) != 4 {
+		t.Fatalf("content blocks: %v", cs)
+	}
+	want := []string{"text", "image", "text", "text"}
+	for i, w := range want {
+		if got := cs[i].(map[string]any)["type"]; got != w {
+			t.Fatalf("block %d: got %v want %s", i, got, w)
+		}
+	}
+	manifest := cs[3].(map[string]any)["text"].(string)
+	if !strings.Contains(manifest, `"kind":"asset-set"`) {
+		t.Fatalf("manifest text: %s", manifest)
 	}
 }

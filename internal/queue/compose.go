@@ -477,7 +477,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc shape must be variants or walk4", an)}
 			}
 			built = npcChildren(prompt, a.Negative, a.Size, *req.Seed, a.Shape, a.Variants)
-			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants}
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants, Columns: a.Columns}
 		default:
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
 		}

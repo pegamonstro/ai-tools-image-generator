@@ -56,6 +56,40 @@ func TestRemapImagePreservesTransparent(t *testing.T) {
 	}
 }
 
+// TestSetPaletteDropsReservedTransparent pins R-16: the reserved alpha-0
+// index-0 entry the GIF encoder needs must never reach the set-palette remap
+// path. Nearest-CIEDE2000 ties on opaque black resolve to it (it is pure
+// black) and RemapImage copies its A=0 into the output, silently erasing
+// pixels — and the marshaled file would exceed the 255-entry claim with a
+// duplicate #000000.
+func TestSetPaletteDropsReservedTransparent(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 16, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 16; x++ {
+			src.SetNRGBA(x, y, color.NRGBA{R: 0, G: 0, B: 0, A: 255})
+		}
+	}
+	pal := SetPalette([]image.Image{src}, 255)
+	got := RemapImage(src, pal).NRGBAAt(8, 8)
+	if got.R != 0 || got.G != 0 || got.B != 0 || got.A != 255 {
+		t.Fatalf("center pixel = %+v, want opaque black R0 G0 B0 A255", got)
+	}
+	hexes := PaletteHexes(pal)
+	if len(hexes) > 255 {
+		t.Fatalf("palette has %d colors, want at most 255", len(hexes))
+	}
+	for i, c := range pal {
+		if _, _, _, a := c.RGBA(); a == 0 {
+			t.Fatalf("palette entry %d is fully transparent: reserved index-0 entry leaked into the set palette", i)
+		}
+	}
+	// An all-black render collapses to exactly one opaque entry — no
+	// duplicate #000000 next to a transparent one.
+	if len(hexes) != 1 || hexes[0] != "#000000" {
+		t.Fatalf("palette hexes = %v, want a single opaque #000000", hexes)
+	}
+}
+
 func TestRemapPNGDeterministic(t *testing.T) {
 	src := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {

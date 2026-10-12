@@ -11,10 +11,20 @@ import (
 )
 
 // SetPalette builds a set palette over imgs with the same deterministic
-// median-cut the GIF encoder uses. 255 entries leaves the 1-bit transparent
-// index free, mirroring the GIF convention.
+// median-cut the GIF encoder uses. Opaque colors only — the reserved
+// transparent index-0 entry sharedPalette emits for the GIF encoder is
+// dropped here, so a nearest-match tie on black cannot resolve to a
+// transparent color and the marshaled file stays within 255 entries.
 func SetPalette(imgs []image.Image, n int) color.Palette {
-	return sharedPalette(imgs, n)
+	pal := sharedPalette(imgs, n)
+	out := make(color.Palette, 0, len(pal))
+	for _, c := range pal {
+		if _, _, _, a := c.RGBA(); a == 0 {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // PaletteHexes renders the palette as #rrggbb strings, in palette order

@@ -706,8 +706,20 @@ func TestSubmitAssetSetNPCVariants(t *testing.T) {
 			t.Fatalf("seed %d = %d, want pinned 41", i, cap.Seeds[i])
 		}
 	}
-	if _, err := m.opts.Store.ReadSetFile(id, "villager-sheet.png"); err != nil {
+	sheet, err := m.opts.Store.ReadSetFile(id, "villager-sheet.png")
+	if err != nil {
 		t.Fatalf("variant sheet: %v", err)
+	}
+	simg, err := png.Decode(bytes.NewReader(sheet))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// R-16: the npc variants spec must carry Columns (2) into the composed
+	// atlas. 3 variants @ 32px with 2 columns pack 2 rows → 64x64; the
+	// single-form pack (Columns dropped → 1 row) is 96x32.
+	if simg.Bounds().Dx() != 64 || simg.Bounds().Dy() != 64 {
+		t.Fatalf("variant sheet = %dx%d, want 64x64 (columns 2 packs 2 rows of 32px cells)",
+			simg.Bounds().Dx(), simg.Bounds().Dy())
 	}
 
 	// Ruling R-6: the manifest asset entry must record the variants list

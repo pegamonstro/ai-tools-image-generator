@@ -42,6 +42,8 @@ type assetSpec struct {
 	Columns      int    `json:"columns,omitempty"`
 	Transparent  bool   `json:"transparent,omitempty"`
 	FrameMargins int    `json:"frame_margins,omitempty"`
+	BarFill      string `json:"bar_fill,omitempty"`
+	FillStates   []int  `json:"fill_states,omitempty"`
 	Children     int    `json:"children"` // generation jobs this asset owns, in order
 }
 
@@ -341,6 +343,8 @@ type AssetSpecIn struct {
 	Columns      int    `json:"columns,omitempty"`       // atlas: 0 = single row
 	Transparent  bool   `json:"transparent,omitempty"`   // element: white+black double pass
 	FrameMargins int    `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
+	BarFill      string `json:"bar_fill,omitempty"`      // bar: fill art prompt
+	FillStates   []int  `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -380,18 +384,21 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 		if !validAssetSize(a.Size) {
 			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("asset %q: invalid size %q (want WxH, multiples of 16)", an, a.Size)}
 		}
-		as := assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns, Transparent: a.Transparent, FrameMargins: a.FrameMargins}
 		var built []SubmitRequest
+		var as assetSpec
 		switch a.Kind {
 		case "element":
 			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent}
 		case "kit":
 			built = kitChildren(prompt, a.Negative, a.Size, *req.Seed)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size}
 		case "atlas":
 			if a.Frames < 2 || a.Frames > 64 {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frames must be 2..64", an)}
 			}
 			built = atlasChildren(prompt, a.Negative, a.Size, *req.Seed, a.Frames)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns}
 		case "frame":
 			if a.FrameMargins < 1 {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins is required for frames", an)}
@@ -401,6 +408,45 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins must be 1..size/2-1", an)}
 			}
 			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins}
+		case "bar":
+			if a.BarFill == "" {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: bar_fill is required for bars", an)}
+			}
+			if a.FrameMargins < 1 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins is required for bars", an)}
+			}
+			w, h, serr := parseAssetSize(a.Size)
+			if serr != nil || 2*a.FrameMargins >= w || 2*a.FrameMargins >= h {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins must be 1..size/2-1", an)}
+			}
+			states := a.FillStates
+			if len(states) == 0 {
+				states = []int{25, 50, 75, 100}
+			}
+			seenSt := map[int]bool{}
+			uniq := []int{}
+			for _, st := range states {
+				if st < 1 || st > 100 {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: fill_states values must be 1..100", an)}
+				}
+				if seenSt[st] {
+					continue
+				}
+				seenSt[st] = true
+				uniq = append(uniq, st)
+			}
+			if len(uniq) > 16 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: fill_states takes at most 16 states", an)}
+			}
+			for i := 1; i < len(uniq); i++ {
+				if uniq[i] <= uniq[i-1] {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: fill_states must be ascending", an)}
+				}
+			}
+			built = append(elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent),
+				elementChildren(a.BarFill, a.Negative, a.Size, *req.Seed, false)...)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, BarFill: a.BarFill, FillStates: uniq}
 		default:
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
 		}
@@ -573,6 +619,13 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 					black = imgs[1]
 				}
 				outs, err = compose.ComposeFrame(a.Name, imgs[0], black, a.Transparent && len(imgs) == 2, a.FrameMargins)
+			case "bar":
+				fill := imgs[len(imgs)-1]
+				trackBlack := []byte(nil)
+				if len(imgs) == 3 {
+					trackBlack = imgs[1]
+				}
+				outs, err = compose.ComposeBar(a.Name, imgs[0], trackBlack, a.Transparent && len(imgs) == 3, a.FrameMargins, fill, a.FillStates)
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
 			}

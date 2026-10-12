@@ -17,6 +17,7 @@ the MCP tools `request_asset_set` / `read_export`, or REST against
 | `kit` | prompt (subject/style), size | 20 wang tiles `<name>-<class>.png` |
 | `atlas` | prompt, size, frames 2-64, columns | `<name>-sheet.png` + `<name>-atlas.json` |
 | `frame` | prompt, size, `frame_margins` 1..size/2-1 | `<name>.png` (interior punched transparent) + `<name>.frame.json` |
+| `bar` | prompt (track), `bar_fill` (fill), `frame_margins`, `fill_states` | `<name>-track.png`, `<name>-fill.png`, `<name>-fill-<NNN>.png`, `<name>.bar.json` |
 
 Sizes must be `WxH` with both multiples of 16. `seed` is required — a set
 must be reproducible while a design iterates.

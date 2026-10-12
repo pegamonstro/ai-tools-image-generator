@@ -607,6 +607,65 @@ func TestSubmitAssetSetFrameKind(t *testing.T) {
 	}
 }
 
+func TestSubmitAssetSetBarKind(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(12)
+
+	// Validation: bar_fill required, states in 1..100, <=16, ascending.
+	bad := AssetSetRequest{Name: "b", Seed: &seed, Assets: []AssetSpecIn{{Kind: "bar", Name: "hb", Prompt: "track art", Size: "32x32", FrameMargins: 8}}}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want bar_fill required error")
+	}
+	bad.Assets[0].BarFill = "red liquid"
+	bad.Assets[0].FillStates = []int{60, 30}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want ascending error")
+	}
+	bad.Assets[0].FillStates = []int{0, 30}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want 1..100 error")
+	}
+
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "bars", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "bar", Name: "health", Prompt: "wooden health bar", Size: "32x32", FrameMargins: 8, BarFill: "red liquid", FillStates: []int{30, 60}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	// Track + fill + exact state clips.
+	for _, name := range []string{"health-track.png", "health-fill.png", "health-fill-030.png", "health-fill-060.png", "health.bar.json"} {
+		if _, err := m.opts.Store.ReadSetFile(id, name); err != nil {
+			t.Fatalf("set file %s: %v", name, err)
+		}
+	}
+	clip, err := m.opts.Store.ReadSetFile(id, "health-fill-030.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cimg, err := png.Decode(bytes.NewReader(clip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fill render is 32 wide; 30% floors to 9.
+	if cimg.Bounds().Dx() != 9 || cimg.Bounds().Dy() != 32 {
+		t.Fatalf("30%% clip = %dx%d, want 9x32", cimg.Bounds().Dx(), cimg.Bounds().Dy())
+	}
+
+	// Three children: track (1, opaque by default) + fill (1).
+	cap.mu.Lock()
+	n := len(cap.Prompts)
+	cap.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("children = %d, want 2", n)
+	}
+}
+
 func TestSubmitAssetSetValidation(t *testing.T) {
 	cap := &genCapture{}
 	m := New(composeTestOpts(t, t.TempDir(), cap))

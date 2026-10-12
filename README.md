@@ -153,7 +153,11 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   cross, caps, single), or `atlas` (2–64 frame sheet + TexturePacker-style
   JSON), or `frame` (a nine-slice border PNG: `frame_margins`
   1..size/2−1 punches the interior transparent, one sidecar
-  `<name>.frame.json`). Every asset needs a prompt and a 16-multiple
+  `<name>.frame.json`), or **`bar`** (track + fill pair: `bar_fill`
+  prompt renders the fill; `fill_states` 1..100, ≤16 ascending, default
+  25/50/75/100 render as horizontal clips `<name>-fill-<NNN>.png`; the
+  track interior punches transparent via `frame_margins`; sidecar
+  `<name>.bar.json`). Every asset needs a prompt and a 16-multiple
   `WxH` size. A
   `manifest.json` lands in the set with per-asset files and errors (per-asset
   seeds ride the child jobs). Setting `"palette_lock": true` builds one

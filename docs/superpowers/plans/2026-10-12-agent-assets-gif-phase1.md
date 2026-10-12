@@ -2866,9 +2866,8 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		return
 	}
 	man.Delivered = served
-		man.Dest = dest
-		m.saveManifest(id, &man)
-	}
+	man.Dest = dest
+	m.saveManifest(id, &man)
 	m.log(id, "compose done: %d/%d asset(s)", ok, len(spec.Assets))
 	m.finish(id, "done", "")
 }
@@ -3416,9 +3415,8 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 		return
 	}
 	man.Delivered = served
-		man.Dest = dest
-		m.saveManifest(id, &man)
-	}
+	man.Dest = dest
+	m.saveManifest(id, &man)
 	m.log(id, "compose done: gif %s (%d frames)", spec.Name, len(frames))
 	m.finish(id, "done", "")
 }

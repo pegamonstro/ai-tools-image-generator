@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func solid(w, h int, c color.RGBA) image.Image {
+func solid(w, h int, c color.RGBA) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
@@ -207,5 +207,101 @@ func TestUnmixAlphaBounds(t *testing.T) {
 	red := pngBytes(t, solid(4, 4, color.RGBA{10, 10, 10, 255}))
 	if _, err := UnmixAlpha(red, pngBytes(t, solid(8, 8, color.RGBA{0, 0, 0, 255}))); err == nil {
 		t.Fatal("want error for bounds mismatch")
+	}
+}
+
+func TestKitClassesShape(t *testing.T) {
+	if len(KitClasses) != 20 {
+		t.Fatalf("want 20 classes, got %d", len(KitClasses))
+	}
+	seen := map[string]bool{}
+	for i, c := range KitClasses {
+		if c.Key == "" || c.Hint == "" || c.SeedOffset != int64(i) {
+			t.Fatalf("bad class %d: %+v", i, c)
+		}
+		if seen[c.Key] {
+			t.Fatalf("duplicate key %q", c.Key)
+		}
+		seen[c.Key] = true
+	}
+	if _, ok := seen["cross"]; !ok {
+		t.Fatal("wang set must contain the four-way junction")
+	}
+	if KitClasses[0].SeedOffset != 0 || KitClasses[0].Key != "line-h" {
+		t.Fatalf("line-h must be the first (primary/preview) class, got %+v", KitClasses[0])
+	}
+}
+
+func TestComposeElement(t *testing.T) {
+	img := solid(4, 4, color.RGBA{200, 100, 50, 255})
+	pb := pngBytes(t, img)
+	of, err := ComposeElement("panel", pb, pb, false)
+	if err != nil || of.Name != "panel.png" || !of.Primary {
+		t.Fatalf("opaque element: %+v err=%v", of, err)
+	}
+	img.SetNRGBA(0, 0, color.NRGBA{0, 0, 0, 0}) // unused; keeps linters quiet about reuse
+}
+
+func TestComposeKit(t *testing.T) {
+	var imgs [][]byte
+	for i := 0; i < 20; i++ {
+		imgs = append(imgs, pngBytes(t, solid(4, 4, color.RGBA{uint8(i * 3), 1, 2, 255})))
+	}
+	files, err := ComposeKit("tilekit", imgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 20 || !files[0].Primary || files[0].Name != "tilekit-line-h.png" {
+		t.Fatalf("kit files: %d, first=%+v", len(files), files[0])
+	}
+	if _, err := ComposeKit("tilekit", imgs[:19]); err == nil {
+		t.Fatal("want error for missing class renders")
+	}
+}
+
+func TestComposeAtlas(t *testing.T) {
+	files, err := ComposeAtlas("spark", [][]byte{
+		pngBytes(t, solid(4, 4, color.RGBA{1, 2, 3, 255})),
+		pngBytes(t, solid(4, 4, color.RGBA{4, 5, 6, 255})),
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || files[0].Name != "spark-sheet.png" || files[1].Name != "spark-atlas.json" {
+		t.Fatalf("atlas files: %+v", files)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(files[1].Data, &meta); err != nil {
+		t.Fatalf("atlas.json invalid: %v", err)
+	}
+}
+
+func TestComposeGIF(t *testing.T) {
+	red := color.RGBA{220, 40, 40, 255}
+	blue := color.RGBA{40, 40, 220, 255}
+	files, encoder, webpStatus, err := ComposeGIF("anim", []image.Image{
+		solid(8, 8, red), solid(8, 8, blue),
+	}, 100, 0, []string{"gif", "webp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoder == "" || files[0].Name != "anim.gif" || !files[0].Primary {
+		t.Fatalf("gif file/encoder: %+v %q", files, encoder)
+	}
+	t.Logf("webpStatus=%q", webpStatus) // gif2webp may be absent; skip is recorded, not an error
+	var webp bool
+	for _, f := range files {
+		if f.Name == "anim.webp" {
+			webp = true
+		}
+	}
+	if webp != (webpStatus == "") {
+		t.Fatalf("webp file/status mismatch: files=%v status=%q", files, webpStatus)
+	}
+	if _, _, _, err := ComposeGIF("anim", nil, 100, 0, []string{"gif"}); err == nil {
+		t.Fatal("want error for zero frames")
+	}
+	if _, _, _, err := ComposeGIF("anim", []image.Image{solid(8, 8, red)}, 100, 0, []string{"mp4"}); err == nil {
+		t.Fatal("want error for unknown format")
 	}
 }

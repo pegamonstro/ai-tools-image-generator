@@ -51,3 +51,15 @@ succeeds when at least one asset composed.
 - ≤ 8 assets per set, ≤ 64 total child generations.
 - One asset failure does not fail the set; a kit missing a class fails as
   an asset (all 20 classes are required for the kit to compose).
+
+## Palette lock
+
+Set `"palette_lock": true` on the asset set request: every composed image is
+remapped onto ONE shared palette (CIEDE2000 nearest color, ≤255 colors,
+transparent pixels untouched) and the set ships `<name>.palette.json`. Use it
+whenever separate deliverables must look like one art pass — UI bundles,
+element families, sprite groups.
+
+**Party pattern** (a group of distinct NPCs with coherent color): N `element`
+assets in one set, each with its own prompt, `palette_lock: true`. Delivery
+is Kenney-style separate sprites; no special kind.

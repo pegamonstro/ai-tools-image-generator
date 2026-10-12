@@ -24,11 +24,12 @@ import (
 // recovered by scanning for jobs whose ComposeParent == parent ID, so there
 // is no registration race between spec and child list.
 type composeSpec struct {
-	Kind   string      `json:"kind"` // "asset-set" | "gif"
-	Name   string      `json:"name"`
-	Dest   string      `json:"dest,omitempty"`
-	Assets []assetSpec `json:"assets,omitempty"`
-	GIF    *gifPayload `json:"gif,omitempty"`
+	Kind        string      `json:"kind"` // "asset-set" | "gif"
+	Name        string      `json:"name"`
+	Dest        string      `json:"dest,omitempty"`
+	PaletteLock bool        `json:"palette_lock,omitempty"`
+	Assets      []assetSpec `json:"assets,omitempty"`
+	GIF         *gifPayload `json:"gif,omitempty"`
 }
 
 type assetSpec struct {
@@ -321,10 +322,11 @@ const (
 // AssetSetRequest is the public asset-set submission. Seed is required:
 // a set's parts must be reproducible for iteration on a design.
 type AssetSetRequest struct {
-	Name   string        `json:"name"`           // file stem for the set (sanitized)
-	Dest   string        `json:"dest,omitempty"` // absolute dir to deliver into; empty = EXPORT_DIR fallback chain
-	Seed   *int64        `json:"seed"`           // required
-	Assets []AssetSpecIn `json:"assets"`         // 1..8
+	Name        string        `json:"name"`           // file stem for the set (sanitized)
+	Dest        string        `json:"dest,omitempty"` // absolute dir to deliver into; empty = EXPORT_DIR fallback chain
+	Seed        *int64        `json:"seed"`           // required
+	PaletteLock bool          `json:"palette_lock,omitempty"`
+	Assets      []AssetSpecIn `json:"assets"` // 1..8
 }
 
 type AssetSpecIn struct {
@@ -355,7 +357,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 	if len(req.Assets) == 0 || len(req.Assets) > maxAssetsPerSet {
 		return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset sets take 1..%d assets", maxAssetsPerSet)}
 	}
-	spec := composeSpec{Kind: "asset-set", Name: setName, Dest: req.Dest}
+	spec := composeSpec{Kind: "asset-set", Name: setName, Dest: req.Dest, PaletteLock: req.PaletteLock}
 	var kids []SubmitRequest
 	seen := map[string]bool{}
 	total := 0
@@ -495,7 +497,8 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 	ok := 0
 	var firstErr string
 	var files []storage.FileRef
-	for _, a := range spec.Assets {
+	outsByAsset := make([][]compose.OutputFile, len(spec.Assets))
+	for ai, a := range spec.Assets {
 		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size}
 		end := cursor + a.Children
 		if cursor+a.Children > len(children) {
@@ -541,14 +544,7 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
 			}
 			if err == nil {
-				for _, of := range outs {
-					if serr := m.opts.Store.SaveSetFile(id, of.Name, of.Data); serr != nil {
-						err = serr
-						break
-					}
-					files = append(files, storage.FileRef{Name: of.Name, Primary: of.Primary})
-					ma.Files = append(ma.Files, of.Name)
-				}
+				outsByAsset[ai] = outs
 			}
 			if err != nil {
 				broken = err.Error()
@@ -564,6 +560,78 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		}
 		man.Assets = append(man.Assets, ma)
 	}
+
+	// Palette lock (F1): remap every PNG output of the set onto one shared
+	// palette before anything is saved, then ship the palette file. Runs
+	// after per-kind composition (the outputs exist as PNGs) and before
+	// SaveSetFile, so every deliverable inherits the set palette. Non-image
+	// outputs (atlas/frame/bar JSON) pass through untouched.
+	var palJSON []byte
+	if spec.PaletteLock && ok > 0 {
+		var imgs []image.Image
+		for ai := range outsByAsset {
+			for _, of := range outsByAsset[ai] {
+				if !strings.HasSuffix(of.Name, ".png") {
+					continue
+				}
+				im, derr := png.Decode(bytes.NewReader(of.Data))
+				if derr != nil {
+					// Composed outputs are our own fresh encodes; this cannot
+					// happen outside corrupted pipeline state. Leave the file
+					// unremapped and log — remap never fails the set.
+					m.log(id, "palette lock: %s undecodable, left unremapped: %v", of.Name, derr)
+					continue
+				}
+				imgs = append(imgs, im)
+			}
+		}
+		pal := compose.SetPalette(imgs, 255)
+		if len(pal) > 0 {
+			for ai := range outsByAsset {
+				for j := range outsByAsset[ai] {
+					of := &outsByAsset[ai][j]
+					if !strings.HasSuffix(of.Name, ".png") {
+						continue
+					}
+					nb, rerr := compose.RemapPNG(of.Data, pal)
+					if rerr != nil {
+						m.log(id, "palette lock: %s left unremapped: %v", of.Name, rerr)
+						continue
+					}
+					of.Data = nb
+				}
+			}
+			if pj, jerr := compose.MarshalPalette(pal); jerr != nil {
+				m.log(id, "palette lock: palette file: %v", jerr)
+			} else {
+				palJSON = pj
+			}
+		}
+	}
+
+	// Save phase: every composed output lands here, after the palette pass.
+	// A save failure fails the parent immediately (the composeGIF precedent)
+	// instead of the old per-asset break-marking — storage save failures were
+	// always catastrophic disk-level events.
+	for ai := range outsByAsset {
+		for _, of := range outsByAsset[ai] {
+			if serr := m.opts.Store.SaveSetFile(id, of.Name, of.Data); serr != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: %v", serr))
+				return
+			}
+			files = append(files, storage.FileRef{Name: of.Name, Primary: of.Primary})
+			man.Assets[ai].Files = append(man.Assets[ai].Files, of.Name)
+		}
+	}
+	if len(palJSON) > 0 {
+		pname := spec.Name + ".palette.json"
+		if serr := m.opts.Store.SaveSetFile(id, pname, palJSON); serr != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: %v", serr))
+			return
+		}
+		files = append(files, storage.FileRef{Name: pname})
+	}
+
 	m.mu.Lock()
 	job := m.jobs[id]
 	if job != nil {

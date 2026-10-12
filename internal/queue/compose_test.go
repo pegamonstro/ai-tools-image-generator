@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -69,6 +71,110 @@ func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
 			},
 		},
 		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+	}
+}
+
+// sizedGen returns an ImageOps.Generate that renders a fully opaque red/green
+// checker PNG at the requested size (parsing WxH), recording in cap. Real
+// sizes matter: post-processing like the frame punch validates render
+// dimensions, so the 8x8 default fake is too small.
+func sizedGen(t *testing.T, cap *genCapture) func(context.Context, string, string, storage.ModelSpec, storage.SamplingParams) ([]byte, *int64, error) {
+	t.Helper()
+	return func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		ws, hs, _ := strings.Cut(size, "x")
+		w, _ := strconv.Atoi(ws)
+		h, _ := strconv.Atoi(hs)
+		if w < 1 || h < 1 {
+			w, h = 8, 8
+		}
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				if (x/4+y/4)%2 == 0 {
+					img.Set(x, y, color.RGBA{R: 255, A: 255})
+				} else {
+					img.Set(x, y, color.RGBA{G: 255, A: 255})
+				}
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		if cap != nil {
+			cap.add(prompt, size, sp.Seed, buf.Bytes())
+		}
+		return buf.Bytes(), sp.Seed, nil
+	}
+}
+
+func TestSubmitAssetSetPaletteLock(t *testing.T) {
+	o := composeTestOpts(t, t.TempDir(), nil)
+	o.Ops.Generate = sizedGen(t, nil)
+	m := New(o)
+	seed := int64(41)
+	// The remap hook covers every kind: two elements plus an atlas, whose
+	// sheet deliverable must land inside the palette too.
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "cohere", Seed: &seed, PaletteLock: true,
+		Assets: []AssetSpecIn{
+			{Kind: "element", Name: "a", Prompt: "first", Size: "16x16"},
+			{Kind: "element", Name: "b", Prompt: "second", Size: "16x16"},
+			{Kind: "atlas", Name: "sheet", Prompt: "sheet anim", Size: "16x16", Frames: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	raw, err := m.opts.Store.ReadSetFile(id, "cohere.palette.json")
+	if err != nil {
+		t.Fatalf("palette file: %v", err)
+	}
+	var pal struct {
+		Colors []string `json:"colors"`
+	}
+	if err := json.Unmarshal(raw, &pal); err != nil {
+		t.Fatal(err)
+	}
+	if len(pal.Colors) == 0 {
+		t.Fatal("palette file has no colors")
+	}
+	for _, hx := range pal.Colors {
+		if !strings.HasPrefix(hx, "#") || len(hx) != 7 {
+			t.Fatalf("bad palette hex %q", hx)
+		}
+	}
+
+	// Every opaque pixel of every PNG output lands inside the palette,
+	// including the atlas sheet.
+	allowed := map[string]bool{}
+	for _, hx := range pal.Colors {
+		allowed[strings.ToLower(hx)] = true
+	}
+	for _, name := range []string{"a.png", "b.png", "sheet-sheet.png"} {
+		data, err := m.opts.Store.ReadSetFile(id, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := img.Bounds()
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				n := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+				if n.A < 128 {
+					continue
+				}
+				hx := fmt.Sprintf("#%02x%02x%02x", n.R, n.G, n.B)
+				if !allowed[hx] {
+					t.Fatalf("%s pixel (%d,%d) = %s is outside the set palette", name, x, y, hx)
+				}
+			}
+		}
 	}
 }
 

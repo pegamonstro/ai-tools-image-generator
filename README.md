@@ -153,7 +153,12 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   cross, caps, single), or `atlas` (2–64 frame sheet + TexturePacker-style
   JSON). Every asset needs a prompt and a 16-multiple `WxH` size. A
   `manifest.json` lands in the set with per-asset files and errors (per-asset
-  seeds ride the child jobs).
+  seeds ride the child jobs). Setting `"palette_lock": true` builds one
+  shared palette (up to 255 colors) over every composed image of the set and
+  remaps each pixel to its CIEDE2000-nearest palette color — batch coherence
+  is won in post, not generation. The set ships `<name>.palette.json` with
+  the colors (`{"colors":["#0f766e",...]}`), an ordinary set file delivered
+  flat like the rest. GIFs built from locked sets inherit the coherence.
 - **GIFs** — `POST /api/v1/gifs` with `source.type` `from_frames`
   (assemble existing job ids, data-dir paths, or inline base64),
   `from_spec` (img-gen generates the 2–64 frames at `seed+i`),

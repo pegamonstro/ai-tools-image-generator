@@ -2137,7 +2137,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `internal/queue/compose.go` (append; replaces the Task 7 honest-failure executor stubs)
-- Modify: `internal/storage/storage.go` (DeliverSet: `os.MkdirAll` the destination directory — see Step 5)
+- Modify: `internal/storage/storage.go` (DeliverSet: `os.MkdirAll` the destination directory — see Step 4)
 - Test: `internal/queue/compose_test.go` (append)
 
 **Interfaces:**

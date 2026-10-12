@@ -117,6 +117,9 @@ type Options struct {
 	Ops           ImageOps
 	Chat          prompting.ChatFunc
 	EnhanceSystem string
+
+	// ExportDir is the delivery fallback when a compose request omits dest.
+	ExportDir string
 }
 
 type imageInputs struct {
@@ -137,6 +140,7 @@ type Manager struct {
 	inputs    map[string]imageInputs
 	cancels   map[string]context.CancelFunc
 	cancelled map[string]bool
+	childLeft map[string]int
 	opts      Options
 }
 
@@ -149,6 +153,7 @@ func New(opts Options) *Manager {
 		inputs:    map[string]imageInputs{},
 		cancels:   map[string]context.CancelFunc{},
 		cancelled: map[string]bool{},
+		childLeft: map[string]int{},
 		opts:      opts,
 	}
 	m.restore()
@@ -190,6 +195,33 @@ func (m *Manager) restore() {
 		job := j
 		m.jobs[j.ID] = &job
 		m.order = append(m.order, j.ID)
+	}
+	// Compose parents enqueue themselves once their remaining child count is
+	// known. Attach-restored children keep status "generating" and will
+	// re-enqueue the parent through childFinished when they land; everything
+	// else (children already terminal, or honestly failed above with no
+	// sidecar gen id) recomposes from whatever persisted results survived —
+	// partial-success semantics apply.
+	for _, oid := range m.order {
+		j := m.jobs[oid]
+		if j == nil || j.Mode != "compose" || isTerminal(j.Status) {
+			continue
+		}
+		remaining := 0
+		for _, cid := range m.order {
+			c := m.jobs[cid]
+			if c == nil || c.ComposeParent != j.ID {
+				continue
+			}
+			if !isTerminal(c.Status) {
+				remaining++
+			}
+		}
+		if remaining > 0 {
+			m.childLeft[j.ID] = remaining
+			continue
+		}
+		m.enqueueCompose(j.ID)
 	}
 	for _, id := range attachIDs {
 		go m.attach(id)
@@ -596,6 +628,13 @@ func (m *Manager) run(id string) {
 	if job == nil {
 		return
 	}
+	if job.Mode == "compose" {
+		// Compose parents are not dispatcher jobs: the worker runs the local
+		// composition once their children reached terminal states. They carry
+		// no prompt, no sidecar work, and no progress polling.
+		m.runCompose(id)
+		return
+	}
 	m.log(id, "start: mode=%s size=%s enhance=%t", job.Mode, job.Size, job.Enhance)
 
 	if m.isCancelled(id) {
@@ -802,9 +841,28 @@ func (m *Manager) Cancel(id string) error {
 	default:
 		return fmt.Errorf("job is %s", status)
 	}
+	var childIDs []string
+	if job.Mode == "compose" {
+		m.mu.Lock()
+		for _, oid := range m.order {
+			if c := m.jobs[oid]; c != nil && c.ComposeParent == id && !isTerminal(c.Status) {
+				childIDs = append(childIDs, c.ID)
+			}
+		}
+		m.mu.Unlock()
+	}
 	m.mu.Lock()
 	m.cancelled[id] = true
 	m.mu.Unlock()
+	for _, cid := range childIDs {
+		m.mu.Lock()
+		m.cancelled[cid] = true
+		cfn := m.cancels[cid]
+		m.mu.Unlock()
+		if cfn != nil {
+			cfn()
+		}
+	}
 	if cfn != nil {
 		cfn()
 	}
@@ -837,6 +895,11 @@ func (m *Manager) Delete(id string) error {
 	}
 	if err := m.opts.Store.RemoveImage(job.ID); err != nil {
 		return err
+	}
+	if job.Mode == "compose" && job.SetID != "" {
+		if err := m.opts.Store.RemoveSet(job.SetID); err != nil {
+			return err
+		}
 	}
 	// Disk is clean, so any failure up to here leaves a retryable state.
 	delete(m.jobs, id)
@@ -953,6 +1016,7 @@ func (m *Manager) finish(id, status, errMsg string) {
 	}
 	m.mu.Unlock()
 	m.broadcast(Event{JobID: id, Status: status, Error: errMsg, Ts: now, Seed: j.Seed})
+	m.childFinished(id)
 }
 
 // setStatus updates an in-progress status and notifies subscribers.

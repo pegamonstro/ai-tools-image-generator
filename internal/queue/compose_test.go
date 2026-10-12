@@ -5,8 +5,10 @@ import (
 	"context"
 	"image"
 	"image/png"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
@@ -88,4 +90,67 @@ func TestAssetChildValidation(t *testing.T) {
 	if _, err := m.Submit(SubmitRequest{Mode: "asset", Prompt: "x", Size: "bogus"}); err == nil {
 		t.Fatal("want invalid size error")
 	}
+}
+
+func TestComposeParentHandoff(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	spec := composeSpec{Kind: "asset-set", Name: "demo", Assets: []assetSpec{
+		{Kind: "element", Name: "a", Prompt: "a", Size: "16x16", Children: 1},
+		{Kind: "element", Name: "b", Prompt: "b", Size: "16x16", Children: 1},
+	}}
+	kids := []SubmitRequest{
+		{Mode: "asset", Prompt: "a", Size: "16x16"},
+		{Mode: "asset", Prompt: "b", Size: "16x16"},
+	}
+	parentID, err := m.submitComposeParent(newID(), spec, kids)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Task 7's runCompose fails honestly — no executor until Task 8.
+	waitFor(t, m, parentID, "failed")
+	j, _ := m.Get(parentID)
+	if !strings.Contains(j.Error, "executor not implemented") {
+		t.Fatalf("parent error = %q", j.Error)
+	}
+	if len(j.Children) != 2 {
+		t.Fatalf("children = %d, want 2", len(j.Children))
+	}
+
+	// Exactly the two children went through Ops.Generate: the parent
+	// bypasses dispatch (run() short-circuits mode "compose" to runCompose).
+	cap.mu.Lock()
+	n := len(cap.Prompts)
+	cap.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("dispatches = %d, want 2", n)
+	}
+}
+
+func TestComposeParentCancel(t *testing.T) {
+	cap := &genCapture{}
+	// Slow the children so Cancel lands while they are running; with instant
+	// stub children the parent could go terminal before Cancel executes and
+	// the cancel would race.
+	opts := composeTestOpts(t, t.TempDir(), cap)
+	base := opts.Ops.Generate
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		time.Sleep(100 * time.Millisecond)
+		return base(ctx, prompt, size, spec, sp)
+	}
+	m := New(opts)
+	spec := composeSpec{Kind: "gif", GIF: &gifPayload{DelayMS: 100, Loop: 0, Formats: []string{"gif"}}}
+	kids := []SubmitRequest{
+		{Mode: "asset", Prompt: "a", Size: "16x16"},
+		{Mode: "asset", Prompt: "b", Size: "16x16"},
+	}
+	parentID, err := m.submitComposeParent(newID(), spec, kids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Cancel(parentID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, parentID, "cancelled")
 }

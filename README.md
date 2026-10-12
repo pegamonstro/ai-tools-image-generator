@@ -142,3 +142,38 @@ Tools: `list_catalogs`, `submit_job(request)`, `get_job(job_id)`,
 `generate_and_wait` is the workhorse for one-shot agent usage; use
 `submit_job` + `get_job` when your harness prefers polling. REST-level failures
 surface as `isError` tool results containing the v1 error envelope.
+
+### Agent assets & animated GIFs
+
+img-gen doubles as an asset factory for coding agents. Two workflows:
+
+- **Asset sets** — `POST /api/v1/asset-sets` with 1–8 assets of kind
+  `element` (one image, optional `transparent` double-pass), `kit`
+  (a fixed 20-class wang tileset: h/v lines, outer/inner corners, T's,
+  cross, caps, single), or `atlas` (2–64 frame sheet + TexturePacker-style
+  JSON). Every asset needs a prompt and a 16-multiple `WxH` size. A
+  `manifest.json` lands in the set with per-asset files, seeds and errors.
+- **GIFs** — `POST /api/v1/gifs` with `source.type` `from_frames`
+  (assemble existing job ids, data-dir paths, or inline base64),
+  `from_spec` (img-gen generates the 2–64 frames at `seed+i`),
+  or `keyframes` (needs the phase-3 RIFE sidecar; rejected with
+  `not_implemented` until then). `delay_ms` 10–5000 (default 100),
+  `loop` >= 0, optional `formats: ["gif","webp"]` (`webp` is a
+  best-effort extra — gif2webp on PATH or the skip is recorded).
+
+Both endpoints accept `wait_seconds`; with `0` (default) they return
+`202 {"job_id","set_id"}` immediately. Fetch results via
+`GET /api/v1/sets/{id}` (job + file list) and
+`GET /api/v1/sets/{id}/files/{name}` (bytes, content-typed; `?download=1`
+for a download header). `files[].primary` marks the asset the job points
+at. Sets live under `DATA_DIR/sets/{set_id}/`; `dest` delivers copies
+into an agent's project directory (absolute path required — delivery
+refuses to overwrite, so retry after clearing the destination).
+
+MCP tools: `request_asset_set`, `make_gif`, `read_export`.
+
+Install the packaged agent skills:
+
+```bash
+deploy/install-skills.sh
+```

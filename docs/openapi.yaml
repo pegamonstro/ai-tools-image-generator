@@ -17,6 +17,10 @@ info:
     Modes: `generate`, `edit`, `inpaint`, `outpaint`, `blend`, `upscale`, `pose`.
     Job statuses: `queued`, `enhancing`, `generating`, `done`, `failed`, `cancelled`.
 
+    Compose jobs (mode `compose`) assemble delivered sets from `asset`-mode
+    children via /api/v1/asset-sets and /api/v1/gifs; fetch results with
+    /api/v1/sets/{set_id}.
+
     A stdio MCP server (`img-gen-mcp`) wraps this REST surface as tools for
     agents; see the repository README.
 servers:
@@ -60,6 +64,10 @@ components:
             - generation_failed
             - cancelled
             - bad_idempotency_key
+            - not_implemented
+          description: >
+            Async composite failures do not use an envelope code: the job turns
+            failed with its error field prefixed "compose_error:".
         message:
           type: string
         job_id:
@@ -235,6 +243,117 @@ components:
               description: >
                 <= 0 → submit and return 202 immediately; > 0 → block until
                 terminal status (Job, 200) or time out (504 sidecar_timeout).
+    AssetSetRequest:
+      type: object
+      required: [name, seed, assets]
+      properties:
+        name:
+          type: string
+          description: File stem for the set (letters, digits, -, _, .)
+        dest:
+          type: string
+          description: Absolute directory to deliver composed files into; empty uses EXPORT_DIR, then ~/Downloads/img-gen
+        seed:
+          type: integer
+          format: int64
+        assets:
+          type: array
+          maxItems: 8
+          items: { $ref: "#/components/schemas/AssetSpecIn" }
+    AssetSpecIn:
+      type: object
+      required: [kind, name, prompt, size]
+      properties:
+        kind:
+          type: string
+          enum: [element, kit, atlas]
+        name: { type: string }
+        prompt: { type: string }
+        negative: { type: string }
+        size:
+          type: string
+          description: WxH, both multiples of 16
+        frames:
+          type: integer
+          minimum: 2
+          maximum: 64
+          description: atlas only
+        columns:
+          type: integer
+          description: atlas atlas-sheet columns; 0 = single row
+        transparent:
+          type: boolean
+          description: element only — white+black double pass, alpha unmixed
+    GifRequest:
+      type: object
+      required: [name, source]
+      properties:
+        name: { type: string }
+        dest: { type: string }
+        delay_ms:
+          type: integer
+          minimum: 10
+          maximum: 5000
+          default: 100
+        loop:
+          type: integer
+          minimum: 0
+          description: 0 = infinite
+        formats:
+          type: array
+          items:
+            type: string
+            enum: [gif, webp]
+          default: [gif]
+        source: { $ref: "#/components/schemas/GifSource" }
+    GifSource:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [from_frames, from_spec, keyframes]
+        frames:
+          type: array
+          minItems: 2
+          maxItems: 64
+          items: { $ref: "#/components/schemas/FrameRef" }
+          description: from_frames
+        request:
+          allOf:
+            - $ref: "#/components/schemas/SubmitRequest"
+          description: from_spec base request (seed required)
+        count:
+          type: integer
+          minimum: 2
+          maximum: 64
+          description: from_spec frames
+    FrameRef:
+      type: object
+      description: Exactly one of job, path, b64
+      properties:
+        job:
+          type: string
+          description: An img-gen job id whose saved image becomes this frame
+        path:
+          type: string
+          description: Data-dir-relative path (e.g. images/<id>.png); no leading / or ..
+        b64:
+          type: string
+          description: Inline base64 PNG
+    FileRef:
+      type: object
+      properties:
+        name: { type: string }
+        primary: { type: boolean }
+    SetView:
+      type: object
+      properties:
+        set_id: { type: string }
+        job: { $ref: "#/components/schemas/Job" }
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/FileRef" }
 paths:
   /api/v1/catalogs:
     get:
@@ -449,6 +568,138 @@ paths:
           description: '{"copied": [...], "skipped": [...]}'
         "400":
           description: Relative dest or bad body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/asset-sets:
+    post:
+      operationId: submitAssetSet
+      summary: Submit an asset set and optionally wait for the composed result
+      description: |
+        Registers a compose parent job, queues 1-64 generation children
+        (mode `asset`), and composes the set when the last child lands.
+        wait_seconds > 0 blocks; otherwise poll the job or GET the set.
+        The set id equals the job id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AssetSetRequest"
+                - type: object
+                  properties:
+                    wait_seconds:
+                      type: integer
+                      minimum: 0
+                      default: 0
+      responses:
+        "202":
+          description: Accepted; {"job_id","set_id"} (wait_seconds <= 0).
+        "200":
+          description: Terminal compose job (wait_seconds > 0).
+        "400":
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: Not terminal within wait_seconds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/gifs:
+    post:
+      operationId: submitGif
+      summary: Build an animated GIF and optionally wait
+      description: |
+        Sources: from_frames (assemble given images), from_spec (generate
+        the frames here), keyframes (phase-3 RIFE interpolation — rejected
+        with code not_implemented while the sidecar is absent).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/GifRequest"
+                - type: object
+                  properties:
+                    wait_seconds:
+                      type: integer
+                      minimum: 0
+                      default: 0
+      responses:
+        "202":
+          description: Accepted; {"job_id","set_id"} (wait_seconds <= 0).
+        "200":
+          description: Terminal compose job (wait_seconds > 0).
+        "400":
+          description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: Not terminal within wait_seconds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/sets/{set_id}:
+    get:
+      operationId: getSet
+      summary: Set metadata — parent job and file refs
+      parameters:
+        - in: path
+          name: set_id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The compose parent and its files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetView"
+        "404":
+          description: Unknown set id or not a compose job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/sets/{set_id}/files/{name}:
+    get:
+      operationId: getSetFile
+      summary: One set file, streamed by content type
+      parameters:
+        - in: path
+          name: set_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: download
+          schema:
+            type: string
+            enum: ["1"]
+          description: >
+            "1" adds a Content-Disposition attachment header.
+      responses:
+        "200":
+          description: File bytes (image/png, image/gif, image/webp, application/json, or application/octet-stream)
+        "404":
+          description: Unknown set id or invalid file name.
           content:
             application/json:
               schema:

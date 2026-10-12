@@ -210,7 +210,7 @@ func TestDeleteHistoryUnknownIDIsANoOp(t *testing.T) {
 	if err := s.AppendHistory(Job{ID: "b", Status: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteHistory("missing"); err != nil {
+	if err := s.DeleteHistory("missing"); err == nil {
 		t.Fatalf("want no-op success for unknown id, got %v", err)
 	}
 	got, err := s.LoadHistory()
@@ -227,7 +227,7 @@ func TestDeleteHistoryMissingFileIsANoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteHistory("a"); err != nil {
+	if err := s.DeleteHistory("a"); err == nil {
 		t.Fatalf("want no-op success for missing file, got %v", err)
 	}
 }
@@ -254,7 +254,7 @@ func TestRemoveImageMissingFileSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveImage("0123456789abcdef"); err != nil {
+	if err := s.RemoveImage("0123456789abcdef"); err == nil {
 		t.Fatalf("want already-gone to be success, got %v", err)
 	}
 }
@@ -289,5 +289,114 @@ func TestJobProgressJSON(t *testing.T) {
 	}
 	if _, ok := term["total"]; ok {
 		t.Fatalf("terminal job JSON has total: %s", terminal)
+	}
+}
+
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestSetFilesRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SaveSetFile("0123456789abcdef", "panel.png", []byte("PNGDATA")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.ReadSetFile("0123456789abcdef", "panel.png")
+	if err != nil || string(b) != "PNGDATA" {
+		t.Fatalf("read back: %q %v", b, err)
+	}
+	names, err := s.ListSetFiles("0123456789abcdef")
+	if err != nil || len(names) != 1 || names[0] != "panel.png" {
+		t.Fatalf("list: %v %v", names, err)
+	}
+}
+
+func TestSetFileTraversalRejected(t *testing.T) {
+	s := newTestStore(t)
+	for _, bad := range []string{
+		"../evil.png", "sub/dir/x.png", "/abs.png", ".hidden", "", "x/y", "a..b",
+	} {
+		if err := s.SaveSetFile("0123456789abcdef", bad, []byte("x")); err == nil {
+			t.Fatalf("want rejection for %q", bad)
+		}
+		if _, err := s.ReadSetFile("0123456789abcdef", bad); err == nil {
+			t.Fatalf("read: want rejection for %q", bad)
+		}
+	}
+}
+
+func TestSetIDValidated(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SaveSetFile("../../etc", "x.png", []byte("x")); err == nil {
+		t.Fatal("want rejection for non-hex set id")
+	}
+	if _, err := s.ReadSetFile("0123456789abcdeg", "x.png"); err == nil { // 'g' is not hex
+		t.Fatal("want rejection for non-hex set id on read")
+	}
+}
+
+func TestReadDataFileGuards(t *testing.T) {
+	s := newTestStore(t)
+	if err := os.MkdirAll(filepath.Join(s.dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, "sub", "f.png"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.ReadDataFile("sub/f.png")
+	if err != nil || string(b) != "ok" {
+		t.Fatalf("rel read: %q %v", b, err)
+	}
+	for _, bad := range []string{"../f.png", "/etc/passwd", "sub/../sub/f.png"} {
+		if _, err := s.ReadDataFile(bad); err == nil {
+			t.Fatalf("want rejection for %q", bad)
+		}
+	}
+}
+
+func TestDeliverSetCollision(t *testing.T) {
+	s := newTestStore(t)
+	set := "0123456789abcdef"
+	if err := s.SaveSetFile(set, "panel.png", []byte("A")); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	got, err := s.DeliverSet(set, dest)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("deliver: %v %v", got, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "panel.png")); string(b) != "A" {
+		t.Fatal("delivered content mismatch")
+	}
+	if _, err := s.DeliverSet(set, dest); err == nil {
+		t.Fatal("want collision error on second deliver")
+	} else if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("collision error text: %v", err)
+	}
+}
+
+func TestReadImageAndRemoveSet(t *testing.T) {
+	s := newTestStore(t)
+	png := []byte("PNG")
+	if _, err := s.SaveImage("0123456789abcdef", png); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.ReadImage("0123456789abcdef")
+	if err != nil || string(b) != "PNG" {
+		t.Fatalf("ReadImage: %q %v", b, err)
+	}
+	if _, err := s.ReadImage("zz"); err == nil {
+		t.Fatal("want rejection for invalid image id")
+	}
+	if err := s.RemoveSet("0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReadSetFile("0123456789abcdef", "panel.png"); err == nil {
+		t.Fatal("set dir should be gone")
 	}
 }

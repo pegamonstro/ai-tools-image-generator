@@ -541,6 +541,72 @@ func TestSubmitAssetSetAtlas(t *testing.T) {
 	}
 }
 
+func TestSubmitAssetSetFrameKind(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(11)
+
+	// Validation: margins required, in 1..size/2-1.
+	bad := AssetSetRequest{Name: "p", Seed: &seed, Assets: []AssetSpecIn{{Kind: "frame", Name: "p", Prompt: "stone", Size: "32x32"}}}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want frame_margins required error")
+	}
+	bad.Assets[0].FrameMargins = 16 // 2*16 >= 32
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want margins bound error")
+	}
+
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "frames", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "frame", Name: "panel", Prompt: "stone panel", Size: "32x32", FrameMargins: 8}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	data, err := m.opts.Store.ReadSetFile(id, "panel.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// png.Decode's static type is image.Image; NRGBAAt lives on the concrete
+	// type. The punched frame encodes with transparent interior pixels (color
+	// type 6), so decode must yield NRGBA.
+	nr, ok := img.(*image.NRGBA)
+	if !ok {
+		t.Fatalf("punched frame decoded as %T", img)
+	}
+	if nr.NRGBAAt(16, 16).A != 0 {
+		t.Fatal("interior not punched")
+	}
+	if nr.NRGBAAt(0, 0).A != 255 {
+		t.Fatal("border lost")
+	}
+	mraw, err := m.opts.Store.ReadSetFile(id, "panel.frame.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		Margins struct {
+			Top    int
+			Right  int
+			Bottom int
+			Left   int
+		} `json:"margins"`
+	}
+	if err := json.Unmarshal(mraw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Margins.Top != 8 || meta.Margins.Bottom != 8 {
+		t.Fatalf("margins = %+v", meta.Margins)
+	}
+}
+
 func TestSubmitAssetSetValidation(t *testing.T) {
 	cap := &genCapture{}
 	m := New(composeTestOpts(t, t.TempDir(), cap))

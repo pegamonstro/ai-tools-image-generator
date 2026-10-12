@@ -101,8 +101,8 @@ var tools = []tool{
 	},
 	{
 		name:        "request_asset_set",
-		description: "Submit an asset set (element | 20-class wang kit | atlas) and block until composed. Returns the parent job JSON plus an inline preview of the primary file. Files deliver to dest, else EXPORT_DIR, else ~/Downloads/img-gen.",
-		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen AssetSetRequest: name, seed (required), dest, assets[{kind, name, prompt, size (WxH, multiples of 16), negative, frames (atlas: 2-64), columns, transparent}] + palette_lock (build one shared coherent palette over the set's images, ships <name>.palette.json)"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
+		description: "Submit an asset set (element | 20-class wang kit | atlas | frame) and block until composed. Returns the parent job JSON plus an inline preview of the primary file. Files deliver to dest, else EXPORT_DIR, else ~/Downloads/img-gen.",
+		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen AssetSetRequest: name, seed (required), dest, assets[{kind, name, prompt, size (WxH, multiples of 16), negative, frames (atlas: 2-64), columns, transparent, frame_margins (frame|bar: 1..size/2-1)}] + palette_lock (build one shared coherent palette over the set's images, ships <name>.palette.json)"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
 	},
 	{
 		name:        "make_gif",

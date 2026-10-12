@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,14 +34,15 @@ type composeSpec struct {
 }
 
 type assetSpec struct {
-	Kind        string `json:"kind"`
-	Name        string `json:"name"`
-	Prompt      string `json:"prompt"`
-	Size        string `json:"size"`
-	Frames      int    `json:"frames,omitempty"`
-	Columns     int    `json:"columns,omitempty"`
-	Transparent bool   `json:"transparent,omitempty"`
-	Children    int    `json:"children"` // generation jobs this asset owns, in order
+	Kind         string `json:"kind"`
+	Name         string `json:"name"`
+	Prompt       string `json:"prompt"`
+	Size         string `json:"size"`
+	Frames       int    `json:"frames,omitempty"`
+	Columns      int    `json:"columns,omitempty"`
+	Transparent  bool   `json:"transparent,omitempty"`
+	FrameMargins int    `json:"frame_margins,omitempty"`
+	Children     int    `json:"children"` // generation jobs this asset owns, in order
 }
 
 type gifPayload struct {
@@ -330,14 +332,15 @@ type AssetSetRequest struct {
 }
 
 type AssetSpecIn struct {
-	Kind        string `json:"kind"` // "element" | "kit" | "atlas"
-	Name        string `json:"name"`
-	Prompt      string `json:"prompt"`
-	Negative    string `json:"negative,omitempty"`
-	Size        string `json:"size"`                  // WxH, multiples of 16
-	Frames      int    `json:"frames,omitempty"`      // atlas: 2..64
-	Columns     int    `json:"columns,omitempty"`     // atlas: 0 = single row
-	Transparent bool   `json:"transparent,omitempty"` // element: white+black double pass
+	Kind         string `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
+	Name         string `json:"name"`
+	Prompt       string `json:"prompt"`
+	Negative     string `json:"negative,omitempty"`
+	Size         string `json:"size"`                    // WxH, multiples of 16
+	Frames       int    `json:"frames,omitempty"`        // atlas: 2..64
+	Columns      int    `json:"columns,omitempty"`       // atlas: 0 = single row
+	Transparent  bool   `json:"transparent,omitempty"`   // element: white+black double pass
+	FrameMargins int    `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -377,7 +380,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 		if !validAssetSize(a.Size) {
 			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("asset %q: invalid size %q (want WxH, multiples of 16)", an, a.Size)}
 		}
-		as := assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns, Transparent: a.Transparent}
+		as := assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns, Transparent: a.Transparent, FrameMargins: a.FrameMargins}
 		var built []SubmitRequest
 		switch a.Kind {
 		case "element":
@@ -389,8 +392,17 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frames must be 2..64", an)}
 			}
 			built = atlasChildren(prompt, a.Negative, a.Size, *req.Seed, a.Frames)
+		case "frame":
+			if a.FrameMargins < 1 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins is required for frames", an)}
+			}
+			w, h, serr := parseAssetSize(a.Size)
+			if serr != nil || 2*a.FrameMargins >= w || 2*a.FrameMargins >= h {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins must be 1..size/2-1", an)}
+			}
+			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
 		default:
-			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas)", an, a.Kind)}
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
 		}
 		as.Children = len(built)
 		total += as.Children
@@ -442,6 +454,21 @@ func atlasChildren(prompt, negative, size string, seed int64, frames int) []Subm
 		kids = append(kids, SubmitRequest{Mode: "asset", Prompt: p, NegativePrompt: negative, Size: size, Seed: &s})
 	}
 	return kids
+}
+
+// parseAssetSize parses a size that already passed validAssetSize ("WxH",
+// multiples of 16) into pixel ints, for post-processing bounds checks.
+func parseAssetSize(size string) (w, h int, err error) {
+	ws, hs, ok := strings.Cut(size, "x")
+	if !ok {
+		return 0, 0, fmt.Errorf("invalid size %q", size)
+	}
+	w, err1 := strconv.Atoi(ws)
+	h, err2 := strconv.Atoi(hs)
+	if err1 != nil || err2 != nil {
+		return 0, 0, fmt.Errorf("invalid size %q", size)
+	}
+	return w, h, nil
 }
 
 // --- manifest --------------------------------------------------------------
@@ -540,6 +567,12 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				outs, err = compose.ComposeKit(a.Name, imgs)
 			case "atlas":
 				outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
+			case "frame":
+				black := []byte(nil)
+				if len(imgs) == 2 {
+					black = imgs[1]
+				}
+				outs, err = compose.ComposeFrame(a.Name, imgs[0], black, a.Transparent && len(imgs) == 2, a.FrameMargins)
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
 			}

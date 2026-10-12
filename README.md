@@ -151,7 +151,10 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   `element` (one image, optional `transparent` double-pass), `kit`
   (a fixed 20-class wang tileset: h/v lines, outer/inner corners, T's,
   cross, caps, single), or `atlas` (2–64 frame sheet + TexturePacker-style
-  JSON). Every asset needs a prompt and a 16-multiple `WxH` size. A
+  JSON), or `frame` (a nine-slice border PNG: `frame_margins`
+  1..size/2−1 punches the interior transparent, one sidecar
+  `<name>.frame.json`). Every asset needs a prompt and a 16-multiple
+  `WxH` size. A
   `manifest.json` lands in the set with per-asset files and errors (per-asset
   seeds ride the child jobs). Setting `"palette_lock": true` builds one
   shared palette (up to 255 colors) over every composed image of the set and

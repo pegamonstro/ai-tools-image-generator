@@ -16,6 +16,7 @@ the MCP tools `request_asset_set` / `read_export`, or REST against
 | `element` | prompt, size, `transparent: true` for cutouts | `<name>.png` |
 | `kit` | prompt (subject/style), size | 20 wang tiles `<name>-<class>.png` |
 | `atlas` | prompt, size, frames 2-64, columns | `<name>-sheet.png` + `<name>-atlas.json` |
+| `frame` | prompt, size, `frame_margins` 1..size/2-1 | `<name>.png` (interior punched transparent) + `<name>.frame.json` |
 
 Sizes must be `WxH` with both multiples of 16. `seed` is required — a set
 must be reproducible while a design iterates.

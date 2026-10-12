@@ -130,6 +130,25 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 		}
 		d.handleV1GIF(w, r)
 	})
+
+	mux.HandleFunc("/api/v1/sets/", func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/sets/")
+		var setID, file string
+		if i := strings.Index(rest, "/"); i >= 0 {
+			setID, file = rest[:i], rest[i+1:]
+		} else {
+			setID = rest
+		}
+		if strings.HasPrefix(file, "files/") && len(file) > len("files/") {
+			d.serveSetFile(w, r, setID, strings.TrimPrefix(file, "files/"))
+			return
+		}
+		if file != "" {
+			writeV1Err(w, http.StatusNotFound, "job_not_found", "set not found", setID)
+			return
+		}
+		d.serveSet(w, r, setID)
+	})
 }
 
 // v1SubmitResponse is the shared POST-body shape: {"job_id"} or {"job_ids"}.
@@ -417,6 +436,63 @@ func waitForCompose(w http.ResponseWriter, mgr *queue.Manager, id string, waitSe
 		return
 	}
 	writeJSON(w, j)
+}
+
+// serveSet returns the parent job and its file refs. Anything that is not a
+// compose parent reads as "set not found" so plain jobs can't be enumerated
+// as sets.
+func (d *v1Deps) serveSet(w http.ResponseWriter, r *http.Request, setID string) {
+	if !storage.ValidImageID(setID) {
+		writeV1Err(w, http.StatusNotFound, "job_not_found", "set not found", setID)
+		return
+	}
+	j, ok := d.mgr.Get(setID)
+	if !ok || j.Mode != "compose" {
+		writeV1Err(w, http.StatusNotFound, "job_not_found", "set not found", setID)
+		return
+	}
+	writeJSON(w, map[string]any{"set_id": setID, "job": j, "files": j.Files})
+}
+
+// setContentType maps a set file's suffix to its serving type; unknown
+// suffixes download as octet-stream rather than guessing.
+func setContentType(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".png"):
+		return "image/png"
+	case strings.HasSuffix(name, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(name, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(name, ".json"):
+		return "application/json"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// serveSetFile streams one set file. ReadSetFile enforces the set-file name
+// rule and the data-dir boundary, so traversal and malformed names 404 here.
+func (d *v1Deps) serveSetFile(w http.ResponseWriter, r *http.Request, setID, name string) {
+	if !storage.ValidImageID(setID) {
+		writeV1Err(w, http.StatusNotFound, "job_not_found", "set not found", setID)
+		return
+	}
+	j, ok := d.mgr.Get(setID)
+	if !ok || j.Mode != "compose" {
+		writeV1Err(w, http.StatusNotFound, "job_not_found", "set not found", setID)
+		return
+	}
+	data, err := d.store.ReadSetFile(setID, name)
+	if err != nil {
+		writeV1Err(w, http.StatusNotFound, "job_not_found", "set file not found", setID)
+		return
+	}
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	}
+	w.Header().Set("Content-Type", setContentType(name))
+	_, _ = w.Write(data)
 }
 
 // serveStoredImage is the shared image-file handler (legacy + v1). errf styles

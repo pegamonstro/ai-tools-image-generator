@@ -129,3 +129,131 @@ func TestV1ComposeValidationEnvelope(t *testing.T) {
 		t.Fatalf("keyframes: %d %v", code, out)
 	}
 }
+
+func TestV1SetGet(t *testing.T) {
+	srv, _ := newV1ComposeServer(t)
+	_, out := postV1(t, srv, "/api/v1/asset-sets", assetSetBody)
+	if out["status"] != "done" {
+		t.Fatalf("job: %v", out)
+	}
+	setID := out["set_id"].(string)
+	resp, err := http.Get(srv.URL + "/api/v1/sets/" + setID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var body map[string]any
+	json.NewDecoder(resp.Body).Decode(&body)
+	if body["set_id"] != setID {
+		t.Fatalf("set_id: %v", body["set_id"])
+	}
+	job := body["job"].(map[string]any)
+	if job["status"] != "done" || job["mode"] != "compose" {
+		t.Fatalf("job: %v", job)
+	}
+	files := body["files"].([]any)
+	if len(files) != 1 || files[0].(map[string]any)["name"] != "bolt.png" {
+		t.Fatalf("files: %v", files)
+	}
+}
+
+func TestV1SetNotFound(t *testing.T) {
+	srv, _ := newV1ComposeServer(t)
+	code, out := postGet(t, srv, "/api/v1/sets/0000000000000000")
+	if code != http.StatusNotFound {
+		t.Fatalf("unknown id: %d", code)
+	}
+	if out["error"].(map[string]any)["code"] != "job_not_found" {
+		t.Fatalf("code: %v", out)
+	}
+	// a non-compose job id must not read as a set
+	sub := v1Submit(t, srv, `{"mode":"asset","prompt":"plain","size":"64x64","seed":1}`, "")
+	plain := sub["job_id"].(string)
+	waitForJobDone(t, srv, plain)
+	code, out = postGet(t, srv, "/api/v1/sets/"+plain)
+	if code != http.StatusNotFound {
+		t.Fatalf("non-compose set: %d", code)
+	}
+}
+
+func TestV1SetFileServe(t *testing.T) {
+	srv, _ := newV1ComposeServer(t)
+	_, out := postV1(t, srv, "/api/v1/asset-sets", assetSetBody)
+	if out["status"] != "done" {
+		t.Fatalf("job: %v", out)
+	}
+	setID := out["set_id"].(string)
+	func() {
+		resp, err := http.Get(srv.URL + "/api/v1/sets/" + setID + "/files/bolt.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/png" {
+			t.Fatalf("png: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		if _, err := png.Decode(resp.Body); err != nil {
+			t.Fatalf("served body not a png: %v", err)
+		}
+	}()
+	// manifest.json serves as json
+	func() {
+		resp, err := http.Get(srv.URL + "/api/v1/sets/" + setID + "/files/manifest.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("json content type: %s", resp.Header.Get("Content-Type"))
+		}
+	}()
+	// download param adds the disposition header
+	func() {
+		resp, err := http.Get(srv.URL + "/api/v1/sets/" + setID + "/files/bolt.png?download=1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.Header.Get("Content-Disposition") == "" {
+			t.Fatal("download=1 must set Content-Disposition")
+		}
+	}()
+	// missing file, name with ".." (the Task 5 rule reaches HTTP), bad set id
+	for _, p := range []string{"/files/nope.png", "/files/x..y.png"} {
+		resp, err := http.Get(srv.URL + "/api/v1/sets/" + setID + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("expected 404 for %s", p)
+		}
+		resp.Body.Close()
+	}
+	resp, err := http.Get(srv.URL + "/api/v1/sets/not-hex/files/bolt.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("bad set id: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// postGet issues a GET and decodes the envelope-shaped body regardless of
+// status, so 404 tests can assert on the error envelope.
+func postGet(t *testing.T, srv *httptest.Server, path string) (int, map[string]any) {
+	t.Helper()
+	resp, err := http.Get(srv.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("status %d: %v", resp.StatusCode, err)
+	}
+	return resp.StatusCode, out
+}

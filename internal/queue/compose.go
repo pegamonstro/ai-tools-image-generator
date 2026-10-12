@@ -584,10 +584,26 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		m.finish(id, "failed", "compose_error: all assets failed: "+firstErr)
 		return
 	}
-	// Deliver on every success: unset dest inherits the export fallback chain
-	// (dest → EXPORT_DIR → ~/Downloads/img-gen) per spec; resolveExportDest
-	// never returns empty, so there is no "no delivery" case.
+	// Deliver on every success. Explicit dest keeps the flat documented
+	// contract: delivered names are semantic project files. An unset dest
+	// inherits the export fallback chain (dest → EXPORT_DIR →
+	// ~/Downloads/img-gen), and that root is SHARED by every fallback set —
+	// each ships a fixed-name manifest.json, so two fallback deliveries into
+	// one root would collide (the second set's parent finishes failed despite
+	// composing fine). Fallback deliveries therefore namespace by set id; the
+	// resolved root never comes up empty, so there is no "no delivery" case.
+	// Deliver on every success. Explicit dest keeps the flat documented
+	// contract: delivered names are semantic project files. An unset dest
+	// inherits the export fallback chain (dest → EXPORT_DIR →
+	// ~/Downloads/img-gen), and that root is SHARED by every fallback set —
+	// each ships a fixed-name manifest.json, so two fallback deliveries into
+	// one root would collide (the second set's parent finishes failed despite
+	// composing fine). Fallback deliveries therefore namespace by set id; the
+	// resolved root never comes up empty, so there is no "no delivery" case.
 	dest := m.resolveExportDest(spec.Dest)
+	if spec.Dest == "" {
+		dest = filepath.Join(dest, id)
+	}
 	served, err := m.opts.Store.DeliverSet(id, dest)
 	if err != nil {
 		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
@@ -845,10 +861,18 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 	}
 	m.mu.Unlock()
 	m.saveManifest(id, &man)
-	// Deliver on every success: unset dest inherits the export fallback chain
-	// (dest → EXPORT_DIR → ~/Downloads/img-gen) per spec; resolveExportDest
-	// never returns empty, so there is no "no delivery" case.
+	// Deliver on every success. Explicit dest keeps the flat documented
+	// contract: delivered names are semantic project files. An unset dest
+	// inherits the export fallback chain (dest → EXPORT_DIR →
+	// ~/Downloads/img-gen), and that root is SHARED by every fallback set —
+	// each ships a fixed-name manifest.json, so two fallback deliveries into
+	// one root would collide (the second set's parent finishes failed despite
+	// composing fine). Fallback deliveries therefore namespace by set id; the
+	// resolved root never comes up empty, so there is no "no delivery" case.
 	dest := m.resolveExportDest(spec.Dest)
+	if spec.Dest == "" {
+		dest = filepath.Join(dest, id)
+	}
 	served, err := m.opts.Store.DeliverSet(id, dest)
 	if err != nil {
 		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))

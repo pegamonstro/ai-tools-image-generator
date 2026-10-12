@@ -571,7 +571,9 @@ func TestSubmitAssetSetDeliveryCollision(t *testing.T) {
 func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 	// Spec: unset dest inherits the export fallback chain (EXPORT_DIR →
 	// ~/Downloads/img-gen). The executor delivers on every success, so with
-	// Options.ExportDir pinned to a scratch dir the set lands there.
+	// Options.ExportDir pinned to a scratch dir the set lands there — under a
+	// set-id subdirectory, because two fallback sets share the root and every
+	// set ships a fixed-name manifest.json.
 	cap := &genCapture{}
 	dest := filepath.Join(t.TempDir(), "exports")
 	opts := composeTestOpts(t, t.TempDir(), cap)
@@ -587,8 +589,69 @@ func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 	}
 	waitFor(t, m, id, "done")
 	for _, name := range []string{"export.png", "manifest.json"} {
-		if _, err := os.ReadFile(filepath.Join(dest, name)); err != nil {
+		if _, err := os.ReadFile(filepath.Join(dest, id, name)); err != nil {
 			t.Fatalf("delivered %s: %v", name, err)
+		}
+	}
+	mraw, _ := m.opts.Store.ReadSetFile(id, "manifest.json")
+	var man setManifest
+	_ = json.Unmarshal(mraw, &man)
+	// The manifest records the actual delivered paths, set-id subdir included.
+	if man.Dest != filepath.Join(dest, id) {
+		t.Fatalf("manifest dest = %q, want %q", man.Dest, filepath.Join(dest, id))
+	}
+	if len(man.Delivered) != 2 || man.Delivered[1] != filepath.Join(dest, id, "manifest.json") {
+		t.Fatalf("delivered record: %+v", man.Delivered)
+	}
+}
+
+func TestSubmitSetFallbackDestNoCollision(t *testing.T) {
+	// Regression (Task 14 smoke): two no-dest sets sharing one fallback root
+	// used to collide on a flat manifest.json — the second delivery hit
+	// "destination file …/manifest.json already exists" and its parent
+	// finished failed despite composing fine. Fallback deliveries now
+	// namespace by set id, so both parents finish done with their own
+	// subdirectory and nothing lands flat at the root.
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	root := m.opts.ExportDir
+	first, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "one", Seed: ptr64(31),
+		Assets: []AssetSpecIn{{Kind: "element", Name: "one", Prompt: "one", Size: "32x32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "two", Seed: ptr64(32),
+		Assets: []AssetSpecIn{{Kind: "element", Name: "two", Prompt: "two", Size: "32x32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := waitFor(t, m, first, "done"); j.Status != "done" {
+		t.Fatalf("first set: %s %q", j.Status, j.Error)
+	}
+	if j := waitFor(t, m, second, "done"); j.Status != "done" {
+		t.Fatalf("second set: %s %q", j.Status, j.Error)
+	}
+	for _, s := range []struct {
+		id    string
+		names []string
+	}{{first, []string{"one.png", "manifest.json"}}, {second, []string{"two.png", "manifest.json"}}} {
+		for _, name := range s.names {
+			if _, err := os.ReadFile(filepath.Join(root, s.id, name)); err != nil {
+				t.Fatalf("set %s delivered %s: %v", s.id, name, err)
+			}
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			t.Fatalf("flat entry left at fallback root: %s", e.Name())
 		}
 	}
 }

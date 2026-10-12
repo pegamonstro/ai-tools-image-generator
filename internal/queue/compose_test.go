@@ -236,8 +236,9 @@ func composeTestOptsFail(t *testing.T, dir string, cap *failCapture) Options {
 		t.Fatal(err)
 	}
 	return Options{
-		Genres: testCatalog(),
-		Store:  s,
+		Genres:    testCatalog(),
+		Store:     s,
+		ExportDir: filepath.Join(t.TempDir(), "exports"),
 		Ops: ImageOps{
 			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 				cap.mu.Lock()

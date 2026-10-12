@@ -1,8 +1,12 @@
 package queue
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"log"
 	"os"
 	"path/filepath"
@@ -603,6 +607,250 @@ func primaryName(refs []storage.FileRef) string {
 	return ""
 }
 
+// --- public gif submission -------------------------------------------------
+
+const (
+	defaultGifDelayMS = 100
+	minGifDelayMS     = 10
+	maxGifDelayMS     = 5000
+)
+
+// GifRequest builds an animated GIF. Three source modes:
+// from_frames (assemble given images), from_spec (generate the frames here),
+// keyframes (interpolate between keyframes — requires the phase-3 RIFE
+// sidecar and is rejected with not_implemented for now).
+type GifRequest struct {
+	Name    string    `json:"name"`
+	Dest    string    `json:"dest,omitempty"`
+	DelayMS int       `json:"delay_ms,omitempty"` // 10..5000; 0 = default 100
+	Loop    int       `json:"loop,omitempty"`     // >= 0; 0 = infinite loop
+	Formats []string  `json:"formats,omitempty"`  // subset of {gif,webp}; default ["gif"]
+	Source  GifSource `json:"source"`
+}
+
+type GifSource struct {
+	Type    string         `json:"type"`              // from_frames | from_spec | keyframes
+	Frames  []FrameRef     `json:"frames,omitempty"`  // from_frames: 2..64 sources
+	Request *SubmitRequest `json:"request,omitempty"` // from_spec: base asset request
+	Count   int            `json:"count,omitempty"`   // from_spec: 2..64 frames
+}
+
+// FrameRef is one source frame: exactly one of Job (an img-gen job id),
+// Path (data-dir-relative, no "..", no absolute paths), or B64 (inline PNG).
+type FrameRef struct {
+	Job  string `json:"job,omitempty"`
+	Path string `json:"path,omitempty"`
+	B64  string `json:"b64,omitempty"`
+}
+
+// resolveFrameRef fetches the PNG bytes for a source frame. Decodability is
+// checked here so bad sources fail the submit, not the compose.
+func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
+	set := 0
+	for _, s := range []string{ref.Job, ref.Path, ref.B64} {
+		if s != "" {
+			set++
+		}
+	}
+	if set != 1 {
+		return nil, fmt.Errorf("frame source needs exactly one of job, path, b64")
+	}
+	var data []byte
+	var err error
+	switch {
+	case ref.Job != "":
+		data, err = m.opts.Store.ReadImage(ref.Job)
+	case ref.Path != "":
+		if filepath.IsAbs(ref.Path) || strings.Contains(ref.Path, "..") {
+			return nil, fmt.Errorf("path source must be relative to the data directory without '..'")
+		}
+		data, err = m.opts.Store.ReadDataFile(ref.Path)
+	default:
+		data, err = base64.StdEncoding.DecodeString(ref.B64)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if _, derr := png.Decode(bytes.NewReader(data)); derr != nil {
+		return nil, fmt.Errorf("frame is not a decodable PNG: %v", derr)
+	}
+	return data, nil
+}
+
+// SubmitGIF registers the compose parent and queues frame generation when
+// the source is from_spec. from_frames resolves and persists every source
+// into the set at submit time (source-frame-%04d.png) so a restart can
+// recompose without re-fetching.
+func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
+	name := validComposeAssetName(req.Name)
+	if name == "" {
+		return "", &ValidationError{Code: "validation_error", Msg: "name is required for gifs"}
+	}
+	delay := req.DelayMS
+	if delay == 0 {
+		delay = defaultGifDelayMS
+	}
+	if delay < minGifDelayMS || delay > maxGifDelayMS {
+		return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("delay_ms must be %d..%d (0 = default %d)", minGifDelayMS, maxGifDelayMS, defaultGifDelayMS)}
+	}
+	if req.Loop < 0 {
+		return "", &ValidationError{Code: "validation_error", Msg: "loop must be >= 0 (0 = infinite)"}
+	}
+	formats := req.Formats
+	if len(formats) == 0 {
+		formats = []string{"gif"}
+	}
+	for _, f := range formats {
+		if f != "gif" && f != "webp" {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("formats must be a subset of [gif, webp], got %q", f)}
+		}
+	}
+	if req.Dest != "" && !filepath.IsAbs(req.Dest) {
+		return "", &ValidationError{Code: "validation_error", Msg: "dest must be an absolute path"}
+	}
+	spec := composeSpec{Kind: "gif", Name: name, Dest: req.Dest, GIF: &gifPayload{DelayMS: delay, Loop: req.Loop, Formats: formats}}
+	switch req.Source.Type {
+	case "keyframes":
+		return "", &ValidationError{Code: "not_implemented", Msg: "keyframes interpolation requires the RIFE sidecar (RIFE_URL); planned for phase 3"}
+	case "from_frames":
+		if len(req.Source.Frames) < 2 || len(req.Source.Frames) > 64 {
+			return "", &ValidationError{Code: "validation_error", Msg: "from_frames takes 2..64 frames"}
+		}
+		id := newID()
+		names := make([]string, 0, len(req.Source.Frames))
+		for i, ref := range req.Source.Frames {
+			data, err := m.resolveFrameRef(ref)
+			if err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("frame %d: %v", i, err)}
+			}
+			fname := fmt.Sprintf("source-frame-%04d.png", i)
+			if err := m.opts.Store.SaveSetFile(id, fname, data); err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("frame %d: %v", i, err)}
+			}
+			names = append(names, fname)
+		}
+		spec.GIF.Frames = names
+		return m.submitComposeParent(id, spec, nil)
+	case "from_spec":
+		base := req.Source.Request
+		if base == nil {
+			return "", &ValidationError{Code: "validation_error", Msg: "from_spec needs source.request"}
+		}
+		if base.Seed == nil {
+			return "", &ValidationError{Code: "validation_error", Msg: "seed is required for generated gif frames"}
+		}
+		if strings.TrimSpace(base.Prompt) == "" {
+			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for generated gif frames"}
+		}
+		if !validAssetSize(base.Size) {
+			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q for gif frames (want WxH, multiples of 16)", base.Size)}
+		}
+		if req.Source.Count < 2 || req.Source.Count > 64 {
+			return "", &ValidationError{Code: "validation_error", Msg: "gif frames must be 2..64"}
+		}
+		return m.submitComposeParent(newID(), spec, specFrames(*base, req.Source.Count))
+	default:
+		return "", &ValidationError{Code: "validation_error", Msg: "source.type must be from_frames, from_spec, or keyframes"}
+	}
+}
+
+// specFrames mirrors atlasChildren over an arbitrary base request: one
+// asset-mode job per frame, seed+i, frame index appended for consistency.
+func specFrames(base SubmitRequest, count int) []SubmitRequest {
+	kids := make([]SubmitRequest, 0, count)
+	for i := 0; i < count; i++ {
+		c := base
+		s := *base.Seed + int64(i)
+		c.Seed = &s
+		c.Mode = "asset"
+		c.Prompt = fmt.Sprintf("%s, animation frame %d of %d, consistent style and lighting", strings.TrimSpace(c.Prompt), i+1, count)
+		kids = append(kids, c)
+	}
+	return kids
+}
+
+// composeGIF assembles the set's GIF. Unlike asset sets a GIF is one
+// artifact: every frame must be present, so any failed child fails the
+// parent. webp unavailability is recorded, not fatal.
 func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
-	m.finish(id, "failed", "compose_error: gif executor not implemented")
+	gp := spec.GIF
+	man := setManifest{SetID: id, Kind: "gif", Name: spec.Name, CreatedAt: time.Now(),
+		GIF: &manifestGIF{Name: spec.Name, DelayMS: gp.DelayMS, Loop: gp.Loop, Formats: gp.Formats}}
+	var frames []image.Image
+	switch {
+	case len(gp.Frames) > 0:
+		for i, name := range gp.Frames {
+			data, err := m.opts.Store.ReadSetFile(id, name)
+			if err != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: source frame %d: %v", i, err))
+				return
+			}
+			im, err := png.Decode(bytes.NewReader(data))
+			if err != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: source frame %d: %v", i, err))
+				return
+			}
+			frames = append(frames, im)
+		}
+	case len(children) > 0:
+		imgs, errs := m.childrenResults(len(children), children, func(f string, a ...any) { m.log(id, f, a...) })
+		if len(imgs) == 0 {
+			m.finish(id, "failed", "compose_error: gif frames: "+errs[0])
+			return
+		}
+		for i, img := range imgs {
+			if img == nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: gif frame %d incomplete: %s", i, strings.Join(errs, "; ")))
+				return
+			}
+			im, err := png.Decode(bytes.NewReader(img))
+			if err != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: gif frame %d: %v", i, err))
+				return
+			}
+			frames = append(frames, im)
+		}
+	default:
+		m.finish(id, "failed", "compose_error: gif spec has neither frames nor children")
+		return
+	}
+	outs, _, webpStatus, err := compose.ComposeGIF(spec.Name, frames, gp.DelayMS, gp.Loop, gp.Formats)
+	if err != nil {
+		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
+		return
+	}
+	man.GIF.WebP = webpStatus
+	var files []storage.FileRef
+	for _, of := range outs {
+		if err := m.opts.Store.SaveSetFile(id, of.Name, of.Data); err != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
+			return
+		}
+		files = append(files, storage.FileRef{Name: of.Name, Primary: of.Primary})
+		man.GIF.Files = append(man.GIF.Files, of.Name)
+	}
+	m.mu.Lock()
+	job := m.jobs[id]
+	if job != nil {
+		job.Files = files
+		job.ImagePath = "sets/" + id + "/" + primaryName(files)
+	}
+	m.mu.Unlock()
+	m.saveManifest(id, &man)
+	// Deliver on every success: unset dest inherits the export fallback chain
+	// (dest → EXPORT_DIR → ~/Downloads/img-gen) per spec; resolveExportDest
+	// never returns empty, so there is no "no delivery" case.
+	dest := m.resolveExportDest(spec.Dest)
+	served, err := m.opts.Store.DeliverSet(id, dest)
+	if err != nil {
+		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
+		return
+	}
+	man.Delivered = served
+	man.Dest = dest
+	m.saveManifest(id, &man)
+	m.log(id, "compose done: gif %s (%d frames)", spec.Name, len(frames))
+	m.finish(id, "done", "")
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/gif"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -612,3 +613,228 @@ var bigChildren = func() []AssetSpecIn {
 	}
 	return out
 }()
+
+func TestSubmitGIFFromFrames(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	j1, err := m.Submit(SubmitRequest{Mode: "asset", Prompt: "f1", Size: "32x32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j2, err := m.Submit(SubmitRequest{Mode: "asset", Prompt: "f2", Size: "32x32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, j1, "done")
+	waitFor(t, m, j2, "done")
+	id, err := m.SubmitGIF(GifRequest{
+		Name:   "spin",
+		Source: GifSource{Type: "from_frames", Frames: []FrameRef{{Job: j1}, {Job: j2}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.opts.Store.ReadSetFile(id, "source-frame-0001.png"); err != nil {
+		t.Fatalf("source frames persisted at submit: %v", err)
+	}
+	waitFor(t, m, id, "done")
+	raw, err := m.opts.Store.ReadSetFile(id, "spin.gif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gif.DecodeAll(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("spin.gif not a GIF: %v", err)
+	}
+	if len(g.Image) != 2 {
+		t.Fatalf("gif frames: %d", len(g.Image))
+	}
+	if g.Delay[0] != 10 { // default delay_ms=100 → centiseconds
+		t.Fatalf("delay %d", g.Delay[0])
+	}
+	j, _ := m.Get(id)
+	if len(j.Files) != 1 || j.Files[0].Name != "spin.gif" || !j.Files[0].Primary {
+		t.Fatalf("files: %+v", j.Files)
+	}
+}
+
+func TestSubmitGIFFromSpec(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(30)
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "pulse",
+		Source: GifSource{
+			Type:    "from_spec",
+			Request: &SubmitRequest{Mode: "asset", Prompt: "pulse orb", Size: "32x32", Seed: &seed},
+			Count:   4,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	cap.mu.Lock()
+	if len(cap.Prompts) != 4 || cap.Seeds[0] != 30 || cap.Seeds[3] != 33 {
+		t.Fatalf("from_spec children: %q %q", cap.Prompts, cap.Seeds)
+	}
+	if !strings.Contains(cap.Prompts[1], "frame 2 of 4") {
+		t.Fatalf("frame prompt: %q", cap.Prompts[1])
+	}
+	cap.mu.Unlock()
+	raw, _ := m.opts.Store.ReadSetFile(id, "pulse.gif")
+	if _, err := gif.DecodeAll(bytes.NewReader(raw)); err != nil {
+		t.Fatalf("pulse.gif: %v", err)
+	}
+}
+
+func TestSubmitGIFPathRef(t *testing.T) {
+	cap := &genCapture{}
+	dir := t.TempDir()
+	store, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real decodable PNG under the data dir the path ref points at.
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveImage("abcdef0123456789", buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	m := New(composeTestOpts(t, dir, cap)) // same data dir the Path refs resolve against
+	id, err := m.SubmitGIF(GifRequest{
+		Name:    "via-path",
+		DelayMS: 50,
+		Source: GifSource{Type: "from_frames", Frames: []FrameRef{
+			{Path: "images/abcdef0123456789.png"},
+			{Path: "images/abcdef0123456789.png"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	raw, _ := m.opts.Store.ReadSetFile(id, "via-path.gif")
+	if _, err := gif.DecodeAll(bytes.NewReader(raw)); err != nil {
+		t.Fatalf("via-path.gif: %v", err)
+	}
+}
+
+func TestSubmitGIFWebPFormatRecorded(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(2)
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "webp", Formats: []string{"gif", "webp"},
+		Source: GifSource{
+			Type:    "from_spec",
+			Request: &SubmitRequest{Mode: "asset", Prompt: "w", Size: "32x32", Seed: &seed},
+			Count:   2,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done") // webp availability never fails the set
+	mraw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(mraw, &man); err != nil {
+		t.Fatal(err)
+	}
+	if man.GIF == nil {
+		t.Fatalf("gif manifest missing: %+v", man)
+	}
+	// Mirrors compose's GIF test invariant: the webp variant file exists iff
+	// no skip reason was recorded. On machines with gif2webp the recorded
+	// status is legitimately empty (the variant was produced); without it the
+	// skip reason is recorded. Either way webp availability never fails the
+	// set, and the manifest records the outcome.
+	webp := false
+	for _, f := range man.GIF.Files {
+		if f == "webp.webp" {
+			webp = true
+		}
+	}
+	if webp != (man.GIF.WebP == "") {
+		t.Fatalf("webp file/status mismatch: %+v", man.GIF)
+	}
+}
+
+func TestSubmitGIFFrameIncomplete(t *testing.T) {
+	cap := &failCapture{FailCall: 1}
+	m := New(composeTestOptsFail(t, t.TempDir(), cap))
+	seed := int64(4)
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "gaps",
+		Source: GifSource{
+			Type:    "from_spec",
+			Request: &SubmitRequest{Mode: "asset", Prompt: "g", Size: "32x32", Seed: &seed},
+			Count:   3,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "failed")
+	j, _ := m.Get(id)
+	if !strings.Contains(j.Error, "compose_error") || !strings.Contains(j.Error, "frame") {
+		t.Fatalf("error: %q", j.Error)
+	}
+}
+
+func TestSubmitGIFValidation(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(1)
+	base := &SubmitRequest{Mode: "asset", Prompt: "p", Size: "32x32", Seed: &seed}
+	cases := []struct {
+		name string
+		req  GifRequest
+		want string // substring of the error message
+	}{
+		{"keyframes not implemented", GifRequest{Name: "k", Source: GifSource{Type: "keyframes", Count: 4}}, "RIFE"},
+		{"source type", GifRequest{Name: "k", Source: GifSource{Type: "wat"}}, "from_frames, from_spec"},
+		{"one frame", GifRequest{Name: "k", Source: GifSource{Type: "from_frames", Frames: []FrameRef{{Job: "x"}}}}, "2..64"},
+		{"no request", GifRequest{Name: "k", Source: GifSource{Type: "from_spec", Count: 3}}, "request"},
+		{"nil seed", GifRequest{Name: "k", Source: GifSource{Type: "from_spec", Request: &SubmitRequest{Mode: "asset", Prompt: "p", Size: "32x32"}, Count: 3}}, "seed"},
+		{"count high", GifRequest{Name: "k", Source: GifSource{Type: "from_spec", Request: base, Count: 65}}, "2..64"},
+		{"count low", GifRequest{Name: "k", Source: GifSource{Type: "from_spec", Request: base, Count: 1}}, "2..64"},
+		{"delay low", GifRequest{Name: "k", DelayMS: 5, Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "delay_ms"},
+		{"delay high", GifRequest{Name: "k", DelayMS: 6000, Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "delay_ms"},
+		{"loop negative", GifRequest{Name: "k", Loop: -1, Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "loop"},
+		{"format", GifRequest{Name: "k", Formats: []string{"apng"}, Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "formats"},
+		{"dest", GifRequest{Name: "k", Dest: "rel", Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "absolute"},
+		{"multi source", GifRequest{Name: "k", Source: GifSource{Type: "from_frames", Frames: []FrameRef{{Job: "a", B64: "AA"}, {Job: "b"}}}}, "exactly one"},
+	}
+	for _, tc := range cases {
+		_, err := m.SubmitGIF(tc.req)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: got %v, want substring %q", tc.name, err, tc.want)
+		}
+	}
+	// traversal: a path source escaping the data dir is a submit-time error
+	_, err := m.SubmitGIF(GifRequest{Name: "k", Source: GifSource{Type: "from_frames", Frames: []FrameRef{
+		{Path: "../../etc/passwd"}, {Path: "images/x.png"},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "data directory") {
+		t.Fatalf("traversal: %v", err)
+	}
+	// and an unknown job id produces a submit-time error, not a stuck parent
+	_, err = m.SubmitGIF(GifRequest{Name: "k2", Source: GifSource{Type: "from_frames", Frames: []FrameRef{
+		{Job: "deadbeefdeadbeef"}, {Job: "deadbeefdeadbeef"},
+	}}})
+	if err == nil {
+		t.Fatal("unknown job frame ref should fail at submit")
+	}
+	// every submit above failed at validation or frame resolution: no parent
+	// and no partial child set may have been registered.
+	if n := len(m.List()); n != 0 {
+		t.Fatalf("failed submits left %d job(s) registered", n)
+	}
+}

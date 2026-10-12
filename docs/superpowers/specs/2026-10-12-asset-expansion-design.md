@@ -45,7 +45,7 @@ It is an ordinary set file (validSetFile passes; delivered flat like the other f
 
 **Tests.** ΔE2000 nearest-match correctness on crafted palettes; α<128 preservation; determinism (two runs → byte-identical remapped PNG + palette file); palette file content; remap integration point ordering (applied before frame/bar/atlas post-processing so every deliverable inherits it).
 
-**Integration point.** Remap runs in the compose executor immediately after child-image completion and before any per-kind post-processing (atlas pack, frame punch, bar compose, npc packing) consumes the decoded images.
+**Integration point.** Remap runs in the compose executor after per-kind composition — element/kit/atlas/frame/bar/npc deliverables exist as PNG outputs — and before `SaveSetFile`: the set's PNG outputs are decoded once, the palette is built over all of them via the existing fixed-stride median-cut, and each PNG output is remapped to that palette before saving. Non-image outputs (atlas/frame/bar/palette JSON) pass through untouched. This is one uniform hook: the post-processing geometry is lossless slicing, so remapping outputs is equivalent to remapping inputs while never touching the alpha-extraction pass.
 
 ## 4. Feature F2 — Nine-patch `frame` kind
 
@@ -110,7 +110,7 @@ Variants []string `json:"variants,omitempty"` // npc only: per-variant prompt su
 
 ### Shape `variants` (covers expression sheets, emotes, turnarounds)
 
-Each variant renders one child: prompt = asset `Prompt` + `", "` + variant suffix, and every child renders at the SAME seed — the set seed, with NO `+i` increment (the pinned-seed mechanic). Packed by existing atlas rules (`columns`, cell = asset size) → `<name>.png` sheet + `<name>.atlas.json` (existing TexturePacker-style format; cell key `<name>-<NNNN>`). Manifest's asset entry records the variants list in sheet order.
+Each variant renders one child: prompt = asset `Prompt` + `", "` + variant suffix, and every child renders at the SAME seed — the set seed, with NO `+i` increment (the pinned-seed mechanic). Packed by existing atlas rules (`columns`, cell = asset size) → `<name>-sheet.png` + `<name>-atlas.json` (same naming and TexturePacker format the atlas kind ships; cell key `<name>-<NNNN>`). Manifest's asset entry records the variants list in sheet order.
 
 Expressed as the RPG-Maker face grid: 96×96 cells, `columns: 4`, 8 variants → 384×192 — directly engine-compatible (VX/Ace: 96×96 faces, 4×2).
 
@@ -122,7 +122,7 @@ Three renders at the pinned seed with fixed direction suffixes:
 - up: `", rear view, facing away from the viewer"`
 - right: `", side profile view, facing right"`
 
-Left = horizontal mirror of the right render (the 3-drawing rule). Sheet: 4 rows × 1 col in RPG-Maker order (down, left, right, up) → `<name>.png`, plus the four individual cells `<name>-down.png`, `<name>-left.png` (flipped copy), `<name>-right.png`, `<name>-up.png`, and `<name>.atlas.json` documenting both.
+Left = horizontal mirror of the right render (the 3-drawing rule). Sheet: 4 rows × 1 col in RPG-Maker order (down, left, right, up) → `<name>-walk.png`, plus the four individual cells `<name>-down.png`, `<name>-left.png` (flipped copy), `<name>-right.png`, `<name>-up.png`, and `<name>-atlas.json` documenting all four cells (RPG-Maker-compatible order).
 
 **Honesty contract (must appear in docs/skills):** walk4 delivers four standing direction views whose palette/composition form a family — NOT a walk animation and not guaranteed single-identity across directions; direction-prompt drift is the researched failure mode. True walk cycles need an anchor-image mechanic img-gen does not have; the animation skill says why.
 

@@ -1,0 +1,137 @@
+{
+  "server": "http://127.0.0.1:9106",
+  "generated": "2026-10-13",
+  "sets": [
+    {
+      "name": "bb-elements",
+      "set_id": "c991d24ac8ccc3e8",
+      "job_id": null,
+      "description": "palette_lock element/frame",
+      "files": [
+        "logo.png",
+        "terminal-frame.png",
+        "terminal-frame.frame.json",
+        "alert-panel.png",
+        "alert-panel.frame.json",
+        "tip.png",
+        "tip.frame.json",
+        "btn-hot.png",
+        "btn-cool.png",
+        "btn-dim.png",
+        "bb-elements.palette.json"
+      ]
+    },
+    {
+      "name": "bb-crew",
+      "set_id": "03cc02fe6021f884",
+      "job_id": null,
+      "description": "palette_lock npc variants+walk4",
+      "files": [
+        "ghost-sheet.png",
+        "ghost-atlas.json",
+        "runner-walk.png",
+        "runner-atlas.json",
+        "runner-down.png",
+        "runner-left.png",
+        "runner-right.png",
+        "runner-up.png",
+        "phreaker.png",
+        "spectre-sheet.png",
+        "spectre-atlas.json",
+        "bb-crew.palette.json"
+      ]
+    },
+    {
+      "name": "bb-board",
+      "set_id": "d62b4b7e6d997d61",
+      "job_id": null,
+      "description": "palette_lock kit/datasheet",
+      "files": [
+        "circuit-line-h.png",
+        "circuit-line-v.png",
+        "circuit-corner-out-nw.png",
+        "circuit-corner-out-ne.png",
+        "circuit-corner-out-sw.png",
+        "circuit-corner-out-se.png",
+        "circuit-corner-in-nw.png",
+        "circuit-corner-in-ne.png",
+        "circuit-corner-in-sw.png",
+        "circuit-corner-in-se.png",
+        "circuit-t-e.png",
+        "circuit-t-w.png",
+        "circuit-t-n.png",
+        "circuit-t-s.png",
+        "circuit-cross.png",
+        "circuit-cap-n.png",
+        "circuit-cap-s.png",
+        "circuit-cap-e.png",
+        "circuit-cap-w.png",
+        "circuit-single.png",
+        "datasheet.png",
+        "bb-board.palette.json"
+      ]
+    },
+    {
+      "name": "bb-widgets",
+      "set_id": "c9544f3d60fbf7b3",
+      "job_id": null,
+      "description": "palette_lock bar/atlas/element",
+      "files": [
+        "signal-track.png",
+        "signal-fill.png",
+        "signal-fill-020.png",
+        "signal-fill-040.png",
+        "signal-fill-060.png",
+        "signal-fill-080.png",
+        "signal-fill-100.png",
+        "signal.bar.json",
+        "load-track.png",
+        "load-fill.png",
+        "load-fill-020.png",
+        "load-fill-040.png",
+        "load-fill-060.png",
+        "load-fill-080.png",
+        "load-fill-100.png",
+        "load.bar.json",
+        "leds-sheet.png",
+        "leds-atlas.json",
+        "chips-sheet.png",
+        "chips-atlas.json",
+        "glitch.png",
+        "hexfield.png",
+        "scan.png",
+        "bb-widgets.palette.json"
+      ]
+    },
+    {
+      "name": "code-rain",
+      "set_id": "8e0f29c410d45885",
+      "job_id": null,
+      "description": "from_spec gif loop (anim of hero)",
+      "files": [
+        "code-rain.gif",
+        "code-rain.webp"
+      ]
+    },
+    {
+      "name": "circuit-pulse",
+      "set_id": "754fc5c554a84aa3",
+      "job_id": null,
+      "description": "from_spec gif loop (honors bg)",
+      "files": [
+        "circuit-pulse.gif",
+        "circuit-pulse.webp"
+      ]
+    },
+    {
+      "name": "hero-banner",
+      "set_id": "ac603c361ab6875b",
+      "job_id": null,
+      "description": "composite gif (job-ref anim, set-file statics)",
+      "files": [
+        "hero-banner.gif",
+        "hero-banner.webp"
+      ]
+    }
+  ]
+}

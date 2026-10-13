@@ -2,7 +2,7 @@
 # resubmit bb-board (the first run silently dropped the 20-class kit after 2 child renders were cancelled mid-mflux)
 set -u
 BASE=http://127.0.0.1:9106
-A=/Users/archcore/Projects/img-gen/.claude/worktrees/asset-expansion/.claude/mock-site-bb/assets/board
+A="$(cd "$(dirname "$0")" && pwd)/assets/board"
 
 RESP=$(curl -s -X POST "$BASE/api/v1/asset-sets" -H 'Content-Type: application/json' -d '{
  "name":"bb-board","seed":5003,"palette_lock":true,"wait_seconds":0,"assets":[

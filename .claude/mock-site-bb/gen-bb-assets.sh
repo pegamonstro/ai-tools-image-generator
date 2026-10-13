@@ -2,7 +2,7 @@
 # BIKINI CLUB asset sets — bb-elements / bb-crew / bb-board on :9106 (direct routing)
 set -u
 BASE=http://127.0.0.1:9106
-SITE=/Users/archcore/Projects/img-gen/.claude/worktrees/asset-expansion/.claude/mock-site-bb
+SITE="$(cd "$(dirname "$0")" && pwd)"
 A=$SITE/assets
 mkdir -p "$A"
 

@@ -2,7 +2,7 @@
 # BIKINI CLUB — submit + download ONLY bb-widgets (bb-elements/bb-crew/bb-board already in flight)
 set -u
 BASE=http://127.0.0.1:9106
-SITE=/Users/archcore/Projects/img-gen/.claude/worktrees/asset-expansion/.claude/mock-site-bb
+SITE="$(cd "$(dirname "$0")" && pwd)"
 A=$SITE/assets
 STYLE="cyberpunk underground hacking collective, dark metal with phosphor green glow, amber BBS accents, magenta and cyan neon, hand painted illustration"
 NEG="photograph, blurry, watermark"

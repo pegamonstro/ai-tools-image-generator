@@ -3,7 +3,7 @@
 # bb-widgets is owned by the gen-bb-widgets.sh task — not touched here.
 set -u
 BASE=http://127.0.0.1:9106
-A=/Users/archcore/Projects/img-gen/.claude/worktrees/asset-expansion/.claude/mock-site-bb/assets
+A="$(cd "$(dirname "$0")" && pwd)/assets"
 
 fetch_set() {
   local id="$1" dir="$2"

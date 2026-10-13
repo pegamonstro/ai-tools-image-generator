@@ -2,7 +2,7 @@
 # BIKINI CLUB GIFs: code-rain (from_spec) + circuit-pulse (from_spec) + hero composite (composite over code-rain children)
 set -u
 BASE=http://127.0.0.1:9106
-SITE=/Users/archcore/Projects/img-gen/.claude/worktrees/asset-expansion/.claude/mock-site-bb
+SITE="$(cd "$(dirname "$0")" && pwd)"
 A=$SITE/assets/gif
 mkdir -p "$A"
 S1=c991d24ac8ccc3e8   # bb-elements: logo, terminal-frame, alert-panel

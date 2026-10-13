@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,29 +25,43 @@ import (
 // recovered by scanning for jobs whose ComposeParent == parent ID, so there
 // is no registration race between spec and child list.
 type composeSpec struct {
-	Kind   string      `json:"kind"` // "asset-set" | "gif"
-	Name   string      `json:"name"`
-	Dest   string      `json:"dest,omitempty"`
-	Assets []assetSpec `json:"assets,omitempty"`
-	GIF    *gifPayload `json:"gif,omitempty"`
+	Kind        string      `json:"kind"` // "asset-set" | "gif"
+	Name        string      `json:"name"`
+	Dest        string      `json:"dest,omitempty"`
+	PaletteLock bool        `json:"palette_lock,omitempty"`
+	Assets      []assetSpec `json:"assets,omitempty"`
+	GIF         *gifPayload `json:"gif,omitempty"`
 }
 
 type assetSpec struct {
-	Kind        string `json:"kind"`
-	Name        string `json:"name"`
-	Prompt      string `json:"prompt"`
-	Size        string `json:"size"`
-	Frames      int    `json:"frames,omitempty"`
-	Columns     int    `json:"columns,omitempty"`
-	Transparent bool   `json:"transparent,omitempty"`
-	Children    int    `json:"children"` // generation jobs this asset owns, in order
+	Kind         string   `json:"kind"`
+	Name         string   `json:"name"`
+	Prompt       string   `json:"prompt"`
+	Size         string   `json:"size"`
+	Frames       int      `json:"frames,omitempty"`
+	Columns      int      `json:"columns,omitempty"`
+	Transparent  bool     `json:"transparent,omitempty"`
+	FrameMargins int      `json:"frame_margins,omitempty"`
+	BarFill      string   `json:"bar_fill,omitempty"`
+	FillStates   []int    `json:"fill_states,omitempty"`
+	Shape        string   `json:"shape,omitempty"`    // npc: "variants" | "walk4"
+	Variants     []string `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
+	Children     int      `json:"children"`           // generation jobs this asset owns, in order
+}
+
+// compositeLayerSpec is one persisted static layer: its set file (saved at
+// submit time) and the position to blit it at each frame during a recompose.
+type compositeLayerSpec struct {
+	File string `json:"file"`
+	Pos  [2]int `json:"pos"`
 }
 
 type gifPayload struct {
-	Frames  []string `json:"frames,omitempty"` // set-relative source files (from_frames)
-	DelayMS int      `json:"delay_ms"`
-	Loop    int      `json:"loop"`
-	Formats []string `json:"formats"`
+	Frames    []string             `json:"frames,omitempty"` // set-relative source files (from_frames/composite anim)
+	Composite []compositeLayerSpec `json:"composite,omitempty"`
+	DelayMS   int                  `json:"delay_ms"`
+	Loop      int                  `json:"loop"`
+	Formats   []string             `json:"formats"`
 }
 
 // --- parent registration --------------------------------------------------
@@ -311,6 +326,7 @@ func validComposeAssetName(s string) string {
 const (
 	maxAssetsPerSet    = 8
 	maxComposeChildren = 64
+	maxComposeStatics  = 8
 )
 
 const (
@@ -321,21 +337,27 @@ const (
 // AssetSetRequest is the public asset-set submission. Seed is required:
 // a set's parts must be reproducible for iteration on a design.
 type AssetSetRequest struct {
-	Name   string        `json:"name"`           // file stem for the set (sanitized)
-	Dest   string        `json:"dest,omitempty"` // absolute dir to deliver into; empty = EXPORT_DIR fallback chain
-	Seed   *int64        `json:"seed"`           // required
-	Assets []AssetSpecIn `json:"assets"`         // 1..8
+	Name        string        `json:"name"`           // file stem for the set (sanitized)
+	Dest        string        `json:"dest,omitempty"` // absolute dir to deliver into; empty = EXPORT_DIR fallback chain
+	Seed        *int64        `json:"seed"`           // required
+	PaletteLock bool          `json:"palette_lock,omitempty"`
+	Assets      []AssetSpecIn `json:"assets"` // 1..8
 }
 
 type AssetSpecIn struct {
-	Kind        string `json:"kind"` // "element" | "kit" | "atlas"
-	Name        string `json:"name"`
-	Prompt      string `json:"prompt"`
-	Negative    string `json:"negative,omitempty"`
-	Size        string `json:"size"`                  // WxH, multiples of 16
-	Frames      int    `json:"frames,omitempty"`      // atlas: 2..64
-	Columns     int    `json:"columns,omitempty"`     // atlas: 0 = single row
-	Transparent bool   `json:"transparent,omitempty"` // element: white+black double pass
+	Kind         string   `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
+	Name         string   `json:"name"`
+	Prompt       string   `json:"prompt"`
+	Negative     string   `json:"negative,omitempty"`
+	Size         string   `json:"size"`                    // WxH, multiples of 16
+	Frames       int      `json:"frames,omitempty"`        // atlas: 2..64
+	Columns      int      `json:"columns,omitempty"`       // atlas: 0 = single row
+	Transparent  bool     `json:"transparent,omitempty"`   // element: white+black double pass
+	FrameMargins int      `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
+	BarFill      string   `json:"bar_fill,omitempty"`      // bar: fill art prompt
+	FillStates   []int    `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
+	Shape        string   `json:"shape,omitempty"`         // npc: "variants" | "walk4"
+	Variants     []string `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -355,7 +377,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 	if len(req.Assets) == 0 || len(req.Assets) > maxAssetsPerSet {
 		return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset sets take 1..%d assets", maxAssetsPerSet)}
 	}
-	spec := composeSpec{Kind: "asset-set", Name: setName, Dest: req.Dest}
+	spec := composeSpec{Kind: "asset-set", Name: setName, Dest: req.Dest, PaletteLock: req.PaletteLock}
 	var kids []SubmitRequest
 	seen := map[string]bool{}
 	total := 0
@@ -375,20 +397,89 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 		if !validAssetSize(a.Size) {
 			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("asset %q: invalid size %q (want WxH, multiples of 16)", an, a.Size)}
 		}
-		as := assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns, Transparent: a.Transparent}
 		var built []SubmitRequest
+		var as assetSpec
 		switch a.Kind {
 		case "element":
 			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent}
 		case "kit":
 			built = kitChildren(prompt, a.Negative, a.Size, *req.Seed)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size}
 		case "atlas":
 			if a.Frames < 2 || a.Frames > 64 {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frames must be 2..64", an)}
 			}
 			built = atlasChildren(prompt, a.Negative, a.Size, *req.Seed, a.Frames)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns}
+		case "frame":
+			if a.FrameMargins < 1 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins is required for frames", an)}
+			}
+			w, h, serr := parseAssetSize(a.Size)
+			if serr != nil || 2*a.FrameMargins >= w || 2*a.FrameMargins >= h {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins must be 1..size/2-1", an)}
+			}
+			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins}
+		case "bar":
+			if a.BarFill == "" {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: bar_fill is required for bars", an)}
+			}
+			if a.FrameMargins < 1 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins is required for bars", an)}
+			}
+			w, h, serr := parseAssetSize(a.Size)
+			if serr != nil || 2*a.FrameMargins >= w || 2*a.FrameMargins >= h {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins must be 1..size/2-1", an)}
+			}
+			states := a.FillStates
+			if len(states) == 0 {
+				states = []int{25, 50, 75, 100}
+			}
+			seenSt := map[int]bool{}
+			uniq := []int{}
+			for _, st := range states {
+				if st < 1 || st > 100 {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: fill_states values must be 1..100", an)}
+				}
+				if seenSt[st] {
+					continue
+				}
+				seenSt[st] = true
+				uniq = append(uniq, st)
+			}
+			if len(uniq) > 16 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: fill_states takes at most 16 states", an)}
+			}
+			for i := 1; i < len(uniq); i++ {
+				if uniq[i] <= uniq[i-1] {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: fill_states must be ascending", an)}
+				}
+			}
+			built = append(elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent),
+				elementChildren(a.BarFill, a.Negative, a.Size, *req.Seed, false)...)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, BarFill: a.BarFill, FillStates: uniq}
+		case "npc":
+			switch a.Shape {
+			case "variants":
+				if len(a.Variants) < 2 || len(a.Variants) > 64 {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc variants takes 2..64 suffixes", an)}
+				}
+				for i, v := range a.Variants {
+					if strings.TrimSpace(v) == "" {
+						return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc variant %d is empty", an, i)}
+					}
+				}
+			case "walk4":
+				// Fixed direction suffixes; any provided variants list is ignored.
+			default:
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc shape must be variants or walk4", an)}
+			}
+			built = npcChildren(prompt, a.Negative, a.Size, *req.Seed, a.Shape, a.Variants)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants, Columns: a.Columns}
 		default:
-			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas)", an, a.Kind)}
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
 		}
 		as.Children = len(built)
 		total += as.Children
@@ -442,6 +533,42 @@ func atlasChildren(prompt, negative, size string, seed int64, frames int) []Subm
 	return kids
 }
 
+// npcChildren builds one job per npc variant, ALL at the pinned set seed —
+// no +i increment. Same composition scaffold, per-variant content: the
+// variant-family mechanic (walk4 gets the three fixed direction suffixes;
+// left is mirrored downstream, never rendered).
+func npcChildren(prompt, negative, size string, seed int64, shape string, variants []string) []SubmitRequest {
+	suffixes := variants
+	if shape == "walk4" {
+		suffixes = []string{
+			"full front view, facing the viewer",
+			"rear view, facing away from the viewer",
+			"side profile view, facing right",
+		}
+	}
+	kids := make([]SubmitRequest, 0, len(suffixes))
+	for _, v := range suffixes {
+		s := seed
+		kids = append(kids, SubmitRequest{Mode: "asset", Prompt: prompt + ", " + v, NegativePrompt: negative, Size: size, Seed: &s})
+	}
+	return kids
+}
+
+// parseAssetSize parses a size that already passed validAssetSize ("WxH",
+// multiples of 16) into pixel ints, for post-processing bounds checks.
+func parseAssetSize(size string) (w, h int, err error) {
+	ws, hs, ok := strings.Cut(size, "x")
+	if !ok {
+		return 0, 0, fmt.Errorf("invalid size %q", size)
+	}
+	w, err1 := strconv.Atoi(ws)
+	h, err2 := strconv.Atoi(hs)
+	if err1 != nil || err2 != nil {
+		return 0, 0, fmt.Errorf("invalid size %q", size)
+	}
+	return w, h, nil
+}
+
 // --- manifest --------------------------------------------------------------
 
 type setManifest struct {
@@ -456,12 +583,13 @@ type setManifest struct {
 }
 
 type manifestAsset struct {
-	Kind   string   `json:"kind"`
-	Name   string   `json:"name"`
-	Prompt string   `json:"prompt,omitempty"`
-	Size   string   `json:"size,omitempty"`
-	Files  []string `json:"files,omitempty"`
-	Error  string   `json:"error,omitempty"`
+	Kind     string   `json:"kind"`
+	Name     string   `json:"name"`
+	Prompt   string   `json:"prompt,omitempty"`
+	Size     string   `json:"size,omitempty"`
+	Variants []string `json:"variants,omitempty"`
+	Files    []string `json:"files,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 type manifestGIF struct {
@@ -495,8 +623,9 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 	ok := 0
 	var firstErr string
 	var files []storage.FileRef
-	for _, a := range spec.Assets {
-		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size}
+	outsByAsset := make([][]compose.OutputFile, len(spec.Assets))
+	for ai, a := range spec.Assets {
+		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size, Variants: a.Variants}
 		end := cursor + a.Children
 		if cursor+a.Children > len(children) {
 			ma.Error = fmt.Sprintf("expected %d child job(s), found %d", a.Children, len(children)-cursor)
@@ -537,18 +666,30 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				outs, err = compose.ComposeKit(a.Name, imgs)
 			case "atlas":
 				outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
+			case "frame":
+				black := []byte(nil)
+				if len(imgs) == 2 {
+					black = imgs[1]
+				}
+				outs, err = compose.ComposeFrame(a.Name, imgs[0], black, a.Transparent && len(imgs) == 2, a.FrameMargins)
+			case "bar":
+				fill := imgs[len(imgs)-1]
+				trackBlack := []byte(nil)
+				if len(imgs) == 3 {
+					trackBlack = imgs[1]
+				}
+				outs, err = compose.ComposeBar(a.Name, imgs[0], trackBlack, a.Transparent && len(imgs) == 3, a.FrameMargins, fill, a.FillStates)
+			case "npc":
+				if a.Shape == "walk4" {
+					outs, err = compose.ComposeNPCWalk4(a.Name, imgs[0], imgs[1], imgs[2])
+				} else {
+					outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
+				}
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
 			}
 			if err == nil {
-				for _, of := range outs {
-					if serr := m.opts.Store.SaveSetFile(id, of.Name, of.Data); serr != nil {
-						err = serr
-						break
-					}
-					files = append(files, storage.FileRef{Name: of.Name, Primary: of.Primary})
-					ma.Files = append(ma.Files, of.Name)
-				}
+				outsByAsset[ai] = outs
 			}
 			if err != nil {
 				broken = err.Error()
@@ -564,6 +705,78 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		}
 		man.Assets = append(man.Assets, ma)
 	}
+
+	// Palette lock (F1): remap every PNG output of the set onto one shared
+	// palette before anything is saved, then ship the palette file. Runs
+	// after per-kind composition (the outputs exist as PNGs) and before
+	// SaveSetFile, so every deliverable inherits the set palette. Non-image
+	// outputs (atlas/frame/bar JSON) pass through untouched.
+	var palJSON []byte
+	if spec.PaletteLock && ok > 0 {
+		var imgs []image.Image
+		for ai := range outsByAsset {
+			for _, of := range outsByAsset[ai] {
+				if !strings.HasSuffix(of.Name, ".png") {
+					continue
+				}
+				im, derr := png.Decode(bytes.NewReader(of.Data))
+				if derr != nil {
+					// Composed outputs are our own fresh encodes; this cannot
+					// happen outside corrupted pipeline state. Leave the file
+					// unremapped and log — remap never fails the set.
+					m.log(id, "palette lock: %s undecodable, left unremapped: %v", of.Name, derr)
+					continue
+				}
+				imgs = append(imgs, im)
+			}
+		}
+		pal := compose.SetPalette(imgs, 255)
+		if len(pal) > 0 {
+			for ai := range outsByAsset {
+				for j := range outsByAsset[ai] {
+					of := &outsByAsset[ai][j]
+					if !strings.HasSuffix(of.Name, ".png") {
+						continue
+					}
+					nb, rerr := compose.RemapPNG(of.Data, pal)
+					if rerr != nil {
+						m.log(id, "palette lock: %s left unremapped: %v", of.Name, rerr)
+						continue
+					}
+					of.Data = nb
+				}
+			}
+			if pj, jerr := compose.MarshalPalette(pal); jerr != nil {
+				m.log(id, "palette lock: palette file: %v", jerr)
+			} else {
+				palJSON = pj
+			}
+		}
+	}
+
+	// Save phase: every composed output lands here, after the palette pass.
+	// A save failure fails the parent immediately (the composeGIF precedent)
+	// instead of the old per-asset break-marking — storage save failures were
+	// always catastrophic disk-level events.
+	for ai := range outsByAsset {
+		for _, of := range outsByAsset[ai] {
+			if serr := m.opts.Store.SaveSetFile(id, of.Name, of.Data); serr != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: %v", serr))
+				return
+			}
+			files = append(files, storage.FileRef{Name: of.Name, Primary: of.Primary})
+			man.Assets[ai].Files = append(man.Assets[ai].Files, of.Name)
+		}
+	}
+	if len(palJSON) > 0 {
+		pname := spec.Name + ".palette.json"
+		if serr := m.opts.Store.SaveSetFile(id, pname, palJSON); serr != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: %v", serr))
+			return
+		}
+		files = append(files, storage.FileRef{Name: pname})
+	}
+
 	m.mu.Lock()
 	job := m.jobs[id]
 	if job != nil {
@@ -581,18 +794,18 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		return
 	}
 	// Deliver on every success. Explicit dest keeps the flat documented
-	// contract: delivered names are semantic project files. An unset dest
-	// inherits the export fallback chain (dest → EXPORT_DIR →
-	// ~/Downloads/img-gen), and that root is SHARED by every fallback set —
-	// each ships a fixed-name manifest.json, so two fallback deliveries into
-	// one root would collide (the second set's parent finishes failed despite
-	// composing fine). Fallback deliveries therefore namespace by set id; the
-	// resolved root never comes up empty, so there is no "no delivery" case.
+	// contract: delivered names are semantic project files (the manifest
+	// ships as <name>.manifest.json, so per-name manifests coexist in one
+	// dest). An unset dest inherits the export fallback chain (dest →
+	// EXPORT_DIR → ~/Downloads/img-gen), and that root is SHARED by every
+	// fallback set — identically named deliverables would still collide, so
+	// fallback deliveries namespace by set id; the resolved root never comes
+	// up empty, so there is no "no delivery" case.
 	dest := m.resolveExportDest(spec.Dest)
 	if spec.Dest == "" {
 		dest = filepath.Join(dest, id)
 	}
-	served, err := m.opts.Store.DeliverSet(id, dest)
+	served, err := m.opts.Store.DeliverSet(id, spec.Name, dest)
 	if err != nil {
 		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
 		return
@@ -625,8 +838,9 @@ const (
 	maxGifDelayMS     = 5000
 )
 
-// GifRequest builds an animated GIF. Three source modes:
+// GifRequest builds an animated GIF. Four source modes:
 // from_frames (assemble given images), from_spec (generate the frames here),
+// composite (statics blitted over every frame of an animation),
 // keyframes (interpolate between keyframes — requires the phase-3 RIFE
 // sidecar and is rejected with not_implemented for now).
 type GifRequest struct {
@@ -639,18 +853,36 @@ type GifRequest struct {
 }
 
 type GifSource struct {
-	Type    string         `json:"type"`              // from_frames | from_spec | keyframes
-	Frames  []FrameRef     `json:"frames,omitempty"`  // from_frames: 2..64 sources
-	Request *SubmitRequest `json:"request,omitempty"` // from_spec: base asset request
-	Count   int            `json:"count,omitempty"`   // from_spec: 2..64 frames
+	Type      string           `json:"type"`              // from_frames | from_spec | composite | keyframes
+	Frames    []FrameRef       `json:"frames,omitempty"`  // from_frames: 2..64 sources
+	Request   *SubmitRequest   `json:"request,omitempty"` // from_spec: base asset request
+	Count     int              `json:"count,omitempty"`   // from_spec: 2..64 frames
+	Composite *CompositeSource `json:"composite,omitempty"`
+}
+
+// CompositeSource layers one animated frame list (the base canvas) under
+// static RGBA elements composited in list order, pre-quantization.
+type CompositeSource struct {
+	Anim    []FrameRef    `json:"anim"`              // 2..64 frame refs — the base canvas
+	Statics []StaticLayer `json:"statics,omitempty"` // 0..8
+}
+
+// StaticLayer places one static element: From is any frame ref form, Pos is
+// the x,y origin on the anim canvas — the overlay must fit inside it.
+type StaticLayer struct {
+	From FrameRef `json:"from"`
+	Pos  [2]int   `json:"pos"`
 }
 
 // FrameRef is one source frame: exactly one of Job (an img-gen job id),
-// Path (data-dir-relative, no "..", no absolute paths), or B64 (inline PNG).
+// Path (data-dir-relative, no "..", no absolute paths), B64 (inline PNG),
+// or the pair Set (storage set id) + File (set file name).
 type FrameRef struct {
 	Job  string `json:"job,omitempty"`
 	Path string `json:"path,omitempty"`
 	B64  string `json:"b64,omitempty"`
+	Set  string `json:"set,omitempty"`
+	File string `json:"file,omitempty"`
 }
 
 // resolveFrameRef fetches the PNG bytes for a source frame. Decodability is
@@ -662,8 +894,24 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 			set++
 		}
 	}
-	if set != 1 {
-		return nil, fmt.Errorf("frame source needs exactly one of job, path, b64")
+	switch {
+	case ref.Set != "" || ref.File != "":
+		if ref.Set == "" || ref.File == "" {
+			return nil, fmt.Errorf("set frame source needs both set and file")
+		}
+		if set != 0 {
+			return nil, fmt.Errorf("frame source needs exactly one of job, path, b64, set+file")
+		}
+		data, serr := m.opts.Store.ReadSetFile(ref.Set, ref.File)
+		if serr != nil {
+			return nil, serr
+		}
+		if _, derr := png.Decode(bytes.NewReader(data)); derr != nil {
+			return nil, fmt.Errorf("frame is not a decodable PNG: %v", derr)
+		}
+		return data, nil
+	case set != 1:
+		return nil, fmt.Errorf("frame source needs exactly one of job, path, b64, set+file")
 	}
 	var data []byte
 	var err error
@@ -688,9 +936,10 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 }
 
 // SubmitGIF registers the compose parent and queues frame generation when
-// the source is from_spec. from_frames resolves and persists every source
-// into the set at submit time (source-frame-%04d.png) so a restart can
-// recompose without re-fetching.
+// the source is from_spec. from_frames and composite resolve and persist
+// every source into the set at submit time (source-frame-%04d.png; composite
+// statics additionally as static-layer-%02d.png with their positions kept in
+// the persisted spec) so a restart can recompose without re-fetching.
 func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 	name := validComposeAssetName(req.Name)
 	if name == "" {
@@ -761,8 +1010,55 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 			return "", &ValidationError{Code: "validation_error", Msg: "gif frames must be 2..64"}
 		}
 		return m.submitComposeParent(newID(), spec, specFrames(*base, req.Source.Count))
+	case "composite":
+		cs := req.Source.Composite
+		if cs == nil {
+			return "", &ValidationError{Code: "validation_error", Msg: "composite source needs source.composite"}
+		}
+		if len(cs.Anim) < 2 || len(cs.Anim) > 64 {
+			return "", &ValidationError{Code: "validation_error", Msg: "composite anim takes 2..64 frames"}
+		}
+		if len(cs.Statics) > maxComposeStatics {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("composite takes at most %d static layers", maxComposeStatics)}
+		}
+		id := newID()
+		names := make([]string, 0, len(cs.Anim))
+		for i, ref := range cs.Anim {
+			data, err := m.resolveFrameRef(ref)
+			if err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("anim frame %d: %v", i, err)}
+			}
+			fname := fmt.Sprintf("source-frame-%04d.png", i)
+			if err := m.opts.Store.SaveSetFile(id, fname, data); err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("anim frame %d: %v", i, err)}
+			}
+			names = append(names, fname)
+		}
+		statics := make([]compositeLayerSpec, 0, len(cs.Statics))
+		for i, l := range cs.Statics {
+			if l.Pos[0] < 0 || l.Pos[1] < 0 {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("static layer %d: pos must be non-negative", i)}
+			}
+			data, err := m.resolveFrameRef(l.From)
+			if err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("static layer %d: %v", i, err)}
+			}
+			sname := fmt.Sprintf("static-layer-%02d.png", i)
+			if err := m.opts.Store.SaveSetFile(id, sname, data); err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("static layer %d: %v", i, err)}
+			}
+			statics = append(statics, compositeLayerSpec{File: sname, Pos: l.Pos})
+		}
+		spec.GIF.Frames = names
+		spec.GIF.Composite = statics
+		return m.submitComposeParent(id, spec, nil)
 	default:
-		return "", &ValidationError{Code: "validation_error", Msg: "source.type must be from_frames, from_spec, or keyframes"}
+		return "", &ValidationError{Code: "validation_error", Msg: "source.type must be from_frames, from_spec, or composite"}
 	}
 }
 
@@ -833,6 +1129,31 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 		m.finish(id, "failed", "compose_error: gif spec has neither frames nor children")
 		return
 	}
+	// Composite statics (F5): blit each persisted static layer over every
+	// frame BEFORE quantization — 1-bit GIF alpha stays halo-free and the
+	// palette covers overlay colors too. Each layer is one PNG read plus one
+	// decode; the blit itself runs per frame. An overhang (or any layer
+	// failure) fails the parent naming the file — never a silent crop.
+	for _, l := range gp.Composite {
+		data, err := m.opts.Store.ReadSetFile(id, l.File)
+		if err != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: static layer %s: %v", l.File, err))
+			return
+		}
+		ov, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: static layer %s: %v", l.File, err))
+			return
+		}
+		for i := range frames {
+			out, berr := compose.BlitImage(frames[i], ov, l.Pos[0], l.Pos[1])
+			if berr != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: static layer %s: %v", l.File, berr))
+				return
+			}
+			frames[i] = out
+		}
+	}
 	outs, _, webpStatus, err := compose.ComposeGIF(spec.Name, frames, gp.DelayMS, gp.Loop, gp.Formats)
 	if err != nil {
 		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
@@ -857,18 +1178,18 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 	m.mu.Unlock()
 	m.saveManifest(id, &man)
 	// Deliver on every success. Explicit dest keeps the flat documented
-	// contract: delivered names are semantic project files. An unset dest
-	// inherits the export fallback chain (dest → EXPORT_DIR →
-	// ~/Downloads/img-gen), and that root is SHARED by every fallback set —
-	// each ships a fixed-name manifest.json, so two fallback deliveries into
-	// one root would collide (the second set's parent finishes failed despite
-	// composing fine). Fallback deliveries therefore namespace by set id; the
-	// resolved root never comes up empty, so there is no "no delivery" case.
+	// contract: delivered names are semantic project files (the manifest
+	// ships as <name>.manifest.json, so per-name manifests coexist in one
+	// dest). An unset dest inherits the export fallback chain (dest →
+	// EXPORT_DIR → ~/Downloads/img-gen), and that root is SHARED by every
+	// fallback set — identically named deliverables would still collide, so
+	// fallback deliveries namespace by set id; the resolved root never comes
+	// up empty, so there is no "no delivery" case.
 	dest := m.resolveExportDest(spec.Dest)
 	if spec.Dest == "" {
 		dest = filepath.Join(dest, id)
 	}
-	served, err := m.opts.Store.DeliverSet(id, dest)
+	served, err := m.opts.Store.DeliverSet(id, spec.Name, dest)
 	if err != nil {
 		m.finish(id, "failed", fmt.Sprintf("compose_error: %v", err))
 		return

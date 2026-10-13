@@ -312,7 +312,7 @@ components:
       properties:
         type:
           type: string
-          enum: [from_frames, from_spec, keyframes]
+          enum: [from_frames, from_spec, composite, keyframes]
         frames:
           type: array
           minItems: 2
@@ -328,9 +328,37 @@ components:
           minimum: 2
           maximum: 64
           description: from_spec frames
+        composite:
+          $ref: "#/components/schemas/CompositeSource"
+    CompositeSource:
+      type: object
+      required: [anim]
+      properties:
+        anim:
+          type: array
+          minItems: 2
+          maxItems: 64
+          items: { $ref: "#/components/schemas/FrameRef" }
+          description: The base canvas — the animated frames
+        statics:
+          type: array
+          maxItems: 8
+          items: { $ref: "#/components/schemas/StaticLayer" }
+          description: Static layers blitted over every anim frame, in list order, pre-quantization
+    StaticLayer:
+      type: object
+      required: [from]
+      properties:
+        from: { $ref: "#/components/schemas/FrameRef" }
+        pos:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { type: integer }
+          description: x,y origin on the anim canvas — the overlay must fit inside it
     FrameRef:
       type: object
-      description: Exactly one of job, path, b64
+      description: Exactly one of job, path, b64, or the pair set+file
       properties:
         job:
           type: string
@@ -341,6 +369,12 @@ components:
         b64:
           type: string
           description: Inline base64 PNG
+        set:
+          type: string
+          description: Storage set id
+        file:
+          type: string
+          description: Set file name (read together with set)
     FileRef:
       type: object
       properties:
@@ -619,8 +653,10 @@ paths:
       summary: Build an animated GIF and optionally wait
       description: |
         Sources: from_frames (assemble given images), from_spec (generate
-        the frames here), keyframes (phase-3 RIFE interpolation — rejected
-        with code not_implemented while the sidecar is absent).
+        the frames here), composite (statics composited over every frame of
+        a 2-64-frame animation, pre-quantization), keyframes (phase-3 RIFE
+        interpolation — rejected with code not_implemented while the sidecar
+        is absent).
       requestBody:
         required: true
         content:

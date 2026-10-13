@@ -151,13 +151,35 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   `element` (one image, optional `transparent` double-pass), `kit`
   (a fixed 20-class wang tileset: h/v lines, outer/inner corners, T's,
   cross, caps, single), or `atlas` (2–64 frame sheet + TexturePacker-style
-  JSON). Every asset needs a prompt and a 16-multiple `WxH` size. A
+  JSON), or `frame` (a nine-slice border PNG: `frame_margins`
+  1..size/2−1 punches the interior transparent, one sidecar
+  `<name>.frame.json`), or **`bar`** (track + fill pair: `bar_fill`
+  prompt renders the fill; `fill_states` 1..100, ≤16 ascending, default
+  25/50/75/100 render as horizontal clips `<name>-fill-<NNN>.png`; the
+  track interior punches transparent via `frame_margins`; sidecar
+  `<name>.bar.json`), or **`npc`** (`shape: "variants"` packs per-variant
+  sprites — every variant renders with the SAME set seed and a `", "` +
+  suffix prompt — into `<name>-sheet.png` + atlas JSON; `shape: "walk4"`
+  renders three direction views (down/up/right suffixes fixed, left
+  mirrored from right) into a 4-row RPG-Maker-order sheet
+  `<name>-walk.png` with individual cells. Standing views, not walk
+  animation). Every asset needs a prompt and a 16-multiple `WxH` size. A
   `manifest.json` lands in the set with per-asset files and errors (per-asset
-  seeds ride the child jobs).
+  seeds ride the child jobs). Setting `"palette_lock": true` builds one
+  shared palette (up to 255 colors) over every composed image of the set and
+  remaps each pixel to its CIEDE2000-nearest palette color — batch coherence
+  is won in post, not generation. The set ships `<name>.palette.json` with
+  the colors (`{"colors":["#0f766e",...]}`), an ordinary set file delivered
+  flat like the rest. GIFs composed from a locked set's deliverable files (any source with `{set, file}` refs, whether composite sources or `from_frames` refs) inherit the coherence;
+  `from_frames` refs by job id read the raw pre-remap renders instead.
 - **GIFs** — `POST /api/v1/gifs` with `source.type` `from_frames`
   (assemble existing job ids, data-dir paths, or inline base64),
   `from_spec` (img-gen generates the 2–64 frames at `seed+i`),
-  or `keyframes` (needs the phase-3 RIFE sidecar; rejected with
+  `composite` (one animated base of 2–64 frames plus up to 8 static
+  layers, each `{from: <frame ref>, pos: [x,y]}`, alpha-composited
+  pre-quantization — statics from already-rendered sets cost zero renders;
+  frame refs accept `{job}`, `{path}`, `{b64}`, or `{set, file}` for set
+  files), and `keyframes` (needs the phase-3 RIFE sidecar; rejected with
   `not_implemented` until then). `delay_ms` 10–5000 (default 100),
   `loop` >= 0, optional `formats: ["gif","webp"]` (`webp` is a
   best-effort extra — gif2webp on PATH or the skip is recorded).
@@ -168,8 +190,10 @@ Both endpoints accept `wait_seconds`; with `0` (default) they return
 `GET /api/v1/sets/{set_id}/files/{name}` (bytes, content-typed; `?download=1`
 for a download header). `files[].primary` marks the asset the job points
 at. Sets live under `DATA_DIR/sets/{set_id}/`; `dest` delivers copies
-into an agent's project directory (absolute path required — delivery
-refuses to overwrite, so retry after clearing the destination).
+into an agent's project directory — the manifest ships as
+`<name>.manifest.json`, so two sets can share one destination (absolute
+path required — delivery refuses to overwrite, so retry after clearing
+the destination).
 
 MCP tools: `request_asset_set`, `make_gif`, `read_export`.
 

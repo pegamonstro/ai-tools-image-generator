@@ -3,13 +3,17 @@ package queue
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	"image/gif"
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -69,6 +73,110 @@ func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
 			},
 		},
 		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+	}
+}
+
+// sizedGen returns an ImageOps.Generate that renders a fully opaque red/green
+// checker PNG at the requested size (parsing WxH), recording in cap. Real
+// sizes matter: post-processing like the frame punch validates render
+// dimensions, so the 8x8 default fake is too small.
+func sizedGen(t *testing.T, cap *genCapture) func(context.Context, string, string, storage.ModelSpec, storage.SamplingParams) ([]byte, *int64, error) {
+	t.Helper()
+	return func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		ws, hs, _ := strings.Cut(size, "x")
+		w, _ := strconv.Atoi(ws)
+		h, _ := strconv.Atoi(hs)
+		if w < 1 || h < 1 {
+			w, h = 8, 8
+		}
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				if (x/4+y/4)%2 == 0 {
+					img.Set(x, y, color.RGBA{R: 255, A: 255})
+				} else {
+					img.Set(x, y, color.RGBA{G: 255, A: 255})
+				}
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		if cap != nil {
+			cap.add(prompt, size, sp.Seed, buf.Bytes())
+		}
+		return buf.Bytes(), sp.Seed, nil
+	}
+}
+
+func TestSubmitAssetSetPaletteLock(t *testing.T) {
+	o := composeTestOpts(t, t.TempDir(), nil)
+	o.Ops.Generate = sizedGen(t, nil)
+	m := New(o)
+	seed := int64(41)
+	// The remap hook covers every kind: two elements plus an atlas, whose
+	// sheet deliverable must land inside the palette too.
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "cohere", Seed: &seed, PaletteLock: true,
+		Assets: []AssetSpecIn{
+			{Kind: "element", Name: "a", Prompt: "first", Size: "16x16"},
+			{Kind: "element", Name: "b", Prompt: "second", Size: "16x16"},
+			{Kind: "atlas", Name: "sheet", Prompt: "sheet anim", Size: "16x16", Frames: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	raw, err := m.opts.Store.ReadSetFile(id, "cohere.palette.json")
+	if err != nil {
+		t.Fatalf("palette file: %v", err)
+	}
+	var pal struct {
+		Colors []string `json:"colors"`
+	}
+	if err := json.Unmarshal(raw, &pal); err != nil {
+		t.Fatal(err)
+	}
+	if len(pal.Colors) == 0 {
+		t.Fatal("palette file has no colors")
+	}
+	for _, hx := range pal.Colors {
+		if !strings.HasPrefix(hx, "#") || len(hx) != 7 {
+			t.Fatalf("bad palette hex %q", hx)
+		}
+	}
+
+	// Every opaque pixel of every PNG output lands inside the palette,
+	// including the atlas sheet.
+	allowed := map[string]bool{}
+	for _, hx := range pal.Colors {
+		allowed[strings.ToLower(hx)] = true
+	}
+	for _, name := range []string{"a.png", "b.png", "sheet-sheet.png"} {
+		data, err := m.opts.Store.ReadSetFile(id, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := img.Bounds()
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				n := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+				if n.A < 128 {
+					continue
+				}
+				hx := fmt.Sprintf("#%02x%02x%02x", n.R, n.G, n.B)
+				if !allowed[hx] {
+					t.Fatalf("%s pixel (%d,%d) = %s is outside the set palette", name, x, y, hx)
+				}
+			}
+		}
 	}
 }
 
@@ -435,6 +543,241 @@ func TestSubmitAssetSetAtlas(t *testing.T) {
 	}
 }
 
+func TestSubmitAssetSetFrameKind(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(11)
+
+	// Validation: margins required, in 1..size/2-1.
+	bad := AssetSetRequest{Name: "p", Seed: &seed, Assets: []AssetSpecIn{{Kind: "frame", Name: "p", Prompt: "stone", Size: "32x32"}}}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want frame_margins required error")
+	}
+	bad.Assets[0].FrameMargins = 16 // 2*16 >= 32
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want margins bound error")
+	}
+
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "frames", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "frame", Name: "panel", Prompt: "stone panel", Size: "32x32", FrameMargins: 8}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	data, err := m.opts.Store.ReadSetFile(id, "panel.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// png.Decode's static type is image.Image; NRGBAAt lives on the concrete
+	// type. The punched frame encodes with transparent interior pixels (color
+	// type 6), so decode must yield NRGBA.
+	nr, ok := img.(*image.NRGBA)
+	if !ok {
+		t.Fatalf("punched frame decoded as %T", img)
+	}
+	if nr.NRGBAAt(16, 16).A != 0 {
+		t.Fatal("interior not punched")
+	}
+	if nr.NRGBAAt(0, 0).A != 255 {
+		t.Fatal("border lost")
+	}
+	mraw, err := m.opts.Store.ReadSetFile(id, "panel.frame.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		Margins struct {
+			Top    int
+			Right  int
+			Bottom int
+			Left   int
+		} `json:"margins"`
+	}
+	if err := json.Unmarshal(mraw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Margins.Top != 8 || meta.Margins.Bottom != 8 {
+		t.Fatalf("margins = %+v", meta.Margins)
+	}
+}
+
+func TestSubmitAssetSetBarKind(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(12)
+
+	// Validation: bar_fill required, states in 1..100, <=16, ascending.
+	bad := AssetSetRequest{Name: "b", Seed: &seed, Assets: []AssetSpecIn{{Kind: "bar", Name: "hb", Prompt: "track art", Size: "32x32", FrameMargins: 8}}}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want bar_fill required error")
+	}
+	bad.Assets[0].BarFill = "red liquid"
+	bad.Assets[0].FillStates = []int{60, 30}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want ascending error")
+	}
+	bad.Assets[0].FillStates = []int{0, 30}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want 1..100 error")
+	}
+
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "bars", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "bar", Name: "health", Prompt: "wooden health bar", Size: "32x32", FrameMargins: 8, BarFill: "red liquid", FillStates: []int{30, 60}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	// Track + fill + exact state clips.
+	for _, name := range []string{"health-track.png", "health-fill.png", "health-fill-030.png", "health-fill-060.png", "health.bar.json"} {
+		if _, err := m.opts.Store.ReadSetFile(id, name); err != nil {
+			t.Fatalf("set file %s: %v", name, err)
+		}
+	}
+	clip, err := m.opts.Store.ReadSetFile(id, "health-fill-030.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cimg, err := png.Decode(bytes.NewReader(clip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fill render is 32 wide; 30% floors to 9.
+	if cimg.Bounds().Dx() != 9 || cimg.Bounds().Dy() != 32 {
+		t.Fatalf("30%% clip = %dx%d, want 9x32", cimg.Bounds().Dx(), cimg.Bounds().Dy())
+	}
+
+	// Three children: track (1, opaque by default) + fill (1).
+	cap.mu.Lock()
+	n := len(cap.Prompts)
+	cap.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("children = %d, want 2", n)
+	}
+}
+
+func TestSubmitAssetSetNPCVariants(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(41)
+
+	bad := AssetSetRequest{Name: "n", Seed: &seed, Assets: []AssetSpecIn{{Kind: "npc", Name: "vg", Prompt: "villager", Size: "32x32"}}}
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want npc shape required error")
+	}
+	bad.Assets[0].Shape = "variants"
+	if _, err := m.SubmitAssetSet(bad); err == nil {
+		t.Fatal("want variants 2..64 error")
+	}
+
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "npc", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "npc", Name: "villager", Prompt: "villager sprite", Size: "32x32",
+			Shape: "variants", Variants: []string{"idle", "wave", "angry"}, Columns: 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	// Pinned seed: every child at the set seed, suffix appended.
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	wantP := []string{"villager sprite, idle", "villager sprite, wave", "villager sprite, angry"}
+	for i, wp := range wantP {
+		if cap.Prompts[i] != wp {
+			t.Fatalf("prompt %d = %q, want %q", i, cap.Prompts[i], wp)
+		}
+		if cap.Seeds[i] != 41 {
+			t.Fatalf("seed %d = %d, want pinned 41", i, cap.Seeds[i])
+		}
+	}
+	sheet, err := m.opts.Store.ReadSetFile(id, "villager-sheet.png")
+	if err != nil {
+		t.Fatalf("variant sheet: %v", err)
+	}
+	simg, err := png.Decode(bytes.NewReader(sheet))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// R-16: the npc variants spec must carry Columns (2) into the composed
+	// atlas. 3 variants @ 32px with 2 columns pack 2 rows → 64x64; the
+	// single-form pack (Columns dropped → 1 row) is 96x32.
+	if simg.Bounds().Dx() != 64 || simg.Bounds().Dy() != 64 {
+		t.Fatalf("variant sheet = %dx%d, want 64x64 (columns 2 packs 2 rows of 32px cells)",
+			simg.Bounds().Dx(), simg.Bounds().Dy())
+	}
+
+	// Ruling R-6: the manifest asset entry must record the variants list
+	// itself, not merely show a successful sheet composition.
+	mraw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(mraw, &man); err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Assets) != 1 || man.Assets[0].Error != "" {
+		t.Fatalf("manifest assets: %+v", man.Assets)
+	}
+	got := man.Assets[0].Variants
+	if len(got) != 3 || got[0] != "idle" || got[1] != "wave" || got[2] != "angry" {
+		t.Fatalf("manifest variants = %q, want [idle wave angry]", got)
+	}
+}
+
+func TestSubmitAssetSetNPCWalk4(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(41)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "npcw", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "npc", Name: "guard", Prompt: "town guard", Size: "32x32", Shape: "walk4"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+
+	cap.mu.Lock()
+	wantP := []string{
+		"town guard, full front view, facing the viewer",
+		"town guard, rear view, facing away from the viewer",
+		"town guard, side profile view, facing right",
+	}
+	for i, wp := range wantP {
+		if cap.Prompts[i] != wp {
+			t.Fatalf("prompt %d = %q, want %q", i, cap.Prompts[i], wp)
+		}
+		if cap.Seeds[i] != 41 {
+			t.Fatalf("seed %d = %d, want pinned 41", i, cap.Seeds[i])
+		}
+	}
+	cap.mu.Unlock()
+	for _, name := range []string{"guard-walk.png", "guard-atlas.json", "guard-down.png", "guard-left.png", "guard-right.png", "guard-up.png"} {
+		if _, err := m.opts.Store.ReadSetFile(id, name); err != nil {
+			t.Fatalf("set file %s: %v", name, err)
+		}
+	}
+}
+
 func TestSubmitAssetSetValidation(t *testing.T) {
 	cap := &genCapture{}
 	m := New(composeTestOpts(t, t.TempDir(), cap))
@@ -531,7 +874,7 @@ func TestSubmitAssetSetDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, m, id, "done")
-	for _, name := range []string{"icon.png", "manifest.json"} {
+	for _, name := range []string{"icon.png", "icon.manifest.json"} {
 		if _, err := os.ReadFile(filepath.Join(dest, name)); err != nil {
 			t.Fatalf("delivered %s: %v", name, err)
 		}
@@ -539,9 +882,10 @@ func TestSubmitAssetSetDelivery(t *testing.T) {
 	mraw, _ := m.opts.Store.ReadSetFile(id, "manifest.json")
 	var man setManifest
 	_ = json.Unmarshal(mraw, &man)
-	// DeliverSet delivers every set file (icon.png + manifest.json, sorted)
-	// and has created the not-yet-existing dest directory.
-	if len(man.Delivered) != 2 || man.Delivered[0] != filepath.Join(dest, "icon.png") || man.Delivered[1] != filepath.Join(dest, "manifest.json") {
+	// DeliverSet delivers every set file (icon.png + the manifest renamed to
+	// icon.manifest.json, sorted) and has created the not-yet-existing dest
+	// directory.
+	if len(man.Delivered) != 2 || man.Delivered[0] != filepath.Join(dest, "icon.png") || man.Delivered[1] != filepath.Join(dest, "icon.manifest.json") {
 		t.Fatalf("delivered record: %+v", man.Delivered)
 	}
 }
@@ -572,8 +916,8 @@ func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 	// Spec: unset dest inherits the export fallback chain (EXPORT_DIR →
 	// ~/Downloads/img-gen). The executor delivers on every success, so with
 	// Options.ExportDir pinned to a scratch dir the set lands there — under a
-	// set-id subdirectory, because two fallback sets share the root and every
-	// set ships a fixed-name manifest.json.
+	// set-id subdirectory, because two fallback sets share the root and
+	// identically named deliverables collide.
 	cap := &genCapture{}
 	dest := filepath.Join(t.TempDir(), "exports")
 	opts := composeTestOpts(t, t.TempDir(), cap)
@@ -588,7 +932,7 @@ func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, m, id, "done")
-	for _, name := range []string{"export.png", "manifest.json"} {
+	for _, name := range []string{"export.png", "export.manifest.json"} {
 		if _, err := os.ReadFile(filepath.Join(dest, id, name)); err != nil {
 			t.Fatalf("delivered %s: %v", name, err)
 		}
@@ -600,7 +944,7 @@ func TestSubmitAssetSetUnsetDestDelivers(t *testing.T) {
 	if man.Dest != filepath.Join(dest, id) {
 		t.Fatalf("manifest dest = %q, want %q", man.Dest, filepath.Join(dest, id))
 	}
-	if len(man.Delivered) != 2 || man.Delivered[1] != filepath.Join(dest, id, "manifest.json") {
+	if len(man.Delivered) != 2 || man.Delivered[1] != filepath.Join(dest, id, "export.manifest.json") {
 		t.Fatalf("delivered record: %+v", man.Delivered)
 	}
 }
@@ -638,7 +982,7 @@ func TestSubmitSetFallbackDestNoCollision(t *testing.T) {
 	for _, s := range []struct {
 		id    string
 		names []string
-	}{{first, []string{"one.png", "manifest.json"}}, {second, []string{"two.png", "manifest.json"}}} {
+	}{{first, []string{"one.png", "one.manifest.json"}}, {second, []string{"two.png", "two.manifest.json"}}} {
 		for _, name := range s.names {
 			if _, err := os.ReadFile(filepath.Join(root, s.id, name)); err != nil {
 				t.Fatalf("set %s delivered %s: %v", s.id, name, err)
@@ -673,6 +1017,16 @@ var bigChildren = func() []AssetSpecIn {
 	var out []AssetSpecIn
 	for i := 0; i < 8; i++ {
 		out = append(out, AssetSpecIn{Kind: "atlas", Name: fmt.Sprintf("at%d", i), Prompt: "p", Size: "64x64", Frames: 9})
+	}
+	return out
+}()
+
+var nineStatics = func() []StaticLayer {
+	// StaticLayer forms are not validated until resolution, so B64 "AA"
+	// (undecodable) is fine — the statics-count check fires first.
+	var out []StaticLayer
+	for i := 0; i < 9; i++ {
+		out = append(out, StaticLayer{From: FrameRef{B64: "AA"}})
 	}
 	return out
 }()
@@ -910,6 +1264,10 @@ func TestSubmitGIFValidation(t *testing.T) {
 		{"format", GifRequest{Name: "k", Formats: []string{"apng"}, Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "formats"},
 		{"dest", GifRequest{Name: "k", Dest: "rel", Source: GifSource{Type: "from_spec", Request: base, Count: 2}}, "absolute"},
 		{"multi source", GifRequest{Name: "k", Source: GifSource{Type: "from_frames", Frames: []FrameRef{{Job: "a", B64: "AA"}, {Job: "b"}}}}, "exactly one"},
+		// composite source validation: pointer, anim bounds, statics cap.
+		{"composite missing", GifRequest{Name: "k", Source: GifSource{Type: "composite"}}, "source.composite"},
+		{"composite anim low", GifRequest{Name: "k", Source: GifSource{Type: "composite", Composite: &CompositeSource{Anim: []FrameRef{{B64: "AA"}}}}}, "2..64"},
+		{"statics high", GifRequest{Name: "k", Source: GifSource{Type: "composite", Composite: &CompositeSource{Anim: []FrameRef{{B64: "AA"}, {B64: "AA"}}, Statics: nineStatics}}}, "static layers"},
 	}
 	for _, tc := range cases {
 		_, err := m.SubmitGIF(tc.req)
@@ -969,5 +1327,139 @@ func TestSubmitGIFFromSpecGhostParent(t *testing.T) {
 		if j.Mode == "compose" {
 			t.Fatalf("ghost compose parent in history: %+v", j)
 		}
+	}
+}
+
+// b64PNG renders a solid-color WxH PNG as inline base64, the {b64} frame-ref
+// form for composite sources.
+func b64PNG(t *testing.T, w, h int, c color.NRGBA) string {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: c}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func TestGifCompositeSource(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	red := b64PNG(t, 32, 32, color.NRGBA{R: 255, A: 255})
+	blue := b64PNG(t, 8, 8, color.NRGBA{B: 255, A: 255})
+	teal := b64PNG(t, 4, 4, color.NRGBA{B: 255, G: 255, A: 255})
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "title",
+		Source: GifSource{Type: "composite", Composite: &CompositeSource{
+			Anim: []FrameRef{{B64: red}, {B64: red}},
+			Statics: []StaticLayer{
+				{From: FrameRef{B64: blue}, Pos: [2]int{24, 24}},
+				{From: FrameRef{B64: teal}, Pos: [2]int{0, 0}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	j, ok := m.Get(id)
+	if !ok {
+		t.Fatal("job not registered")
+	}
+	if j.ImagePath == "" {
+		t.Fatal("gif not composed")
+	}
+	// Set artifacts: two anim frames, both static layers (list order = file
+	// order), the animation.
+	for _, name := range []string{"source-frame-0000.png", "source-frame-0001.png", "static-layer-00.png", "static-layer-01.png", "title.gif"} {
+		if _, err := m.opts.Store.ReadSetFile(id, name); err != nil {
+			t.Fatalf("set file %s: %v", name, err)
+		}
+	}
+	// The composed frame carries the overlay: the saved source frames are
+	// pre-composite anim frames; the GIF is the proof. Verify the static
+	// layer round-trips as a readable PNG of the right size.
+	data, err := m.opts.Store.ReadSetFile(id, "static-layer-00.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	// Ruling R-8: decode the produced GIF — the frame count matches the anim
+	// list and the canvas is the animation's frame dims (statics blit inside,
+	// never resize).
+	raw, err := m.opts.Store.ReadSetFile(id, "title.gif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gif.DecodeAll(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("title.gif not a GIF: %v", err)
+	}
+	if len(g.Image) != 2 {
+		t.Fatalf("gif frames = %d, want 2", len(g.Image))
+	}
+	if g.Config.Width != 32 || g.Config.Height != 32 {
+		t.Fatalf("gif canvas %dx%d, want 32x32", g.Config.Width, g.Config.Height)
+	}
+}
+
+func TestGifCompositeOverhangFailsCompose(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	red := b64PNG(t, 32, 32, color.NRGBA{R: 255, A: 255})
+	blue := b64PNG(t, 8, 8, color.NRGBA{B: 255, A: 255})
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "badlayer",
+		Source: GifSource{Type: "composite", Composite: &CompositeSource{
+			Anim:    []FrameRef{{B64: red}, {B64: red}},
+			Statics: []StaticLayer{{From: FrameRef{B64: blue}, Pos: [2]int{28, 28}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "failed")
+	j, ok := m.Get(id)
+	if !ok {
+		t.Fatal("job not registered")
+	}
+	if !strings.Contains(j.Error, "static-layer") {
+		t.Fatalf("overhang error must name the file: %q", j.Error)
+	}
+}
+
+func TestResolveFrameRefSetFile(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(1)
+	sid, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "src", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "dot", Prompt: "dot", Size: "16x16"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, sid, "done")
+
+	data, err := m.resolveFrameRef(FrameRef{Set: sid, File: "dot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.resolveFrameRef(FrameRef{Set: sid}); err == nil {
+		t.Fatal("want error for set without file")
+	}
+	if _, err := m.resolveFrameRef(FrameRef{Set: sid, File: "nope.png"}); err == nil {
+		t.Fatal("want error for missing file")
+	}
+	if _, err := m.resolveFrameRef(FrameRef{Set: sid, File: "dot.png", Path: "x"}); err == nil {
+		t.Fatal("want error for mixed source kinds")
 	}
 }

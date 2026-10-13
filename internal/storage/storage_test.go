@@ -366,17 +366,88 @@ func TestDeliverSetCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := t.TempDir()
-	got, err := s.DeliverSet(set, dest)
+	got, err := s.DeliverSet(set, "panel", dest)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("deliver: %v %v", got, err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dest, "panel.png")); string(b) != "A" {
 		t.Fatal("delivered content mismatch")
 	}
-	if _, err := s.DeliverSet(set, dest); err == nil {
+	if _, err := s.DeliverSet(set, "panel", dest); err == nil {
 		t.Fatal("want collision error on second deliver")
 	} else if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("collision error text: %v", err)
+	}
+}
+
+func TestDeliverSetNamespacesManifest(t *testing.T) {
+	s := newTestStore(t)
+	set := "0123456789abcdef"
+	if err := s.SaveSetFile(set, "manifest.json", []byte("m")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSetFile(set, "panel.png", []byte("A")); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	got, err := s.DeliverSet(set, "ui-kit", dest)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("deliver: %v %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatal("bare manifest.json must not be delivered")
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "ui-kit.manifest.json")); err != nil || string(b) != "m" {
+		t.Fatalf("namespaced manifest: %v, %q", err, b)
+	}
+	// The set-dir copy keeps its canonical name.
+	if b, err := s.ReadSetFile(set, "manifest.json"); err != nil || string(b) != "m" {
+		t.Fatalf("set-dir manifest: %v, %q", err, b)
+	}
+}
+
+func TestDeliverSetTwoSetsOneDest(t *testing.T) {
+	s := newTestStore(t)
+	names := map[string]string{
+		"0123456789abcdef": "ui-kit",
+		"1234567890abcdef": "gif-load",
+	}
+	for id := range names {
+		if err := s.SaveSetFile(id, "manifest.json", []byte("m:"+names[id])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dest := t.TempDir()
+	for id, name := range names {
+		got, err := s.DeliverSet(id, name, dest)
+		if err != nil || len(got) != 1 {
+			t.Fatalf("deliver %s: %v %v", name, got, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dest, "manifest.json")); !os.IsNotExist(err) {
+		t.Fatal("bare manifest.json must not be delivered")
+	}
+	for _, name := range names {
+		if b, err := os.ReadFile(filepath.Join(dest, name+".manifest.json")); err != nil || string(b) != "m:"+name {
+			t.Fatalf("manifest %s: %q %v", name, b, err)
+		}
+	}
+}
+
+func TestDeliverSetRejectsBadName(t *testing.T) {
+	s := newTestStore(t)
+	set := "0123456789abcdef"
+	if err := s.SaveSetFile(set, "manifest.json", []byte("m")); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	for _, bad := range []string{"", "../evil", "a/b", ".."} {
+		if _, err := s.DeliverSet(set, bad, dest); err == nil {
+			t.Fatalf("want rejection for name %q", bad)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dest, "..", "evil.manifest.json")); err == nil {
+		t.Fatal("traversal name escaped dest")
 	}
 }
 

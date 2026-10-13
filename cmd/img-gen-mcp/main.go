@@ -101,13 +101,13 @@ var tools = []tool{
 	},
 	{
 		name:        "request_asset_set",
-		description: "Submit an asset set (element | 20-class wang kit | atlas) and block until composed. Returns the parent job JSON plus an inline preview of the primary file. Files deliver to dest, else EXPORT_DIR, else ~/Downloads/img-gen.",
-		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen AssetSetRequest: name, seed (required), dest, assets[{kind, name, prompt, size (WxH, multiples of 16), negative, frames (atlas: 2-64), columns, transparent}]"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
+		description: "Submit an asset set (element | 20-class wang kit | atlas | frame | bar | npc) and block until composed. Returns the parent job JSON plus an inline preview of the primary file. Files deliver to dest, else EXPORT_DIR, else ~/Downloads/img-gen.",
+		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen AssetSetRequest: name, seed (required), dest, assets[{kind, name, prompt, size (WxH, multiples of 16), negative, frames (atlas: 2-64), columns, transparent, frame_margins (frame|bar: 1..size/2-1), bar_fill (bar), fill_states (bar: 1..100, <=16, ascending, default 25/50/75/100), shape (npc: variants|walk4), variants (npc: 2-64 prompt suffixes)}] + palette_lock (build one shared coherent palette over the set's images, ships <name>.palette.json)"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
 	},
 	{
 		name:        "make_gif",
-		description: "Build an animated GIF: from_frames (given sources), from_spec (generates the frames), or keyframes (interpolation needs the phase-3 RIFE sidecar and is rejected). Returns the parent job JSON plus an inline preview of the GIF.",
-		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen GifRequest: name, dest, delay_ms (10-5000, default 100), loop (>=0), formats [gif,webp], source{type: from_frames|from_spec|keyframes, frames[{job|path|b64}], request, count}"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
+		description: "Build an animated GIF: from_frames (given sources), from_spec (generates the frames), composite (statics composited over a 2-64-frame animation), or keyframes (interpolation needs the phase-3 RIFE sidecar and is rejected). Returns the parent job JSON plus an inline preview of the GIF.",
+		schema:      `{"type":"object","required":["request"],"properties":{"request":{"type":"object","description":"img-gen GifRequest: name, dest, delay_ms (10-5000, default 100), loop (>=0), formats [gif,webp], source{type: from_frames|from_spec|composite|keyframes, frames[{job|path|b64|set+file}], request, count, composite{anim[2-64 refs], statics[{from, pos[x,y]}] up to 8}}"},"wait_seconds":{"type":"integer","minimum":1,"maximum":43200,"default":900}}}`,
 	},
 	{
 		name:        "read_export",

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BIKINI CLUB — a mock site built entirely from generated assets</title>
+<link rel="icon" href="assets/hud/logo.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="crt" aria-hidden="true"></div>
+
+<nav>
+  <div class="brand"><img src="assets/hud/logo.png" alt="club crest" class="brandmark"><span class="b1">BIKINI</span>&nbsp;<span class="b2">CLUB</span></div>
+  <div class="links">
+    <a href="#term">Terminal</a>
+    <a href="#shelf">Gadgets</a>
+    <a href="#crew">Crew</a>
+    <a href="#grid">Grid</a>
+    <a href="#honors">Honors</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="ansi-title">
+    <span class="corner">╔═</span><span class="rule">═══════════════════</span><span class="corner">═╗</span>
+  </div>
+  <h1>BIKINI&nbsp;<span class="neon-m">C</span><span class="neon-c">L</span>U<em>B</em></h1>
+  <div class="ansi-title">
+    <span class="corner">╚═</span><span class="rule">═══════════════════</span><span class="corner">═╝</span>
+  </div>
+  <p class="tagline">the wire never sleeps — and neither do the signal smiths.<br>
+  every bezel, sprite, meter, ledger and rain on this page was rendered by img-gen.</p>
+  <div class="cta">
+    <img class="btn" src="assets/hud/btn-hot.png" alt="join the wire">
+    <img class="btn" src="assets/hud/btn-cool.png" alt="read the manifesto">
+  </div>
+  <img class="glitchline" src="assets/widgets/glitch.png" alt="">
+</header>
+
+<main>
+<section id="term">
+  <div class="sec-label">01 · SIGNAL WALL</div>
+  <h2>A terminal that rendered its own chrome</h2>
+  <p class="lead">the window is a <code>nine-slice</code> frame — CSS <code>border-image</code> stretches one 256×192
+  render into any terminal, any panel, any tooltip. the code inside is typed live.</p>
+  <div class="term-grid">
+    <div class="term-window nslice nslice-terminal" id="term-window">
+      <div class="term-text" id="term-text"></div>
+    </div>
+    <div class="meters">
+      <div class="nslice nslice-alert" id="alert-box">
+        <h3 class="amber">SECURITY ADVISORY</h3>
+        <p>all pixels on this site were produced on open equipment.
+        zero stock imagery. the smiths of signal run <b>palette-locked</b> —
+        255 hues per club, remapped in post with CIEDE2000, won in post not in prompts.</p>
+      </div>
+      <div class="meter" id="signal-meter">
+        <div class="bar-stack" id="signal-stack">
+          <img class="fill" src="assets/widgets/signal-fill-020.png" alt="">
+        </div>
+        <div class="mood-picker" id="signal-controls">
+          <button data-state="20" class="active">20</button>
+          <button data-state="40">40</button>
+          <button data-state="60">60</button>
+          <button data-state="80">80</button>
+          <button data-state="100">100</button>
+        </div>
+      </div>
+      <div class="meter" id="load-meter">
+        <div class="bar-stack" id="load-stack">
+          <img class="fill" src="assets/widgets/load-fill-080.png" alt="">
+        </div>
+        <div class="mood-picker" id="load-controls">
+          <button data-state="20">20</button>
+          <button data-state="40">40</button>
+          <button data-state="60">60</button>
+          <button data-state="80" class="active">80</button>
+          <button data-state="100">100</button>
+        </div>
+      </div>
+      <div id="tipper" class="tipper">hold the cursor on this line — a 192×48 nine-slice tooltip appears, its punched middle grows to any text</div>
+    </div>
+  </div>
+</section>
+
+<img class="glitchline section" src="assets/widgets/glitch.png" alt="">
+
+<section id="shelf">
+  <div class="sec-label">02 · GADGET SHELF</div>
+  <h2>Loose hardware from the club bin</h2>
+  <p class="lead">component icons and indicator lenses are <code>atlas</code> crops —
+  one render, four chips; three LEDs cycling on a timer, straight from the generated sheet.</p>
+  <div class="shelf">
+    <figure id="chips-strip" class="shelf-row" data-atlas="assets/widgets/chips-atlas.json">
+    </figure>
+    <div class="shelf-live">
+      <span class="shelf-cap">club status lights — live crops cycling</span>
+      <div id="led-live"><img id="led-img" src="assets/widgets/leds-sheet.png" alt="status LED"></div>
+      <img class="glitchline" src="assets/widgets/glitch.png" alt="">
+      <div class="hexwall" style="background-image:url('assets/widgets/hexfield.png')">
+        0x2f 0x4b 0x21 0xee 0x55 0x9a — the club handshake is a sprite;
+      </div>
+    </div>
+  </div>
+</section>
+
+<img class="glitchline section" src="assets/widgets/glitch.png" alt="">
+
+<section id="crew">
+  <div class="sec-label">03 · THE CREW</div>
+  <h2>Four faces, one seed — the variants trick</h2>
+  <p class="lead">every mood of the ghost admin renders at the <em>same pinned seed</em> so only the
+  expression moves. the runner is a four-way <code>walk4</code> sheet, its left column mirrored in post. the spectre barely.</p>
+  <div class="crew-grid">
+    <div class="crew-card" data-npc="ghost">
+      <div class="cell"><img src="assets/crew/ghost-sheet.png" alt="the ghost" data-atlas="assets/crew/ghost-atlas.json" data-frame="0"></div>
+      <h3 class="neon-m">Ghost Admin</h3>
+      <p class="kind">npc · variants ×4 · 64×64</p>
+      <div class="mood-picker" id="ghost-picker">
+        <button data-frame="0" class="active">calm</button>
+        <button data-frame="1">laugh</button>
+        <button data-frame="2">focus</button>
+        <button data-frame="3">panic</button>
+      </div>
+    </div>
+    <div class="crew-card" data-npc="runner">
+      <div class="cell"><img src="assets/crew/runner-walk.png" alt="the runner" data-atlas="assets/crew/runner-atlas.json" data-row="0" style="display:none"></div>
+      <h3 class="neon-c">Runner</h3>
+      <p class="kind">npc · walk4 · 64×64 · left mirrored</p>
+      <div class="walk-strip" id="runner-walk"></div>
+      <div class="mood-picker directions" id="runner-picker">
+        <button data-dir="0">down</button><button data-dir="1">left</button>
+        <button data-dir="2">right</button><button data-dir="3">up</button>
+      </div>
+    </div>
+    <div class="crew-card" data-npc="spectre">
+      <div class="cell"><img src="assets/crew/spectre-sheet.png" alt="the spectre" data-atlas="assets/crew/spectre-atlas.json" data-frame="0"></div>
+      <h3 class="amber">Signal Spectre</h3>
+      <p class="kind">npc · variants ×2 · 48×48</p>
+      <div class="mood-picker" id="spectre-picker">
+        <button data-frame="0" class="active">smug</button>
+        <button data-frame="1">corrupt</button>
+      </div>
+    </div>
+  </div>
+  <figure class="portrait-card">
+    <img id="phreaker" src="assets/crew/phreaker.png" alt="phreaker portrait">
+    <figcaption>club archivist · phreaker, 128×128, framed by one render each way</figcaption>
+  </figure>
+</section>
+
+<img class="glitchline section" src="assets/widgets/glitch.png" alt="">
+
+<section id="grid">
+  <div class="sec-label">04 · NODE GRID</div>
+  <h2>A city of copper that assembled itself</h2>
+  <p class="lead">one 20-class <code>wang</code> kit of copper traces, painted onto a canvas tile by tile from a
+  layout map — plus the datasheet the club prints its routes on.</p>
+  <div class="world-grid">
+    <div id="tilemap-frame" class="nslice nslice-terminal">
+      <canvas id="tilemap-canvas" width="512" height="384"></canvas>
+    </div>
+    <div class="nslice nslice-alert quest" style="background-image:url('assets/board/datasheet.png')">
+      <h3 class="amber">ROUTE: relay the handshake</h3>
+      <p>the beacon node stands cold. trace the copper ring on the grid and
+      deliver the club crest to the relay — <b>seed it well, smith</b>.</p>
+    </div>
+  </div>
+</section>
+
+<img class="glitchline section" src="assets/widgets/glitch.png" alt="">
+
+<section id="honors">
+  <div class="sec-label">05 · HONORS</div>
+  <h2>Badges of the Bikini Club</h2>
+  <p class="lead">cast in the same palette, cropped from the same <code>atlas</code> render.</p>
+  <div class="honors-strip" id="honors-strip" data-atlas="assets/widgets/chips-atlas.json"></div>
+</section>
+</main>
+
+<footer>
+  4 asset sets · palette-locked · 2 from_spec loop gifs · 1 zero-render composite hero<br>
+  built by agents, via <b>img-gen</b> /api/v1 · 100% machine-made pixels · no external images
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

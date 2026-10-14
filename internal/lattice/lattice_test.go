@@ -873,3 +873,75 @@ func TestGenerateConditioningGate(t *testing.T) {
 		t.Fatal("expected gate error for ip_adapter without sdxl routing")
 	}
 }
+
+func TestGenerateLatticeExtension(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString([]byte("fake-png")) + `","seed":1}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	c.ImagesViaLattice = true
+	ctrl := &storage.ControlParams{Net: "pose", Image: "UG9zZQ==", Strength: 0.7}
+	ipa := &storage.IPAdapterParams{Image: "SWQ=", Strength: 0.6}
+	if _, _, err := c.Generate(context.Background(), "p", "512x512", ctrl, ipa, storage.ModelSpec{Sidecar: "sdxl"}, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	ext, ok := got["extension"].(map[string]any)
+	if !ok {
+		t.Fatalf("extension missing from body: %v", got)
+	}
+	cn := ext["control"].(map[string]any)
+	if cn["net"] != "pose" || cn["image"] != "UG9zZQ==" || cn["strength"] != 0.7 {
+		t.Fatalf("extension.control = %v", cn)
+	}
+	ia := ext["ip_adapter"].(map[string]any)
+	if ia["image"] != "SWQ=" || ia["strength"] != 0.6 {
+		t.Fatalf("extension.ip_adapter = %v", ia)
+	}
+	for _, key := range []string{"control_net", "ip_adapter"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("%s must ride extension on the lattice path, not top level", key)
+		}
+	}
+}
+
+func TestGenerateLatticeRejestsExtension(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"unknown field \"extension\""}}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	c.ImagesViaLattice = true
+	ctrl := &storage.ControlParams{Net: "pose", Image: "UG9zZQ==", Strength: 0.7}
+	_, _, err := c.Generate(context.Background(), "p", "512x512", ctrl, nil, storage.ModelSpec{Sidecar: "sdxl"}, storage.SamplingParams{})
+	if err == nil {
+		t.Fatal("expected rejection error")
+	}
+	if !strings.Contains(err.Error(), "upgrade the lattice gateway") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestGenerateLatticeBadRequestUnrelated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"unknown field \"loras\""}}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	c.ImagesViaLattice = true
+	_, _, err := c.Generate(context.Background(), "p", "512x512", nil, nil, storage.ModelSpec{Sidecar: "sdxl"}, storage.SamplingParams{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "upgrade the lattice gateway") {
+		t.Fatalf("unrelated 400 must keep the plain error, got: %v", err)
+	}
+}

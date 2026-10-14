@@ -115,8 +115,7 @@ func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, streng
 // and the Lattice extensions (loras + sampling knobs, plus edit's image/strength)
 // pass through so settings survive the proxy to the gateway. data[0] returns the
 // PNG and the seed the engine's run actually used. ctrl/ipa carry the B1
-// conditioning references; a later task serializes them onto the request's
-// "extension" object — until then they are accepted but not sent.
+// conditioning references; they serialize onto the request's "extension" object when present.
 func (c *Client) latticeImage(ctx context.Context, path, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams) ([]byte, *int64, error) {
 	if c.BaseURL == "" {
 		return nil, nil, errors.New("lattice image routing is on but no lattice base URL is configured (set IMAGE_ROUTING=direct to use sidecars directly)")
@@ -136,6 +135,28 @@ func (c *Client) latticeImage(ctx context.Context, path, prompt, size, imageB64 
 	if len(spec.Loras) > 0 {
 		body["loras"] = spec.Loras
 	}
+	if ctrl != nil || ipa != nil {
+		// B3: the engine-optional fields ride one extension object so the
+		// gateway gains a single relay contract. A gateway that predates the
+		// field rejects the whole request with 400 — detect that and name the
+		// upgrade instead of letting the fields drop silently.
+		ext := map[string]any{}
+		if ctrl != nil {
+			cn := map[string]any{"net": ctrl.Net, "image": ctrl.Image}
+			if ctrl.Strength != 0 {
+				cn["strength"] = ctrl.Strength
+			}
+			ext["control"] = cn
+		}
+		if ipa != nil {
+			ia := map[string]any{"image": ipa.Image}
+			if ipa.Strength != 0 {
+				ia["strength"] = ipa.Strength
+			}
+			ext["ip_adapter"] = ia
+		}
+		body["extension"] = ext
+	}
 	applyGenParams(body, sp)
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -153,6 +174,9 @@ func (c *Client) latticeImage(ctx context.Context, path, prompt, size, imageB64 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(string(msg)), "extension") {
+			return nil, nil, fmt.Errorf("lattice %s: gateway rejected the extension field (%s) — upgrade the lattice gateway to one that relays engine extensions, or set IMAGE_ROUTING=direct", strings.TrimPrefix(path, "/v1/images/"), strings.TrimSpace(string(msg)))
+		}
 		return nil, nil, fmt.Errorf("lattice %s: %s: %s", strings.TrimPrefix(path, "/v1/images/"), resp.Status, msg)
 	}
 	var lr struct {

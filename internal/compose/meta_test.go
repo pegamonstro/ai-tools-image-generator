@@ -783,7 +783,7 @@ func TestEmitMetaRejectsAndIsStable(t *testing.T) {
 }
 
 func TestEmitMetaSheet(t *testing.T) {
-	cells := []sheetCell{
+	cells := []SheetCell{
 		{View: "front", Img: solid(16, 16, color.RGBA{R: 255, A: 255})},
 		{View: "side", Img: solid(16, 16, color.RGBA{G: 255, A: 255})},
 	}

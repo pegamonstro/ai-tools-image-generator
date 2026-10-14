@@ -21,7 +21,7 @@ func solidImage(w, h int, c color.Color) image.Image {
 }
 
 func TestComposeSheet(t *testing.T) {
-	cells := []sheetCell{
+	cells := []SheetCell{
 		{View: "front", Img: solidImage(16, 16, color.RGBA{R: 255, A: 255})},
 		{View: "side", Img: solidImage(16, 16, color.RGBA{G: 255, A: 255})},
 		{View: "back", Img: solidImage(16, 16, color.RGBA{B: 255, A: 255})},
@@ -76,7 +76,7 @@ func TestComposeSheet(t *testing.T) {
 }
 
 func TestComposeSheetOneRowDefault(t *testing.T) {
-	cells := []sheetCell{
+	cells := []SheetCell{
 		{View: "front", Img: solidImage(16, 16, color.RGBA{A: 255})},
 		{View: "side", Img: solidImage(16, 16, color.RGBA{A: 255})},
 		{View: "back", Img: solidImage(16, 16, color.RGBA{A: 255})},
@@ -109,10 +109,10 @@ func TestComposeSheetValidation(t *testing.T) {
 	if _, err := ComposeSheet("hero", nil, 0); err == nil {
 		t.Fatal("empty cells")
 	}
-	if _, err := ComposeSheet("hero", []sheetCell{{View: "", Img: solidImage(1, 1, color.Black)}}, 0); err == nil || !strings.Contains(err.Error(), "view") {
+	if _, err := ComposeSheet("hero", []SheetCell{{View: "", Img: solidImage(1, 1, color.Black)}}, 0); err == nil || !strings.Contains(err.Error(), "view") {
 		t.Fatalf("empty view name: %v", err)
 	}
-	if _, err := ComposeSheet("hero", []sheetCell{{View: "front"}}, 0); err == nil || !strings.Contains(err.Error(), "render") {
+	if _, err := ComposeSheet("hero", []SheetCell{{View: "front"}}, 0); err == nil || !strings.Contains(err.Error(), "render") {
 		t.Fatalf("nil img: %v", err)
 	}
 }

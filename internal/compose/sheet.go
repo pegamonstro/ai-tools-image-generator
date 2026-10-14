@@ -6,8 +6,8 @@ import (
 	"image"
 )
 
-// sheetCell is one named view render on a character sheet.
-type sheetCell struct {
+// SheetCell is one named view render on a character sheet.
+type SheetCell struct {
 	View string
 	Img  image.Image
 }
@@ -16,7 +16,7 @@ type sheetCell struct {
 // sheet metadata JSON naming each cell's view (the atlas.json contract, keyed
 // by view for its different consumers). columns <= 0 lays one row. The PNG is
 // <name>-sheet.png, the metadata <name>-sheet.json.
-func ComposeSheet(name string, cells []sheetCell, columns int) ([]OutputFile, error) {
+func ComposeSheet(name string, cells []SheetCell, columns int) ([]OutputFile, error) {
 	if len(cells) == 0 {
 		return nil, errors.New("compose: no sheet cells")
 	}

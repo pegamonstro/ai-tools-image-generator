@@ -82,6 +82,7 @@ type assetSpec struct {
 	FillStates   []int           `json:"fill_states,omitempty"`
 	Shape        string          `json:"shape,omitempty"`    // npc: "variants" | "walk4"
 	Variants     []string        `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
+	Views        []string        `json:"views,omitempty"`    // sheet: 2..8 view names
 	MetaFormats  []string        `json:"meta_formats,omitempty"`
 	Children     int             `json:"children"` // generation jobs this asset owns, in order
 }
@@ -397,6 +398,7 @@ type AssetSpecIn struct {
 	FillStates   []int           `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
 	Shape        string          `json:"shape,omitempty"`         // npc: "variants" | "walk4"
 	Variants     []string        `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
+	Views        []string        `json:"views,omitempty"`         // sheet: 2..8 view names
 	MetaFormats  []string        `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
 }
 
@@ -546,8 +548,27 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			}
 			built = npcChildren(prompt, a.Negative, a.Size, *req.Seed, a.Shape, a.Variants)
 			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants, Columns: a.Columns, MetaFormats: a.MetaFormats}
+		case "sheet":
+			if len(a.Views) < 2 || len(a.Views) > 8 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: sheet views takes 2..8 view names", an)}
+			}
+			seenV := map[string]bool{}
+			for i, v := range a.Views {
+				if strings.TrimSpace(v) == "" {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: sheet view %d is empty", an, i)}
+				}
+				if seenV[v] {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: duplicate sheet view %q", an, v)}
+				}
+				seenV[v] = true
+			}
+			if a.Columns < 0 || a.Columns > len(a.Views) {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: columns must be 0 (single row) or 1..%d", an, len(a.Views))}
+			}
+			built = sheetChildren(prompt, a.Negative, a.Size, *req.Seed, a.Views)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Views: a.Views, Columns: a.Columns, MetaFormats: a.MetaFormats}
 		default:
-			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc, sheet)", an, a.Kind)}
 		}
 		if a.Transparent == TransparentRembg {
 			switch a.Kind {
@@ -640,6 +661,18 @@ func npcChildren(prompt, negative, size string, seed int64, shape string, varian
 	return kids
 }
 
+// sheetChildren builds one job per character-sheet view, ALL at the pinned
+// set seed — the npc-variants mechanic: same composition scaffold, per-view
+// content.
+func sheetChildren(prompt, negative, size string, seed int64, views []string) []SubmitRequest {
+	kids := make([]SubmitRequest, 0, len(views))
+	for _, v := range views {
+		s := seed
+		kids = append(kids, SubmitRequest{Mode: "asset", Prompt: prompt + ", " + v + " view", NegativePrompt: negative, Size: size, Seed: &s})
+	}
+	return kids
+}
+
 // parseAssetSize parses a size that already passed validAssetSize ("WxH",
 // multiples of 16) into pixel ints, for post-processing bounds checks.
 func parseAssetSize(size string) (w, h int, err error) {
@@ -674,6 +707,7 @@ type manifestAsset struct {
 	Prompt   string   `json:"prompt,omitempty"`
 	Size     string   `json:"size,omitempty"`
 	Variants []string `json:"variants,omitempty"`
+	Views    []string `json:"views,omitempty"`
 	Files    []string `json:"files,omitempty"`
 	Error    string   `json:"error,omitempty"`
 }
@@ -711,7 +745,7 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 	var files []storage.FileRef
 	outsByAsset := make([][]compose.OutputFile, len(spec.Assets))
 	for ai, a := range spec.Assets {
-		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size, Variants: a.Variants}
+		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size, Variants: a.Variants, Views: a.Views}
 		end := cursor + a.Children
 		if cursor+a.Children > len(children) {
 			ma.Error = fmt.Sprintf("expected %d child job(s), found %d", a.Children, len(children)-cursor)
@@ -785,6 +819,23 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 					outs, err = compose.ComposeNPCWalk4(a.Name, imgs[0], imgs[1], imgs[2])
 				} else {
 					outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
+				}
+			case "sheet":
+				if len(imgs) != len(a.Views) {
+					err = fmt.Errorf("sheet %q: expected %d render(s), found %d", a.Name, len(a.Views), len(imgs))
+					break
+				}
+				cells := make([]compose.SheetCell, len(imgs))
+				for i, v := range a.Views {
+					img, derr := png.Decode(bytes.NewReader(imgs[i]))
+					if derr != nil {
+						err = fmt.Errorf("sheet %q view %q is not a PNG: %v", a.Name, v, derr)
+						break
+					}
+					cells[i] = compose.SheetCell{View: v, Img: img}
+				}
+				if err == nil {
+					outs, err = compose.ComposeSheet(a.Name, cells, a.Columns)
 				}
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)

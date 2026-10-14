@@ -2429,3 +2429,135 @@ func TestSubmitAssetSetRembgBarKeepsFill(t *testing.T) {
 		t.Fatalf("rembg calls = %d, want 1 (track only — fill is never rembg-processed)", rembgCalled)
 	}
 }
+
+func TestSubmitAssetSetSheet(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap) // real sizes for the grid packer
+	m := New(o)
+	seed := int64(42)
+	views := []string{"front", "side", "back", "casting"}
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "hero", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "sheet", Name: "hero", Prompt: "knight", Size: "16x16", Columns: 2, Views: views}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	cap.mu.Lock()
+	if len(cap.Prompts) != 4 {
+		t.Fatalf("4 children, got %q", cap.Prompts)
+	}
+	if cap.Seeds[0] != 42 || cap.Seeds[1] != 42 || cap.Seeds[2] != 42 || cap.Seeds[3] != 42 {
+		t.Fatalf("every view shares the pinned seed: %v", cap.Seeds)
+	}
+	for i, want := range views {
+		if !strings.Contains(cap.Prompts[i], ", "+want+" view") {
+			t.Fatalf("prompt %d missing view suffix: %q", i, cap.Prompts[i])
+		}
+	}
+	cap.mu.Unlock()
+	if _, err := m.opts.Store.ReadSetFile(id, "hero-sheet.png"); err != nil {
+		t.Fatalf("sheet png: %v", err)
+	}
+	sj, err := m.opts.Store.ReadSetFile(id, "hero-sheet.json")
+	if err != nil {
+		t.Fatalf("sheet json: %v", err)
+	}
+	for _, v := range views {
+		if !strings.Contains(string(sj), `"`+v+`"`) {
+			t.Fatalf("sheet json missing view %q: %s", v, sj)
+		}
+	}
+	// manifest records the views
+	mj, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mj), `"front"`) || !strings.Contains(string(mj), `"views"`) {
+		t.Fatalf("manifest views: %s", mj)
+	}
+}
+
+func TestSubmitAssetSetSheetValidation(t *testing.T) {
+	seed := int64(1)
+	mk := func(a AssetSpecIn) AssetSetRequest {
+		return AssetSetRequest{Name: "hero", Seed: &seed, Assets: []AssetSpecIn{a}}
+	}
+	base := AssetSpecIn{Kind: "sheet", Name: "hero", Prompt: "knight", Size: "16x16"}
+	m := New(composeTestOpts(t, t.TempDir(), nil))
+	cases := []struct {
+		name string
+		set  func(*AssetSpecIn)
+		want string
+	}{
+		{"one view", func(a *AssetSpecIn) { a.Views = []string{"front"} }, "sheet views takes 2..8"},
+		{"nine views", func(a *AssetSpecIn) { a.Views = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"} }, "sheet views takes 2..8"},
+		{"empty view", func(a *AssetSpecIn) { a.Views = []string{"front", " "} }, "sheet view 1 is empty"},
+		{"dup view", func(a *AssetSpecIn) { a.Views = []string{"front", "front"} }, `duplicate sheet view "front"`},
+		{"columns too many", func(a *AssetSpecIn) { a.Views = []string{"front", "side"}; a.Columns = 3 }, "columns must be 0 (single row) or 1..2"},
+		{"columns negative", func(a *AssetSpecIn) { a.Views = []string{"front", "side"}; a.Columns = -1 }, "columns must be 0 (single row) or 1..2"},
+	}
+	for _, tc := range cases {
+		req := mk(base)
+		tc.set(&req.Assets[0])
+		_, err := m.SubmitAssetSet(req)
+		verr, ok := err.(*ValidationError)
+		if !ok || !strings.Contains(verr.Msg, tc.want) {
+			t.Fatalf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+		if verr.Code != "validation_error" {
+			t.Fatalf("%s: code = %q", tc.name, verr.Code)
+		}
+	}
+}
+
+func TestSubmitAssetSetSheetOneRowDefault(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(9)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "hero", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "sheet", Name: "hero", Prompt: "knight", Size: "16x16", Views: []string{"front", "side", "back"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	data, err := m.opts.Store.ReadSetFile(id, "hero-sheet.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	im, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := im.Bounds(); b.Dx() != 48 || b.Dy() != 16 {
+		t.Fatalf("one-row sheet dims = %dx%d", b.Dx(), b.Dy())
+	}
+}
+
+func TestSubmitAssetSetSheetMetaFormats(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Ops.Generate = sizedGen(t, cap)
+	m := New(o)
+	seed := int64(5)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "hero", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "sheet", Name: "hero", Prompt: "knight", Size: "16x16",
+			Views: []string{"front", "side"}, MetaFormats: []string{"phaser", "unity", "sparrow"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	for _, f := range []string{"hero.phaser.json", "hero.frames.json", "hero.sparrow.xml"} {
+		if _, err := m.opts.Store.ReadSetFile(id, f); err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+	}
+}

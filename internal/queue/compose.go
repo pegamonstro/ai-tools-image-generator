@@ -34,21 +34,56 @@ type composeSpec struct {
 	GIF         *gifPayload `json:"gif,omitempty"`
 }
 
+// TransparentSpec selects how an asset's transparency is produced. "" (the
+// default) renders one opaque image; TransparentDual renders white and black
+// background siblings and unmixes them (the classic double pass);
+// TransparentRembg extracts the subject from the single plain render with the
+// rembg sidecar. JSON true parses as "dual" so pre-B2 clients and persisted
+// specs keep working; unknown JSON strings are stored verbatim and rejected
+// by submit validation with a proper envelope message instead of a decode
+// error.
+type TransparentSpec string
+
+const (
+	TransparentDual  TransparentSpec = "dual"
+	TransparentRembg TransparentSpec = "rembg"
+)
+
+func (t *TransparentSpec) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	switch {
+	case s == "null" || s == `""`:
+		*t = ""
+	case s == "true":
+		*t = TransparentDual
+	case s == "false":
+		*t = ""
+	default:
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			*t = TransparentSpec(s)
+			return nil
+		}
+		*t = TransparentSpec(str)
+	}
+	return nil
+}
+
 type assetSpec struct {
-	Kind         string   `json:"kind"`
-	Name         string   `json:"name"`
-	Prompt       string   `json:"prompt"`
-	Size         string   `json:"size"`
-	Frames       int      `json:"frames,omitempty"`
-	Columns      int      `json:"columns,omitempty"`
-	Transparent  bool     `json:"transparent,omitempty"`
-	FrameMargins int      `json:"frame_margins,omitempty"`
-	BarFill      string   `json:"bar_fill,omitempty"`
-	FillStates   []int    `json:"fill_states,omitempty"`
-	Shape        string   `json:"shape,omitempty"`    // npc: "variants" | "walk4"
-	Variants     []string `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
-	MetaFormats  []string `json:"meta_formats,omitempty"`
-	Children     int      `json:"children"` // generation jobs this asset owns, in order
+	Kind         string          `json:"kind"`
+	Name         string          `json:"name"`
+	Prompt       string          `json:"prompt"`
+	Size         string          `json:"size"`
+	Frames       int             `json:"frames,omitempty"`
+	Columns      int             `json:"columns,omitempty"`
+	Transparent  TransparentSpec `json:"transparent,omitempty"` // "" | "dual" | "rembg"
+	FrameMargins int             `json:"frame_margins,omitempty"`
+	BarFill      string          `json:"bar_fill,omitempty"`
+	FillStates   []int           `json:"fill_states,omitempty"`
+	Shape        string          `json:"shape,omitempty"`    // npc: "variants" | "walk4"
+	Variants     []string        `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
+	MetaFormats  []string        `json:"meta_formats,omitempty"`
+	Children     int             `json:"children"` // generation jobs this asset owns, in order
 }
 
 // compositeLayerSpec is one persisted static layer: its set file (saved at
@@ -349,20 +384,20 @@ type AssetSetRequest struct {
 }
 
 type AssetSpecIn struct {
-	Kind         string   `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
-	Name         string   `json:"name"`
-	Prompt       string   `json:"prompt"`
-	Negative     string   `json:"negative,omitempty"`
-	Size         string   `json:"size"`                    // WxH, multiples of 16
-	Frames       int      `json:"frames,omitempty"`        // atlas: 2..64
-	Columns      int      `json:"columns,omitempty"`       // atlas: 0 = single row
-	Transparent  bool     `json:"transparent,omitempty"`   // element: white+black double pass
-	FrameMargins int      `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
-	BarFill      string   `json:"bar_fill,omitempty"`      // bar: fill art prompt
-	FillStates   []int    `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
-	Shape        string   `json:"shape,omitempty"`         // npc: "variants" | "walk4"
-	Variants     []string `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
-	MetaFormats  []string `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
+	Kind         string          `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
+	Name         string          `json:"name"`
+	Prompt       string          `json:"prompt"`
+	Negative     string          `json:"negative,omitempty"`
+	Size         string          `json:"size"`                    // WxH, multiples of 16
+	Frames       int             `json:"frames,omitempty"`        // atlas: 2..64
+	Columns      int             `json:"columns,omitempty"`       // atlas: 0 = single row
+	Transparent  TransparentSpec `json:"transparent,omitempty"`   // true = dual pass (legacy spell); "dual"; "rembg" = u2netp sidecar
+	FrameMargins int             `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
+	BarFill      string          `json:"bar_fill,omitempty"`      // bar: fill art prompt
+	FillStates   []int           `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
+	Shape        string          `json:"shape,omitempty"`         // npc: "variants" | "walk4"
+	Variants     []string        `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
+	MetaFormats  []string        `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -422,6 +457,13 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				}
 				seenFmt[f] = true
 			}
+		}
+		// B2: transparency production. Unknown values are rejected here so the
+		// message lands in the v1 error envelope, not a 400 decode failure;
+		// the rembg kind gate runs after the kind switch so unknown kinds
+		// report the kind error.
+		if a.Transparent != "" && a.Transparent != TransparentDual && a.Transparent != TransparentRembg {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: transparent must be true, false, or %q", an, string(TransparentRembg))}
 		}
 		var built []SubmitRequest
 		var as assetSpec
@@ -484,7 +526,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				}
 			}
 			built = append(elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent),
-				elementChildren(a.BarFill, a.Negative, a.Size, *req.Seed, false)...)
+				elementChildren(a.BarFill, a.Negative, a.Size, *req.Seed, "")...)
 			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, BarFill: a.BarFill, FillStates: uniq, MetaFormats: a.MetaFormats}
 		case "npc":
 			switch a.Shape {
@@ -507,6 +549,16 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 		default:
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
 		}
+		if a.Transparent == TransparentRembg {
+			switch a.Kind {
+			case "element", "frame", "bar":
+			default:
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: transparent %q is supported for element, frame and bar", an, string(TransparentRembg))}
+			}
+			if m.opts.Ops.Rembg == nil {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: transparent %q requires the rembg sidecar (REMBG_URL)", an, string(TransparentRembg))}
+			}
+		}
 		// The request-level model seeds every child of the set; children built
 		// with an empty model then inherit the queue's lattice default
 		// (submitOne) or stay engine-default on direct routing.
@@ -524,10 +576,12 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 	return m.submitComposeParent(newID(), spec, kids)
 }
 
-// elementChildren builds the 1 job (opaque) or 2 jobs (transparent: white
-// and black pass, same seed — only the background prompt differs).
-func elementChildren(prompt, negative, size string, seed int64, transparent bool) []SubmitRequest {
-	if !transparent {
+// elementChildren builds the child jobs an element-like asset renders: one
+// plain render (opaque, or rembg-extracted later at compose time), or the
+// classic white and black background pair (dual) sharing the seed. rembg gets
+// the plain prompt on purpose — U²-Net works best on natural backgrounds.
+func elementChildren(prompt, negative, size string, seed int64, t TransparentSpec) []SubmitRequest {
+	if t != TransparentDual {
 		s := seed
 		return []SubmitRequest{{Mode: "asset", Prompt: prompt, NegativePrompt: negative, Size: size, Seed: &s}}
 	}
@@ -680,13 +734,28 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 			imgs[i] = png
 		}
 		if broken == "" {
+			// B2 rembg branch: extract the subject from the first render,
+			// leaving any sibling render (the bar fill) untouched. Dual
+			// assets never enter this path — their children arrive in pairs.
+			if a.Transparent == TransparentRembg {
+				if m.opts.Ops.Rembg == nil {
+					broken = "rembg: sidecar not wired (REMBG_URL)"
+				} else {
+					rgba, rerr := m.opts.Ops.Rembg(context.Background(), base64.StdEncoding.EncodeToString(imgs[0]))
+					if rerr != nil {
+						broken = fmt.Sprintf("rembg: %v", rerr)
+					} else {
+						imgs[0] = rgba
+					}
+				}
+			}
 			var outs []compose.OutputFile
 			var err error
 			switch a.Kind {
 			case "element":
 				// ComposeElement yields one deliverable; kits and atlases yield many.
 				var of compose.OutputFile
-				if a.Transparent && len(imgs) == 2 {
+				if a.Transparent == TransparentDual && len(imgs) == 2 {
 					of, err = compose.ComposeElement(a.Name, imgs[0], imgs[1], true)
 				} else {
 					of, err = compose.ComposeElement(a.Name, imgs[0], nil, false)
@@ -700,17 +769,17 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
 			case "frame":
 				black := []byte(nil)
-				if len(imgs) == 2 {
+				if a.Transparent == TransparentDual && len(imgs) == 2 {
 					black = imgs[1]
 				}
-				outs, err = compose.ComposeFrame(a.Name, imgs[0], black, a.Transparent && len(imgs) == 2, a.FrameMargins)
+				outs, err = compose.ComposeFrame(a.Name, imgs[0], black, a.Transparent == TransparentDual && len(imgs) == 2, a.FrameMargins)
 			case "bar":
 				fill := imgs[len(imgs)-1]
 				trackBlack := []byte(nil)
-				if len(imgs) == 3 {
+				if a.Transparent == TransparentDual && len(imgs) == 3 {
 					trackBlack = imgs[1]
 				}
-				outs, err = compose.ComposeBar(a.Name, imgs[0], trackBlack, a.Transparent && len(imgs) == 3, a.FrameMargins, fill, a.FillStates)
+				outs, err = compose.ComposeBar(a.Name, imgs[0], trackBlack, a.Transparent == TransparentDual && len(imgs) == 3, a.FrameMargins, fill, a.FillStates)
 			case "npc":
 				if a.Shape == "walk4" {
 					outs, err = compose.ComposeNPCWalk4(a.Name, imgs[0], imgs[1], imgs[2])

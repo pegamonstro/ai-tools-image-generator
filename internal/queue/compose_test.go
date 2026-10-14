@@ -452,7 +452,7 @@ func TestSubmitAssetSetTransparent(t *testing.T) {
 	seed := int64(7)
 	id, err := m.SubmitAssetSet(AssetSetRequest{
 		Name: "star", Seed: &seed,
-		Assets: []AssetSpecIn{{Kind: "element", Name: "star", Prompt: "star icon", Size: "32x32", Transparent: true}},
+		Assets: []AssetSpecIn{{Kind: "element", Name: "star", Prompt: "star icon", Size: "32x32", Transparent: TransparentDual}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2252,4 +2252,173 @@ func TestGIFFromSpecModelInheritance(t *testing.T) {
 			Count:   4,
 		},
 	}, "/m/asset-default-4bit", "asset-default")
+}
+
+func TestTransparentSpecParse(t *testing.T) {
+	cases := []struct {
+		in   string
+		want TransparentSpec
+	}{
+		{`{"transparent":true}`, TransparentDual},
+		{`{"transparent":false}`, ""},
+		{`{"transparent":null}`, ""},
+		{`{}`, ""},
+		{`{"transparent":""}`, ""},
+		{`{"transparent":"rembg"}`, TransparentRembg},
+		{`{"transparent":"dual"}`, TransparentDual},
+		// Unknown strings survive decode verbatim so submit validation can
+		// return a proper error message instead of a 400 decode failure.
+		{`{"transparent":"wat"}`, "wat"},
+	}
+	for _, tc := range cases {
+		var in AssetSpecIn
+		if err := json.Unmarshal([]byte(tc.in), &in); err != nil {
+			t.Fatalf("%s: %v", tc.in, err)
+		}
+		if in.Transparent != tc.want {
+			t.Fatalf("%s: got %q, want %q", tc.in, in.Transparent, tc.want)
+		}
+	}
+}
+
+func TestSubmitAssetSetRembgValidation(t *testing.T) {
+	seed := int64(7)
+	base := func() AssetSetRequest {
+		return AssetSetRequest{Name: "star", Seed: &seed, Assets: []AssetSpecIn{{
+			Kind: "element", Name: "star", Prompt: "star icon", Size: "32x32", Transparent: TransparentRembg,
+		}}}
+	}
+	// No Ops.Rembg wired → honest validation error naming the env.
+	m := New(composeTestOpts(t, t.TempDir(), &genCapture{}))
+	_, err := m.SubmitAssetSet(base())
+	verr, ok := err.(*ValidationError)
+	if !ok || !strings.Contains(verr.Msg, "REMBG_URL") {
+		t.Fatalf("err = %v", err)
+	}
+	// rembg is element/frame/bar only. kit/atlas fixtures pass their own kind
+	// validations (kit has none; atlas needs Frames=2, npc needs a Shape) and
+	// reach the rembg kind gate; bogus never leaves the kind switch.
+	o := composeTestOpts(t, t.TempDir(), &genCapture{})
+	o.Ops.Rembg = func(ctx context.Context, imageB64 string) ([]byte, error) { return nil, nil }
+	m2 := New(o)
+	kinds := map[string]string{
+		"kit":   `transparent "rembg" is supported for element, frame and bar`,
+		"atlas": `transparent "rembg" is supported for element, frame and bar`,
+		"npc":   `transparent "rembg" is supported for element, frame and bar`,
+		"bogus": `unknown kind "bogus"`,
+	}
+	for kind, want := range kinds {
+		req := base()
+		req.Assets[0].Kind = kind
+		if kind == "atlas" {
+			req.Assets[0].Frames = 2
+		}
+		if kind == "npc" {
+			req.Assets[0].Shape = "walk4"
+		}
+		_, err := m2.SubmitAssetSet(req)
+		verr, ok := err.(*ValidationError)
+		if !ok || !strings.Contains(verr.Msg, want) {
+			t.Fatalf("kind %s: err = %v, want substring %q", kind, err, want)
+		}
+	}
+	// Unknown transparent value → validation error, not decode failure.
+	req := base()
+	req.Assets[0].Transparent = "wat"
+	_, err = m2.SubmitAssetSet(req)
+	verr, ok = err.(*ValidationError)
+	if !ok || !strings.Contains(verr.Msg, `transparent must be true, false, or "rembg"`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSubmitAssetSetRembgSingleChild(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	rembgImg := image.NewNRGBA(image.Rect(0, 0, 8, 8)) // fully transparent
+	var rb bytes.Buffer
+	if err := png.Encode(&rb, rembgImg); err != nil {
+		t.Fatal(err)
+	}
+	rembgCalled := 0
+	o.Ops.Rembg = func(ctx context.Context, imageB64 string) ([]byte, error) {
+		rembgCalled++
+		return rb.Bytes(), nil
+	}
+	m := New(o)
+	seed := int64(7)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "star", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "star", Prompt: "star icon", Size: "32x32", Transparent: TransparentRembg}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	cap.mu.Lock()
+	if len(cap.Prompts) != 1 {
+		t.Fatalf("rembg renders once, got %q", cap.Prompts)
+	}
+	// The rembg child has a plain prompt — no "isolated on white" suffix;
+	// U²-Net works best on natural backgrounds.
+	if strings.Contains(cap.Prompts[0], "white") || strings.Contains(cap.Prompts[0], "black") {
+		t.Fatalf("rembg prompt carries no bg suffix: %q", cap.Prompts[0])
+	}
+	cap.mu.Unlock()
+	if rembgCalled != 1 {
+		t.Fatalf("rembg calls = %d", rembgCalled)
+	}
+	data, err := m.opts.Store.ReadSetFile(id, "star.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	im, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, a := im.At(0, 0).RGBA(); a != 0 {
+		t.Fatalf("rembg output must keep alpha, got a=%d", a)
+	}
+}
+
+func TestSubmitAssetSetRembgBarKeepsFill(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	// Same-size output is what the sidecar produces (U²-Net returns the input
+	// dimensions as RGBA); the 32x32 rect also satisfies the nine-slice rule
+	// (2*FrameMargins < size) that punches the rembg-extracted track.
+	rembgImg := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	var rb bytes.Buffer
+	if err := png.Encode(&rb, rembgImg); err != nil {
+		t.Fatal(err)
+	}
+	o.Ops.Rembg = func(ctx context.Context, imageB64 string) ([]byte, error) { return rb.Bytes(), nil }
+	m := New(o)
+	seed := int64(7)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "hp", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "bar", Name: "hp", Prompt: "steel frame", Size: "32x32",
+			Transparent: TransparentRembg, FrameMargins: 4, BarFill: "red potion fill"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if len(cap.Prompts) != 2 {
+		t.Fatalf("rembg bar = track + fill renders, got %q", cap.Prompts)
+	}
+	if !strings.Contains(cap.Prompts[0], "steel frame") || strings.Contains(cap.Prompts[0], "white") {
+		t.Fatalf("track prompt plain: %q", cap.Prompts[0])
+	}
+	if !strings.Contains(cap.Prompts[1], "red potion fill") {
+		t.Fatalf("fill prompt: %q", cap.Prompts[1])
+	}
+	if _, err := m.opts.Store.ReadSetFile(id, "hp-track.png"); err != nil {
+		t.Fatalf("track file: %v", err)
+	}
+	if _, err := m.opts.Store.ReadSetFile(id, "hp-fill.png"); err != nil {
+		t.Fatalf("fill file: %v", err)
+	}
 }

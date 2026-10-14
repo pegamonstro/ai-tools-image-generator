@@ -1641,14 +1641,34 @@ func TestSubmitGIFKeyframesStoresAnchors(t *testing.T) {
 	}
 }
 
+// rifeCapture records what the fake sidecar observed in the request body.
+// Mutex-guarded per the genCapture idiom: the httptest handler goroutine
+// writes and the test goroutine reads, so bare fields would be a data race.
+type rifeCapture struct {
+	mu         sync.Mutex
+	Images     int
+	Multiplier int
+}
+
+func (c *rifeCapture) set(images, multiplier int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Images, c.Multiplier = images, multiplier
+}
+
+func (c *rifeCapture) get() (images, multiplier int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Images, c.Multiplier
+}
+
 func TestComposeGIFKeyframesFakeSidecar(t *testing.T) {
 	// GOLDEN PATH — the spec's testing section requires the full
 	// keyframes→gif pipeline to run against an HTTP fake sidecar, so Ops.Rife
 	// here is lattice.Client.Rife talking to an httptest server (never a
 	// hand-rolled Go func): both the request body contract and the response
 	// decode go through the real client code path.
-	var gotMult int
-	var gotImgs int
+	cap := &rifeCapture{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Images     []string `json:"images"`
@@ -1663,8 +1683,7 @@ func TestComposeGIFKeyframesFakeSidecar(t *testing.T) {
 			http.Error(w, "body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		gotMult = req.Multiplier
-		gotImgs = len(req.Images)
+		cap.set(len(req.Images), req.Multiplier)
 		// Task 3 contract: (n-1)*mult+1 distinct 16x16 NRGBA PNGs, b64 in
 		// order under {"frames": [...]}.
 		n := (len(req.Images)-1)*req.Multiplier + 1
@@ -1709,8 +1728,8 @@ func TestComposeGIFKeyframesFakeSidecar(t *testing.T) {
 	if j.Status != "done" {
 		t.Fatalf("keyframes parent must compose: %s %q", j.Status, j.Error)
 	}
-	if gotImgs != 2 || gotMult != 2 {
-		t.Fatalf("sidecar contract: images=%d multiplier=%d", gotImgs, gotMult)
+	if imgs, mult := cap.get(); imgs != 2 || mult != 2 {
+		t.Fatalf("sidecar contract: images=%d multiplier=%d", imgs, mult)
 	}
 	// Anchor persistence + the composed deliverable: 2×mult 2 → 3 frames.
 	for _, f := range []string{"keyframe-0000.png", "keyframe-0001.png"} {

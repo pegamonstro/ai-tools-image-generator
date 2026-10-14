@@ -63,8 +63,12 @@ func findFile(outs []OutputFile, suffix string) (OutputFile, bool) {
 	return OutputFile{}, false
 }
 
-// emitStripMeta reads <name>-atlas.json + locates the sheet (-sheet.png for
-// atlas, -walk.png for npc) and emits one file per requested format.
+// emitStripMeta reads <name>-atlas.json + locates the sheet and emits one
+// file per requested format. Both npc shapes ship exactly one sheet under
+// different names: walk4 composes <name>-walk.png, variants composes through
+// the atlas path as <name>-sheet.png — the probe tries walk first
+// (deterministic order; both present cannot occur in practice) and only
+// errors when neither exists, naming both candidates.
 func emitStripMeta(kind, name string, formats []string, outs []OutputFile) ([]OutputFile, error) {
 	aj, ok := findFile(outs, "-atlas.json")
 	if !ok {
@@ -74,13 +78,20 @@ func emitStripMeta(kind, name string, formats []string, outs []OutputFile) ([]Ou
 	if err := json.Unmarshal(aj.Data, &doc); err != nil {
 		return nil, fmt.Errorf("atlas metadata %s: %w", aj.Name, err)
 	}
-	sheetSuffix := "-sheet.png"
+	sheetSuffixes := []string{"-sheet.png"}
 	if kind == "npc" {
-		sheetSuffix = "-walk.png"
+		sheetSuffixes = []string{"-walk.png", "-sheet.png"}
 	}
-	sheet, ok := findFile(outs, sheetSuffix)
-	if !ok {
-		return nil, fmt.Errorf("sheet file %s missing for %q", sheetSuffix, name)
+	var sheet OutputFile
+	found := false
+	for _, suffix := range sheetSuffixes {
+		if of, ok := findFile(outs, suffix); ok {
+			sheet, found = of, true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("sheet file %s missing for %q", strings.Join(sheetSuffixes, " or "), name)
 	}
 	sheetName := sheet.Name
 	// Frames in stable y-then-x order (map iteration is unordered).

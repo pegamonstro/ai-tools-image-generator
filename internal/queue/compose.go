@@ -407,11 +407,19 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 		// broken error, mirroring every other compose asset failure.
 		if len(a.MetaFormats) > 0 {
 			valid := map[string]bool{"phaser": true, "unity": true, "sparrow": true, "tiled": true}
+			seenFmt := map[string]bool{}
 			for _, f := range a.MetaFormats {
 				if !valid[f] {
 					return "", &ValidationError{Code: "validation_error",
 						Msg: fmt.Sprintf("asset %q: meta_formats: format %q unknown (valid: phaser, unity, sparrow, tiled)", an, f)}
 				}
+				// Duplicates would emit two identically named OutputFiles —
+				// reject at submit before anything persists.
+				if seenFmt[f] {
+					return "", &ValidationError{Code: "validation_error",
+						Msg: fmt.Sprintf("asset %q: meta_formats: duplicate format %q", an, f)}
+				}
+				seenFmt[f] = true
 			}
 		}
 		var built []SubmitRequest

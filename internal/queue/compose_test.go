@@ -699,6 +699,55 @@ func TestAssetSetEmitsKitTiled(t *testing.T) {
 	}
 }
 
+func TestAssetSetEmitsNPCVariantsMeta(t *testing.T) {
+	// Variants npcs compose via the atlas path (-sheet.png), not walk4
+	// (-walk.png): the meta emitters must find the sheet under either name,
+	// and the metadata must reference it as <name>-sheet.png.
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(43)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "npcm", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "npc", Name: "villager", Prompt: "villager sprite", Size: "32x32",
+			Shape: "variants", Variants: []string{"idle", "wave", "angry"}, Columns: 0, MetaFormats: []string{"phaser"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("set: %s %q", j.Status, j.Error)
+	}
+	raw, err := m.opts.Store.ReadSetFile(id, "villager.phaser.json")
+	if err != nil {
+		t.Fatalf("phaser meta: %v", err)
+	}
+	var ph struct {
+		Frames map[string]struct {
+			Frame compose.Rect `json:"frame"`
+		} `json:"frames"`
+		Meta map[string]string `json:"meta"`
+	}
+	if err := json.Unmarshal(raw, &ph); err != nil {
+		t.Fatalf("phaser JSON: %v", err)
+	}
+	if len(ph.Frames) != 3 {
+		t.Fatalf("phaser frames: %d, want 3", len(ph.Frames))
+	}
+	if ph.Meta["image"] != "villager-sheet.png" {
+		t.Fatalf("phaser meta.image = %q, want villager-sheet.png", ph.Meta["image"])
+	}
+	found := false
+	for _, f := range j.Files {
+		if f.Name == "villager.phaser.json" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("job files missing meta deliverable: %+v", j.Files)
+	}
+}
+
 func TestSubmitAssetSetFrameKind(t *testing.T) {
 	cap := &genCapture{}
 	o := composeTestOpts(t, t.TempDir(), cap)
@@ -983,6 +1032,8 @@ func TestMetaFormatsValidation(t *testing.T) {
 	bad(setWithMeta("atlas", []string{"nope"}), "unknown")
 	bad(setWithMeta("atlas", []string{"tiled", "nope"}), "unknown")
 	bad(setWithMeta("element", []string{"nope"}), "unknown")
+	// Duplicates would emit two identically named files — rejected at submit.
+	bad(setWithMeta("atlas", []string{"phaser", "phaser"}), "duplicate")
 
 	// Kind-compat failures surface honestly at compose time, never silently:
 	// a valid format name on an unserving kind submits fine and breaks the

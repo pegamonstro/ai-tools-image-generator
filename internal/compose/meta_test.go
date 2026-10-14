@@ -233,6 +233,37 @@ func TestEmitMetaNPCUsesWalkSheet(t *testing.T) {
 	}
 }
 
+func TestEmitMetaNPCVariantsUsesSheet(t *testing.T) {
+	// Variants npcs compose through the atlas path, so their outs are
+	// <name>-sheet.png + <name>-atlas.json (no -walk.png anywhere). The npc
+	// sheet probe must fall back from -walk.png to -sheet.png and reference
+	// the sheet under its real name.
+	outs := atlasOuts(t, "villager", 16, 16, 3)
+	meta, err := EmitMeta("npc", "villager", []string{"phaser"}, outs)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if len(meta) != 1 || meta[0].Name != "villager.phaser.json" {
+		t.Fatalf("files: %+v", meta)
+	}
+	var doc struct {
+		Frames map[string]struct {
+			Frame Rect `json:"frame"`
+		} `json:"frames"`
+		Meta map[string]string `json:"meta"`
+	}
+	if err := json.Unmarshal(meta[0].Data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Meta["image"] != "villager-sheet.png" {
+		t.Fatalf("meta image: expected villager-sheet.png, got %v", doc.Meta)
+	}
+	// The variants frame list comes from the atlas JSON: one entry per variant.
+	if len(doc.Frames) != 3 {
+		t.Fatalf("expected 3 frames, got %d", len(doc.Frames))
+	}
+}
+
 func TestEmitMetaFrameRectsReadFromAtlasJSON(t *testing.T) {
 	// Create an atlas where we manually craft the -atlas.json to have different
 	// frame rects than what PackGrid would produce, proving EmitMeta reads from

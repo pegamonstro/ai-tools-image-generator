@@ -21,7 +21,7 @@ var MetaFormats = map[string][]string{
 // EmitMeta appends engine-consumable metadata files for an already-composed
 // asset. It never mutates outs and never re-derives geometry: rects are read
 // from the asset's own -atlas.json deliverable (atlas/npc) or assembled from
-// the class files (kit, see emitKitTiled). formats must be a subset of
+// the class files (kit, see emitKitMeta). formats must be a subset of
 // MetaFormats entries valid for kind.
 func EmitMeta(kind, name string, formats []string, outs []OutputFile) ([]OutputFile, error) {
 	if len(formats) == 0 {
@@ -140,8 +140,8 @@ func buildUnity(sheet string, entries []metaEntry) map[string]any {
 	sprites := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		sprites = append(sprites, map[string]any{
-			"name": e.name,
-			"rect": map[string]int{"x": e.r.X, "y": e.r.Y, "width": e.r.W, "height": e.r.H},
+			"name":  e.name,
+			"rect":  map[string]int{"x": e.r.X, "y": e.r.Y, "width": e.r.W, "height": e.r.H},
 			"pivot": map[string]float64{"x": 0.5, "y": 0.5},
 		})
 	}
@@ -151,7 +151,7 @@ func buildUnity(sheet string, entries []metaEntry) map[string]any {
 func buildSparrow(sheet string, entries []metaEntry) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	fmt.Fprintf(&buf, `<TextureAtlas imagePath=%q>` + "\n", sheet)
+	fmt.Fprintf(&buf, `<TextureAtlas imagePath=%q>`+"\n", sheet)
 	for _, e := range entries {
 		fmt.Fprintf(&buf, "  <SubTexture name=%q x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\"/>\n",
 			e.name, e.r.X, e.r.Y, e.r.W, e.r.H)
@@ -161,19 +161,14 @@ func buildSparrow(sheet string, entries []metaEntry) ([]byte, error) {
 }
 
 // emitKitMeta writes tiled metadata for kit kind.
-// Each class gets its own .ts file with PIXI.Texture.fromFrame entries.
+// This is a stub that returns an error - the actual implementation will be
+// done in a future task (Task 7: kit tiled emitter).
 func emitKitMeta(name string, formats []string, outs []OutputFile) ([]OutputFile, error) {
 	var out []OutputFile
 	for _, f := range formats {
 		switch f {
 		case "tiled":
-			// For now, tiled kit metadata is not implemented as per the brief's note
-			// that kit supports tiled only via separate class files.
-			// We'll return an empty result for tiled format since it's handled differently.
-			// The brief says: "Each references exactly one texture image, which is why kit
-			// (20 separate class files, no sheet) supports tiled only"
-			// So for kit + tiled, we don't generate metadata files here.
-			// This function will be expanded in future tasks.
+			return nil, fmt.Errorf("tiled kit emitter not yet implemented (see Task 7)")
 		}
 	}
 	return out, nil

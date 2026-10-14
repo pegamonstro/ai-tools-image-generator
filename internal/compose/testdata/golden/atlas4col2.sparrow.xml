@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TextureAtlas imagePath="atlas4col2-sheet.png">
+  <SubTexture name="atlas4col2-0000" x="0" y="0" width="16" height="16"/>
+  <SubTexture name="atlas4col2-0001" x="16" y="0" width="16" height="16"/>
+  <SubTexture name="atlas4col2-0002" x="0" y="16" width="16" height="16"/>
+  <SubTexture name="atlas4col2-0003" x="16" y="16" width="16" height="16"/>
+</TextureAtlas>

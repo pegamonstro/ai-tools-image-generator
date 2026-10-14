@@ -256,6 +256,12 @@ components:
         seed:
           type: integer
           format: int64
+        palette_lock:
+          type: boolean
+          default: false
+          description: >
+            Remap every PNG of the set onto one shared palette before saving
+            and ship <name>.palette.json with the set
         model:
           type: string
           description: Catalog key or raw value applied to every generated child; empty falls back to the server default under lattice routing
@@ -269,7 +275,10 @@ components:
       properties:
         kind:
           type: string
-          enum: [element, kit, atlas]
+          enum: [element, kit, atlas, frame, bar, npc]
+          description: >
+            frame requires frame_margins; bar requires bar_fill and
+            frame_margins; npc requires shape
         name: { type: string }
         prompt: { type: string }
         negative: { type: string }
@@ -280,13 +289,45 @@ components:
           type: integer
           minimum: 2
           maximum: 64
-          description: atlas only
+          description: atlas only — one generation job per frame (seed+i)
         columns:
           type: integer
-          description: atlas atlas-sheet columns; 0 = single row
+          description: atlas and npc variant-sheet columns; 0 = single row
         transparent:
           type: boolean
-          description: element only — white+black double pass, alpha unmixed
+          description: element, frame, bar — white+black double pass, alpha unmixed
+        frame_margins:
+          type: integer
+          minimum: 1
+          description: >
+            frame and bar — border inset in px, must be 1..size/2-1
+        bar_fill:
+          type: string
+          description: bar only — prompt for the fill art, generated as a second child
+        fill_states:
+          type: array
+          maxItems: 16
+          items:
+            type: integer
+            minimum: 1
+            maximum: 100
+          description: >
+            bar — fill percentages in ascending order (duplicates deduped);
+            defaults to [25, 50, 75, 100]
+        shape:
+          type: string
+          enum: [variants, walk4]
+          description: >
+            npc — variants (one sheet per prompt suffix) or walk4 (fixed
+            four-direction walk cycle; left is mirrored, never rendered)
+        variants:
+          type: array
+          minItems: 2
+          maxItems: 64
+          items: { type: string }
+          description: >
+            npc variants shape — per-variant prompt suffixes, all pinned to the
+            set seed; ignored by walk4
     GifRequest:
       type: object
       required: [name, source]

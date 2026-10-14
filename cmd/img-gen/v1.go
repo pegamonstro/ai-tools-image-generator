@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +32,7 @@ type v1Deps struct {
 	store     *storage.Store
 	dataDir   string
 	exportDir string
-	idem      idemStore
+	idem      *idemStore
 }
 
 func registerV1(mux *http.ServeMux, d *v1Deps) {
@@ -510,18 +513,122 @@ func serveStoredImage(w http.ResponseWriter, r *http.Request, dataDir, name stri
 	http.ServeFile(w, r, filepath.Join(dataDir, "images", id+".png"))
 }
 
-// idemStore remembers job-submit responses by Idempotency-Key. Entries are
-// in-memory only and are cleared on restart; a replayed key can only return
-// the response captured in this process's lifetime.
+// idemStore remembers job-submit responses by Idempotency-Key. With a non-
+// empty path the COMPLETED keys are additionally appended to a JSONL file and
+// replayed on boot; in-flight entries are deliberately not persisted (a
+// restart killed their jobs, so their reservations are dead). With path ==
+// "" the store is process-local: the legacy un-persisted behavior.
 type idemStore struct {
 	mu   sync.Mutex
 	seen map[string]*idemEntry
+	path string // DATA_DIR/idempotency.jsonl; empty = legacy in-memory behavior (tests)
 }
 
 type idemEntry struct {
 	done   bool
 	status int
 	body   []byte
+}
+
+// idemRecord is the JSONL persistence form of one COMPLETED key. In-flight
+// entries are deliberately not persisted: a restart killed their jobs.
+type idemRecord struct {
+	Key    string `json:"key"`
+	Status int    `json:"status"`
+	Body   string `json:"body"` // base64 of the response body
+}
+
+const idemReplayLines = 10000 // entries replayed/kept on load
+const idemRotateLines = 20000 // above this, the file compacts to idemReplayLines on load
+
+// newIdemStore loads the persisted tail of path (up to idemReplayLines
+// COMPLETED records) into memory. A missing file is a fresh store; a torn
+// tail line from a crash is tolerated and skipped. When the file has grown
+// past idemRotateLines it is compacted back to the replay tail.
+func newIdemStore(path string) (*idemStore, error) {
+	s := &idemStore{seen: map[string]*idemEntry{}, path: path}
+	if path == "" {
+		return s, nil
+	}
+	lines, total, err := readLastLines(path, idemReplayLines)
+	if err != nil {
+		return nil, err
+	}
+	for _, ln := range lines {
+		var rec idemRecord
+		if json.Unmarshal(ln, &rec) != nil || rec.Key == "" {
+			continue // tolerate a torn tail line from a crash
+		}
+		raw, err := base64.StdEncoding.DecodeString(rec.Body)
+		if err != nil {
+			continue
+		}
+		s.seen[rec.Key] = &idemEntry{done: true, status: rec.Status, body: raw}
+	}
+	if total > idemRotateLines {
+		if err := writeIdemTail(path, lines); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+// readLastLines returns up to n NEWLINE-split lines from the end of path in
+// file order, plus the file's total line count. A trailing newline does not
+// add an extra line; a torn final line (no trailing newline) still counts as
+// a line and is returned as-is so the caller can tolerate it. A missing file
+// yields no lines and no error.
+func readLastLines(path string, n int) ([][]byte, int, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	if len(raw) == 0 {
+		return nil, 0, nil
+	}
+	ring := make([][]byte, n)
+	count := 0
+	for start := 0; start < len(raw); {
+		i := bytes.IndexByte(raw[start:], '\n')
+		var ln []byte
+		if i < 0 {
+			ln = raw[start:] // torn final line without trailing newline
+			start = len(raw)
+		} else {
+			ln = raw[start : start+i]
+			start += i + 1
+		}
+		ring[count%n] = append([]byte(nil), ln...)
+		count++
+	}
+	if count <= n {
+		return ring[:count], count, nil
+	}
+	// file order: ring[count%n:] holds the oldest surviving lines, ring[:count%n] the newest.
+	begin := count % n
+	out := make([][]byte, 0, n)
+	out = append(out, ring[begin:]...)
+	out = append(out, ring[:begin]...)
+	return out, count, nil
+}
+
+// writeIdemTail atomically rewrites path to hold exactly lines (the replay
+// tail), one per line: a temp file plus rename, so a crash mid-compaction
+// leaves either the old or the new file, never a half-written one.
+func writeIdemTail(path string, lines [][]byte) error {
+	var b bytes.Buffer
+	for _, ln := range lines {
+		b.Write(ln)
+		b.WriteByte('\n')
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b.Bytes(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // reserve classifies a key as "replay" (return the recorded response),
@@ -543,10 +650,32 @@ func (s *idemStore) reserve(key string) (state string, reply envelopeBody) {
 	return "fresh", envelopeBody{}
 }
 
+// complete marks an in-flight reservation done and, when the store was built
+// with a path, appends the COMPLETED record to the JSONL file. In-memory
+// semantics stay authoritative: a failed append costs at most one lost
+// replay entry after a restart, never a wrong response.
 func (s *idemStore) complete(key string, status int, body []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.seen[key] = &idemEntry{done: true, status: status, body: body}
+	if e, ok := s.seen[key]; ok && !e.done {
+		e.done, e.status, e.body = true, status, body
+		if s.path != "" {
+			rec, _ := json.Marshal(idemRecord{Key: key, Status: status, Body: base64.StdEncoding.EncodeToString(body)})
+			f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if err != nil {
+				log.Printf("idempotency: append open failed for key %q: %v", key, err)
+				return
+			}
+			_, werr := f.Write(append(rec, '\n'))
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			if werr != nil {
+				// disk-loss of one replay entry is acceptable (spec); log and keep the in-memory state.
+				log.Printf("idempotency: append failed for key %q: %v", key, werr)
+			}
+		}
+	}
 }
 
 // release drops an in-flight reservation so a failed submit can be retried

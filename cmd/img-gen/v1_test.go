@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +182,94 @@ func TestV1SubmitIdempotentConflict(t *testing.T) {
 	}
 	id, _ := retry["job_id"].(string)
 	waitForJobDone(t, srv, id)
+}
+
+// mustNewIdemStore wraps newIdemStore for tests: no error is expected when
+// the file lives under t.TempDir.
+func mustNewIdemStore(t *testing.T, path string) *idemStore {
+	t.Helper()
+	s, err := newIdemStore(path)
+	if err != nil {
+		t.Fatalf("newIdemStore(%q): %v", path, err)
+	}
+	return s
+}
+
+func TestIdemStorePersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "idempotency.jsonl")
+	s1 := mustNewIdemStore(t, path)
+	state, _ := s1.reserve("k1") // fresh
+	if state != "fresh" {
+		t.Fatalf("want fresh, got %q", state)
+	}
+	body := []byte(`{"id":"123"}`)
+	s1.complete("k1", http.StatusCreated, body)
+
+	s2 := mustNewIdemStore(t, path) // "restart": fresh store, same file
+	state, reply := s2.reserve("k1")
+	if state != "replay" {
+		t.Fatalf("want replay, got %q", state)
+	}
+	if !bytes.Equal(body, reply.raw) {
+		t.Fatalf("body mismatch: %q vs %q", reply.raw, body)
+	}
+	if reply.status != http.StatusCreated {
+		t.Fatalf("replay status = %d, want %d", reply.status, http.StatusCreated)
+	}
+	// in-flight entries do NOT survive (a crashed process's job is dead):
+	s1.reserve("k2")
+	s3 := mustNewIdemStore(t, path)
+	if st, _ := s3.reserve("k2"); st != "fresh" {
+		t.Fatalf("in-flight entry must not replay, got %q", st)
+	}
+}
+
+func TestIdemStoreRotationCapsReplay(t *testing.T) {
+	// write 20005 entries directly to the file (one json line each, via the
+	// same struct shape), open a store, assert: seen has last 10000 keys
+	// only, and the file on disk now holds exactly 10000 lines.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "idempotency.jsonl")
+	var b bytes.Buffer
+	for i := 0; i < 20005; i++ {
+		rec, err := json.Marshal(idemRecord{
+			Key:    fmt.Sprintf("k%05d", i),
+			Status: http.StatusCreated,
+			Body:   base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(`{"id":"%d"}`, i))),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(rec)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := mustNewIdemStore(t, path)
+	if len(s.seen) != idemReplayLines {
+		t.Fatalf("seen has %d keys, want %d", len(s.seen), idemReplayLines)
+	}
+	if _, ok := s.seen["k00000"]; ok {
+		t.Fatal("oldest key must have rotated away")
+	}
+	if e, ok := s.seen["k10005"]; !ok || !e.done || !bytes.Equal(e.body, []byte(`{"id":"10005"}`)) {
+		t.Fatal("first kept key (k10005) missing or lost its body after rotation")
+	}
+	if _, ok := s.seen["k20004"]; !ok {
+		t.Fatal("newest key (k20004) missing after rotation")
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := bytes.Count(raw, []byte{'\n'})
+	if n != idemReplayLines {
+		t.Fatalf("file on disk holds %d lines, want %d", n, idemReplayLines)
+	}
 }
 
 func TestV1ValidationEnvelope(t *testing.T) {

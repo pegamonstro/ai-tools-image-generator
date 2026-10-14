@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -258,6 +259,13 @@ func newHandler(cfg config) (http.Handler, error) {
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
+	// Idempotency keys persist beside the other storage dirs so replays
+	// survive a restart: DATA_DIR/idempotency.jsonl is loaded into memory at
+	// boot and every completed key is appended back.
+	idem, idemErr := newIdemStore(filepath.Join(cfg.DataDir, "idempotency.jsonl"))
+	if idemErr != nil {
+		return nil, fmt.Errorf("idempotency store: %w", idemErr)
+	}
 	registerV1(mux, &v1Deps{
 		mgr:       mgr,
 		genreCat:  catalog,
@@ -266,6 +274,7 @@ func newHandler(cfg config) (http.Handler, error) {
 		store:     store,
 		dataDir:   cfg.DataDir,
 		exportDir: cfg.ExportDir,
+		idem:      idem,
 	})
 
 	return withAPIAuth(mux, cfg.APIToken), nil

@@ -379,7 +379,7 @@ components:
           default: false
           description: >-
             Opt-in pixel-art repair post-op: quantize every render onto its
-            dominant palette (top-64, CIEDE2000-merged) and downscale by the
+            dominant palette (top-32, CIEDE2000-merged) and downscale by the
             detected grid cell before delivery. Runs before the rembg step.
             Element and atlas assets only; sizes up to 1024x1024.
         outline:

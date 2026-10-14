@@ -334,6 +334,32 @@ API involvement:
 Keep `<name>.manifest.json` alongside — it names the original files, so
 the reshuffle is lossless and re-fetchable.
 
+### Pixel-art repair and outline
+
+Phase C adds pixel post-processing, all in Go inside the compose pipeline:
+
+- `POST /api/v1/repair` — synchronous repair of one base64 PNG. Pass
+  `cell` (2..64) to pin the grid cell or omit it to auto-detect (the
+  endpoint errors with `not a pixel-art grid` on noisy, non-sprite input),
+  and `colors` (1..64, default 32) for the quantization palette size.
+  Returns the repaired PNG (quantized + downscaled by the cell).
+- Asset post-ops on `POST /api/v1/asset-sets` elements:
+  - `"pixel_fix": true` on **element** and **atlas** assets — every render
+    is repaired (auto-detected cell, top-32 palette) *before* the rembg
+    step, so background removal and any later step see clean sprite grids.
+    Sizes up to 1024x1024.
+  - `"outline": {"width": 1..2, "color": "auto" | "#hex"}` on **element**
+    and **frame** assets — quantize-then-outline: strokes follow the
+    palette-cleaned edges. `auto` picks the darkest palette color; an
+    explicit hex overrides. A fully-opaque deliverable takes no stroke.
+- Palette-coherent atlas frames: when `palette_lock` is set on a set that
+  contains an atlas, every frame is remapped against the set's palette
+  (computed from the first decodable render) *before* the frames are
+  assembled, so off-palette frame variants cannot leak stray colors into
+  the sheet.
+
+Default behavior without these fields is unchanged.
+
 MCP tools: `request_asset_set`, `make_gif`, `read_export`.
 
 Install the packaged agent skills:

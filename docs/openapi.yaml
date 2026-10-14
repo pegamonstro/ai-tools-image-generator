@@ -374,6 +374,49 @@ components:
             wangset `.tsx` + assembled `-wangset.png`) applies to kit. Unknown
             names and duplicates fail the submit; kind mismatches fail the
             asset at compose time.
+        pixel_fix:
+          type: boolean
+          default: false
+          description: >-
+            Opt-in pixel-art repair post-op: quantize every render onto its
+            dominant palette (top-64, CIEDE2000-merged) and downscale by the
+            detected grid cell before delivery. Runs before the rembg step.
+            Element and atlas assets only; sizes up to 1024x1024.
+        outline:
+          nullable: true
+          description: >-
+            Opt-in outline post-op on element and frame assets: quantize,
+            then stroke fully-transparent pixels adjacent to opaque ones.
+            Strokes follow palette-cleaned edges.
+          additionalProperties: false
+          properties:
+            width:
+              type: integer
+              minimum: 1
+              maximum: 2
+              description: Stroke width in pixels; omitted or 0 means 1.
+            color:
+              type: string
+              description: '#rgb / #rrggbb, or empty / auto for the darkest palette color.'
+    RepairRequest:
+      type: object
+      required: [image]
+      properties:
+        image:
+          type: string
+          format: byte
+          description: base64-encoded PNG of the pixel-art render (up to 1024x1024).
+        cell:
+          type: integer
+          minimum: 2
+          maximum: 64
+          description: Explicit grid cell in pixels; omit to auto-detect (fails with 'not a pixel-art grid' when the signal is weak).
+        colors:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 32
+          description: Number of dominant palette colors to quantize onto.
     GifRequest:
       type: object
       required: [name, source]
@@ -753,6 +796,34 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "504":
           description: Not terminal within wait_seconds.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/repair:
+    post:
+      summary: Repair a pixel-art image (sync)
+      description: >-
+        Detects the grid cell of a pixel-art render (or accepts an explicit
+        cell), quantizes it onto a dominant palette, and downscales by the
+        cell with center sampling. Synchronous; up to 1024x1024 input.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepairRequest"
+      responses:
+        "200":
+          description: Repaired PNG
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Validation failure.
           content:
             application/json:
               schema:

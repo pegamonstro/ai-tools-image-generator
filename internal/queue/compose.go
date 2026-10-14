@@ -84,7 +84,8 @@ type assetSpec struct {
 	Variants     []string        `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
 	Views        []string        `json:"views,omitempty"`    // sheet: 2..8 view names
 	MetaFormats  []string        `json:"meta_formats,omitempty"`
-	Children     int             `json:"children"` // generation jobs this asset owns, in order
+	PixelFix     bool            `json:"pixel_fix,omitempty"` // pixel-art repair post-op (opt-in)
+	Children     int             `json:"children"`            // generation jobs this asset owns, in order
 }
 
 // compositeLayerSpec is one persisted static layer: its set file (saved at
@@ -400,6 +401,7 @@ type AssetSpecIn struct {
 	Variants     []string        `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
 	Views        []string        `json:"views,omitempty"`         // sheet: 2..8 view names
 	MetaFormats  []string        `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
+	PixelFix     bool            `json:"pixel_fix,omitempty"`     // pixel-art repair post-op (opt-in)
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -580,6 +582,22 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: transparent %q requires the rembg sidecar (REMBG_URL)", an, string(TransparentRembg))}
 			}
 		}
+		// C1: pixel_fix is opt-in per asset and only meaningful for single-cell
+		// art (element/atlas); its repair bound is compose.RepairMaxDim.
+		if a.PixelFix {
+			switch a.Kind {
+			case "element", "atlas":
+			default:
+				return "", &ValidationError{Code: "validation_error",
+					Msg: fmt.Sprintf("asset %q: pixel_fix is supported for element and atlas", an)}
+			}
+			w, h, serr := parseAssetSize(a.Size)
+			if serr != nil || w > compose.RepairMaxDim || h > compose.RepairMaxDim {
+				return "", &ValidationError{Code: "validation_error",
+					Msg: fmt.Sprintf("asset %q: pixel_fix supports sizes up to %dx%d", an, compose.RepairMaxDim, compose.RepairMaxDim)}
+			}
+		}
+		as.PixelFix = a.PixelFix
 		// The request-level model seeds every child of the set; children built
 		// with an empty model then inherit the queue's lattice default
 		// (submitOne) or stay engine-default on direct routing.
@@ -768,6 +786,31 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 			imgs[i] = png
 		}
 		if broken == "" {
+			// C1 pixel repair (opt-in): quantize every render onto its
+			// dominant palette and downscale by the detected grid cell. The
+			// cell is detected ONCE on the first render, so dual-pair bounds
+			// stay equal for UnmixAlpha and atlas frames keep one size. Runs
+			// BEFORE the rembg branch: repair stabilizes every later step.
+			if a.PixelFix {
+				first, derr := png.Decode(bytes.NewReader(imgs[0]))
+				if derr != nil {
+					broken = fmt.Sprintf("pixel_fix: %v", derr)
+				} else {
+					cell, gerr := compose.DetectGridCell(first)
+					if gerr != nil {
+						broken = fmt.Sprintf("pixel_fix: %v", gerr)
+					} else {
+						for i := range imgs {
+							fixed, rerr := compose.RepairPNG(imgs[i], cell, compose.RepairDefaultColors)
+							if rerr != nil {
+								broken = fmt.Sprintf("pixel_fix: %v", rerr)
+								break
+							}
+							imgs[i] = fixed
+						}
+					}
+				}
+			}
 			// B2 rembg branch: extract the subject from the first render,
 			// leaving any sibling render (the bar fill) untouched. Dual
 			// assets never enter this path — their children arrive in pairs.

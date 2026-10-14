@@ -124,8 +124,10 @@ func TestOutlinePNGQuantizeBeforeOutline(t *testing.T) {
 	b := gotImg.Bounds()
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
-			if gotImg.At(x, y) != ref.At(x, y) {
-				t.Fatalf("(%d,%d): %v != reference %v", x, y, gotImg.At(x, y), ref.At(x, y))
+			gotC := color.RGBAModel.Convert(gotImg.At(x, y)).(color.RGBA)
+			refC := color.RGBAModel.Convert(ref.At(x, y)).(color.RGBA)
+			if gotC != refC {
+				t.Fatalf("(%d,%d): %v != reference %v", x, y, gotC, refC)
 			}
 		}
 	}

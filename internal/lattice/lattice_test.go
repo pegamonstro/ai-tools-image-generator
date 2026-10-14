@@ -777,7 +777,6 @@ func renderTinyPNG(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-
 // TestGenerateControlNetSDXL tests that the control_net field is present and correct when SDXL is used.
 func TestGenerateControlNetSDXL(t *testing.T) {
 	var got map[string]any

@@ -256,7 +256,6 @@ import (
 	"image"
 	"image/color"
 	"math"
-	"sort"
 )
 
 var ErrNotPixelGrid = errors.New("not a pixel-art grid")
@@ -273,17 +272,18 @@ const (
 
 // DetectGridCell estimates the pixel-art cell size of img by
 // autocorrelating its edge-energy signal: a pixel-art grid spikes at every
-// cell boundary and stays quiet inside cells, so the smoothed signal
-// self-aligns at lag = cell. Horizontal and vertical lags must agree, else
-// the image is refused (ErrNotPixelGrid) rather than repaired with a
-// guessed cell. The image must span at least ~2 cells (plus 4 px) per axis.
+// cell boundary (≈1/cell of the interior lines) and stays quiet inside
+// cells, so the raw signal self-aligns at lag = cell. Horizontal and
+// vertical lags must agree, else the image is refused (ErrNotPixelGrid)
+// rather than repaired with a guessed cell. The image must span at least
+// ~2 cells (plus 4 px) per axis.
 func DetectGridCell(img image.Image) (int, error) {
 	colEdges, rowEdges := edgesAlong(img)
-	colLag, err := detectCellAxis(smooth1(colEdges))
+	colLag, err := detectCellAxis(colEdges)
 	if err != nil {
 		return 0, err
 	}
-	rowLag, err := detectCellAxis(smooth1(rowEdges))
+	rowLag, err := detectCellAxis(rowEdges)
 	if err != nil {
 		return 0, err
 	}
@@ -333,60 +333,45 @@ func intAbs(v int) int {
 	return v
 }
 
-// smooth1 box-filters arr with radius 1 (edge-padded), absorbing the ±1 px
-// boundary drift the spec's tolerance allows.
-func smooth1(arr []int) []float64 {
-	n := len(arr)
-	out := make([]float64, n)
-	for i := 0; i < n; i++ {
-		sum, cnt := 0, 0
-		for d := -1; d <= 1; d++ {
-			j := i + d
-			if j >= 0 && j < n {
-				sum += arr[j]
-				cnt++
-			}
-		}
-		out[i] = float64(sum) / float64(cnt)
-	}
-	return out
-}
-
-// detectCellAxis returns the smallest lag whose smoothed edge signal
-// self-aligns (cosine similarity ≥ 0.85). The concentration guard rejects
-// signals whose energy carries no dominant spikes — flat fields, ramps, and
-// smooth gradients cannot be pixel-art grids — and the lag window
-// (2 .. min(64, n/2−4)) requires roughly two cells per axis.
-func detectCellAxis(edges []float64) (int, error) {
+// detectCellAxis returns the smallest lag whose raw edge signal
+// self-aligns (cosine similarity ≥ 0.85). The spread guard first rejects
+// diffuse signals: a true grid concentrates its edge energy in ≈1/cell of
+// the lines, so when more than 55% of lines carry ≥ 0.2·max the signal
+// cannot be a grid (noise, ramps, smooth gradients — all measured ≥ 0.57
+// here, grids ≤ 0.50). All comparisons run on the raw sums: smoothing
+// would fuse dense grids' boundary spikes into a near-constant signal that
+// self-aligns at every lag. The lag window (2 .. min(64, n/2−4)) requires
+// roughly two cells per axis.
+func detectCellAxis(edges []int) (int, error) {
 	n := len(edges)
 	if n < 8 {
 		return 0, ErrNotPixelGrid
 	}
-	total := 0.0
+	max := 0
 	for _, e := range edges {
-		total += e
+		if e > max {
+			max = e
+		}
 	}
-	if total <= 0 {
+	if max <= 0 {
 		return 0, ErrNotPixelGrid
 	}
-	top := maxInt(1, n/10)
-	sorted := make([]float64, n)
-	copy(sorted, edges)
-	sort.Float64s(sorted)
-	spikeEnergy := 0.0
-	for i := n - top; i < n; i++ {
-		spikeEnergy += sorted[i]
+	significant := 0
+	for _, e := range edges {
+		if float64(e) >= 0.2*float64(max) {
+			significant++
+		}
 	}
-	if spikeEnergy < 0.30*total {
+	if float64(significant)/float64(n) > 0.55 {
 		return 0, ErrNotPixelGrid
 	}
 	maxLag := minInt(RepairMaxCell, n/2-4)
 	for lag := RepairMinCell; lag <= maxLag; lag++ {
 		num, la, lb := 0.0, 0.0, 0.0
 		for i := 0; i+lag < n; i++ {
-			num += edges[i] * edges[i+lag]
-			la += edges[i] * edges[i]
-			lb += edges[i+lag] * edges[i+lag]
+			num += float64(edges[i]) * float64(edges[i+lag])
+			la += float64(edges[i]) * float64(edges[i])
+			lb += float64(edges[i+lag]) * float64(edges[i+lag])
 		}
 		if la > 0 && lb > 0 && num/math.Sqrt(la*lb) >= 0.85 {
 			return lag, nil
@@ -413,7 +398,7 @@ func minInt(a, b int) int {
 - [ ] **Step 4: Run to verify the tests pass**
 
 Run: `go test ./internal/compose/ -v -run 'TestDetectGridCell'`
-Expected: PASS (all five tests). If a drift or reject case misses, re-check the thresholds above (0.30 concentration, 0.85 cosine) against the failing case's numbers — do not silently loosen either.
+Expected: PASS (all five tests). The thresholds are measured, not guesses: the spread guard (55% of lines ≥ 0.2·max) separates grids (≤ 0.50 measured) from noise/ramps/gradients (≥ 0.57) with margin on both sides, and the raw-cosine 0.85 rule recovers every exact cell 2..64, the jittered drift cases (16@j12, 8@j8, 4@j4, 3@j2, 2@j1), and the phase-offset grid. Do not silently loosen either threshold; recalibrate against the full test set.
 
 - [ ] **Step 5: Full green + commit**
 
@@ -2218,10 +2203,12 @@ In `cmd/img-gen-mcp/main.go`, extend the `request_asset_set` input-schema JSON s
 
 ```bash
 mkdir -p internal/compose/testdata/repair
-cp .claude/mock-site-bb/assets/circuit-cap-n.png internal/compose/testdata/repair/input.png
+cp .claude/mock-site-bb/assets/board/circuit-cap-n.png internal/compose/testdata/repair/input.png
 ```
 
-(If `.claude/mock-site-bb/assets/circuit-cap-n.png` is gone from the main checkout's tree — it is gitignored except its assets — the copy must come from the main checkout at `/Users/<you>/Projects/img-gen/.claude/mock-site-bb/assets/circuit-cap-n.png`; verify `-s` first. If that too is gone, pick another tracked real render under `internal/compose/testdata/` with sprite-like structure instead and record the substitution in the report.)
+(If `.claude/mock-site-bb/assets/board/circuit-cap-n.png` is gone from the main checkout's tree — it is gitignored except its assets — the copy must come from the main checkout at `/Users/<you>/Projects/img-gen/.claude/mock-site-bb/assets/board/circuit-cap-n.png`; verify `-s` first. If that too is gone, pick another tracked real render under `internal/compose/testdata/` with sprite-like structure instead and record the substitution in the report.)
+
+**Auto-detect and real renders (measured):** every real mock-site artifact is a soft SDXL render whose edge energy is diffuse — `DetectGridCell` refuses all of them. That is the honest contract working: auto-detect only accepts images with a strict structural grid, and callers that know their target cell pass it explicitly (the repair endpoint takes `cell`; Task 3's executor auto-detects and fails the asset with the named reason). The goldens below therefore pin the repair stages with an **explicit cell 4** and assert the real input's refusal verdict.
 
 2. Generate the golden outputs with a throwaway program **in the SDD workspace** (NOT committed) — `go run` it from the worktree root:
 
@@ -2250,21 +2237,10 @@ func main() {
 	}
 	b := img.Bounds()
 	fmt.Printf("dims=%dx%d\n", b.Dx(), b.Dy())
-	cell, derr := compose.DetectGridCell(img)
-	fmt.Printf("detect: cell=%d err=%v\n", cell, derr)
-	if derr != nil {
-		// Fallback ladder: fixed cells until one is divisible.
-		for _, c := range []int{8, 16} {
-			if b.Dx()%c == 0 && b.Dy()%c == 0 {
-				cell = c
-				derr = nil
-				break
-			}
-		}
-		if derr != nil {
-			panic("input fits neither detected nor fixed cells; substitute the tile per the task note")
-		}
+	if b.Dx() != 64 || b.Dy() != 64 {
+		panic("substituted tile is not 64x64; pick a cell that divides its dims")
 	}
+	cell := 4 // pinned: 64x64 soft render, auto-detect refuses it (diffuse edge energy)
 	pal := compose.SetPalette([]image.Image{img}, 32)
 	pj, err := compose.MarshalPalette(pal)
 	if err != nil {
@@ -2298,7 +2274,7 @@ func main() {
 }
 ```
 
-(Record the detected cell + dims the program prints in `task-8-report.md`; the program itself stays out of git.)
+(Record the dims + the pinned cell the program prints in `task-8-report.md`; the program itself stays out of git.)
 
 3. Committed golden test — `internal/compose/golden_repair_test.go`:
 
@@ -2307,6 +2283,7 @@ package compose
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/png"
 	"os"
@@ -2317,6 +2294,13 @@ import (
 // real artifact and asserts byte equality with the committed goldens.
 // Provenance: input.png is circuit-cap-n.png from the mock-site render run
 // (see the task report that committed it).
+//
+// The committed input is a soft SDXL render: its edge energy is diffuse, so
+// DetectGridCell refuses it — that verdict is part of what this test pins.
+// The repair stages run with the explicit cell 4 the goldens were generated
+// with (the same argument values; if detection calibration changes and the
+// refusal flips, that is a threshold recalibration to rule on, not a silent
+// test mutation).
 func TestRepairGoldenCircuitCap(t *testing.T) {
 	raw, err := os.ReadFile("testdata/repair/input.png")
 	if err != nil {
@@ -2326,10 +2310,10 @@ func TestRepairGoldenCircuitCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cell, derr := DetectGridCell(img)
-	if derr != nil {
-		t.Fatalf("input no longer detects (regenerated goldens would drift): %v", derr)
+	if _, derr := DetectGridCell(img); !errors.Is(derr, ErrNotPixelGrid) {
+		t.Fatalf("real render now auto-detects (calibration moved): %v", derr)
 	}
+	const cell = 4
 	pal := SetPalette([]image.Image{img}, 32)
 
 	// Stage 1 golden: quantized buffer (pre-downscale).
@@ -2358,7 +2342,7 @@ func TestRepairGoldenCircuitCap(t *testing.T) {
 		t.Fatal("palette golden drifted")
 	}
 
-	// Stage 3 golden: full repair (quantize + downscale by the detected cell).
+	// Stage 3 golden: full repair (quantize + downscale by the pinned cell).
 	qfull, err := RepairPNG(raw, cell, 32)
 	if err != nil {
 		t.Fatalf("repair: %v", err)

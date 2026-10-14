@@ -22,9 +22,9 @@ var MetaFormats = map[string][]string{
 
 // EmitMeta appends engine-consumable metadata files for an already-composed
 // asset. It never mutates outs and never re-derives geometry: rects are read
-// from the asset's own -atlas.json deliverable (atlas/npc) or assembled from
-// the class files (kit, see emitKitMeta). formats must be a subset of
-// MetaFormats entries valid for kind.
+// from the asset's own -atlas.json deliverable (atlas/npc) or -sheet.json
+// (sheet), or assembled from the class files (kit, see emitKitMeta). formats
+// must be a subset of MetaFormats entries valid for kind.
 func EmitMeta(kind, name string, formats []string, outs []OutputFile) ([]OutputFile, error) {
 	if len(formats) == 0 {
 		return nil, nil

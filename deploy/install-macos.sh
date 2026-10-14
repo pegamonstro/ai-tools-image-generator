@@ -33,6 +33,11 @@ UPSCALE_URL="${UPSCALE_URL:-}"
 # jobs then fail validation instead of silently running:
 #   RIFE_URL=http://<rife-sidecar>:<port> ./deploy/install-macos.sh
 RIFE_URL="${RIFE_URL:-}"
+# Optional: the model submitted when a request (including generated asset set
+# / GIF children) carries none — a catalog key or raw value. Empty on lattice
+# routing is unroutable (the registry routes by model name), so pass it:
+#   IMAGE_MODEL=<catalog-key> ./deploy/install-macos.sh
+IMAGE_MODEL="${IMAGE_MODEL:-}"
 
 if [[ ! -x "$BIN" ]]; then
   echo "error: $BIN is missing or not executable." >&2
@@ -64,6 +69,7 @@ sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__LATTICE_FRONTEND_URL__|$LATTICE_FRONTEND_URL|g" \
     -e "s|__UPSCALE_URL__|$UPSCALE_URL|g" \
     -e "s|__RIFE_URL__|$RIFE_URL|g" \
+    -e "s|__IMAGE_MODEL__|$IMAGE_MODEL|g" \
     "$TEMPLATE" > "$DEST"
 
 launchctl bootstrap "$DOMAIN" "$DEST"
@@ -74,6 +80,7 @@ if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
   echo "logs     : $LOG_DIR/img-gen.{out,err}.log"
   echo "image_url: $IMAGE_URL"
   echo "lattice  : $LATTICE_FRONTEND_URL"
+  echo "model    : ${IMAGE_MODEL:-<none>}"
 else
   echo "error: bootstrap failed — check $LOG_DIR/img-gen.err.log" >&2
   exit 1

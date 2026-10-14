@@ -126,6 +126,15 @@ type Options struct {
 
 	// ExportDir is the delivery fallback when a compose request omits dest.
 	ExportDir string
+
+	// ImagesViaLattice mirrors lattice.Client's ImagesViaLattice: generate/edit
+	// and compose "asset" children go through the frontend's Images routes.
+	// DefaultModel is the catalog key substituted for an empty Model under
+	// that routing — the lattice registry routes by model name, so "" is
+	// unroutable there. Direct routing keeps the engine-default contract
+	// (Model "" = the sidecar's own default) and ignores DefaultModel.
+	ImagesViaLattice bool
+	DefaultModel     string
 }
 
 type imageInputs struct {
@@ -546,6 +555,11 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		}
 	}
 
+	// After the preset merge so a preset-supplied model wins, before
+	// resolveModelValues so the default resolves through the same key path.
+	if req.Model == "" && m.opts.ImagesViaLattice && m.opts.DefaultModel != "" {
+		req.Model = m.opts.DefaultModel
+	}
 	resolveModelValues(m, &req)
 
 	if req.Sidecar == "sdxl" && mode != "generate" && mode != "edit" && mode != "asset" {

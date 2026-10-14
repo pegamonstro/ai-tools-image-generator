@@ -36,6 +36,11 @@
              reason as IMAGE_URL. -->
         <key>RIFE_URL</key>
         <string>__RIFE_URL__</string>
+        <!-- The model used when a submit (including generated assets/GIF
+             children) carries none. The lattice registry routes by model name,
+             so model-less routing needs this; a sidecar default on direct. -->
+        <key>IMAGE_MODEL</key>
+        <string>__IMAGE_MODEL__</string>
     </dict>
 
     <key>RunAtLoad</key>

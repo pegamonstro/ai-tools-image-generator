@@ -255,6 +255,15 @@ components:
         seed:
           type: integer
           format: int64
+        palette_lock:
+          type: boolean
+          default: false
+          description: >
+            Remap every PNG of the set onto one shared palette before saving
+            and ship <name>.palette.json with the set
+        model:
+          type: string
+          description: Catalog key or raw value applied to every generated child; empty falls back to the server default under lattice routing
         assets:
           type: array
           maxItems: 8
@@ -266,6 +275,9 @@ components:
         kind:
           type: string
           enum: [element, kit, atlas, frame, bar, npc]
+          description: >
+            frame requires frame_margins; bar requires bar_fill and
+            frame_margins; npc requires shape
         name: { type: string }
         prompt: { type: string }
         negative: { type: string }
@@ -276,10 +288,10 @@ components:
           type: integer
           minimum: 2
           maximum: 64
-          description: atlas only
+          description: atlas only — one generation job per frame (seed+i)
         columns:
           type: integer
-          description: atlas/npc atlas-sheet columns; 0 = single row
+          description: atlas/npc atlas-sheet columns; 0 = single row; ignored by walk4 (its sheet is always one column)
         transparent:
           type: boolean
           description: element|frame|bar — white+black double pass, alpha unmixed
@@ -294,17 +306,17 @@ components:
           type: array
           maxItems: 16
           items: { type: integer, minimum: 1, maximum: 100 }
-          description: bar only — ascending clip percentages (default 25/50/75/100), each rendered `<name>-fill-<NNN>.png`
+          description: bar only — ascending clip percentages (duplicates deduped; default 25/50/75/100), each rendered `<name>-fill-<NNN>.png`
         shape:
           type: string
           enum: [variants, walk4]
-          description: npc only — required when kind is npc (variants | walk4)
+          description: npc only — required when kind is npc (variants | walk4). variants packs every suffix's render into one atlas sheet; walk4 is a fixed four-direction walk cycle (left is mirrored from right, never rendered)
         variants:
           type: array
           minItems: 2
           maxItems: 64
           items: { type: string }
-          description: npc variants — per-variant prompt suffixes, all rendered with the set seed
+          description: npc variants — per-variant prompt suffixes, all rendered with the set seed; ignored by walk4
         meta_formats:
           type: array
           items:
@@ -337,6 +349,9 @@ components:
             type: string
             enum: [gif, webp]
           default: [gif]
+        model:
+          type: string
+          description: Catalog key or raw value; fills from_spec frames whose request omits a model
         source: { $ref: "#/components/schemas/GifSource" }
     GifSource:
       type: object

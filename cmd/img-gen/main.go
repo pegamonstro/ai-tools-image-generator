@@ -43,8 +43,13 @@ type config struct {
 	ExportDir     string
 	EnhanceModel  string
 	EnhanceSystem string
-	ImageTimeout  time.Duration
-	APIToken      string
+	// ImageModel substitutes an empty request model under lattice routing
+	// (config.ImageRouting != "direct") — a catalog key from ModelsFile or a
+	// raw value. The lattice registry routes by model name, so an empty model
+	// is unroutable there.
+	ImageModel   string
+	ImageTimeout time.Duration
+	APIToken     string
 }
 
 func loadConfig() config {
@@ -52,6 +57,7 @@ func loadConfig() config {
 		LatticeURL:    envOr("LATTICE_FRONTEND_URL", "http://127.0.0.1:8080"),
 		ImageRouting:  envOr("IMAGE_ROUTING", "lattice"),
 		ImageURL:      envOr("IMAGE_URL", "http://127.0.0.1:8899"),
+		ImageModel:    envOr("IMAGE_MODEL", ""),
 		FillURL:       envOr("FILL_URL", ""),
 		ReduxURL:      envOr("REDUX_URL", ""),
 		UpscaleURL:    envOr("UPSCALE_URL", ""),
@@ -108,11 +114,13 @@ func newHandler(cfg config) (http.Handler, error) {
 		return lat.Chat(ctx, cfg.EnhanceModel, msgs)
 	}
 	mgr := queue.New(queue.Options{
-		Genres:    catalog,
-		Presets:   presetCatalog,
-		Models:    modelCatalog,
-		Store:     store,
-		ExportDir: cfg.ExportDir,
+		Genres:           catalog,
+		Presets:          presetCatalog,
+		Models:           modelCatalog,
+		Store:            store,
+		ImagesViaLattice: cfg.ImageRouting != "direct",
+		DefaultModel:     cfg.ImageModel,
+		ExportDir:        cfg.ExportDir,
 		Ops: queue.ImageOps{
 			Generate:   lat.Generate,
 			Edit:       lat.Edit,
@@ -340,8 +348,8 @@ func main() {
 		log.Fatalf("startup: %v", err)
 	}
 	addr := envOr("LISTEN", ":8099")
-	log.Printf("img-gen config: lattice=%s image_routing=%s image_url=%s upscale_url=%s sdxl_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s api_auth=%t",
-		cfg.LatticeURL, cfg.ImageRouting, cfg.ImageURL, cfg.UpscaleURL, cfg.SDXLURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr, cfg.APIToken != "")
+	log.Printf("img-gen config: lattice=%s image_routing=%s image_model=%s image_url=%s upscale_url=%s sdxl_url=%s data_dir=%s genres=%s enhance_model=%s timeout=%s listen=%s api_auth=%t",
+		cfg.LatticeURL, cfg.ImageRouting, cfg.ImageModel, cfg.ImageURL, cfg.UpscaleURL, cfg.SDXLURL, cfg.DataDir, cfg.GenresFile, cfg.EnhanceModel, cfg.ImageTimeout, addr, cfg.APIToken != "")
 	log.Printf("img-gen listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, h))
 }

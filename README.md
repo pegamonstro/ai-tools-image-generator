@@ -106,8 +106,10 @@ typed error envelopes, `Idempotency-Key` support, and a sync generate-and-wait
 endpoint. The full surface is specified in `docs/openapi.yaml`; the legacy
 unversioned `/api/*` endpoints remain byte-identical for the bundled web UI.
 
-Idempotency: sending an `Idempotency-Key` header on a v1 submit (job, asset
-set, or GIF) returns the original response for every repeat of that key. The
+Idempotency: sending an `Idempotency-Key` header on the v1 job submit
+(`POST /api/v1/jobs`) returns the original response for every repeat of that
+key. The asset-set and GIF submit endpoints (`POST /api/v1/asset-sets`,
+`POST /api/v1/gifs`) are not keyed — a repeat there creates new work. The
 mapping persists to `DATA_DIR/idempotency.jsonl` — each completed submit
 appends `{"key","status","body"}` with the response body base64-encoded — and
 on boot the server replays the most recent ≤10k records, so a retry with a key

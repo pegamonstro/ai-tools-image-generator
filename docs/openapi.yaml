@@ -282,7 +282,7 @@ components:
           description: atlas/npc atlas-sheet columns; 0 = single row
         transparent:
           type: boolean
-          description: element only — white+black double pass, alpha unmixed
+          description: element|frame|bar — white+black double pass, alpha unmixed
         frame_margins:
           type: integer
           minimum: 1
@@ -298,7 +298,7 @@ components:
         shape:
           type: string
           enum: [variants, walk4]
-          description: npc only
+          description: npc only — required when kind is npc (variants | walk4)
         variants:
           type: array
           minItems: 2

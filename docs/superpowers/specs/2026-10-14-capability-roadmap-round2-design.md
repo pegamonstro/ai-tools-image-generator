@@ -87,11 +87,16 @@ both the request and the response.
 
 **img-gen side:**
 
-- `GifSource` gains `Keyframes { Refs []FrameRef; Multiplier int }`.
-  - `refs`: 2..16 (existing `FrameRef` resolution, same as `from_frames`).
-  - `multiplier`: 2..10, default 3.
-  - Validation: `ceil(len(refs)*multiplier)` must be ≤ 64, else
-    `validation_error` with a suggestion to raise multiplier ≤ 64/n.
+- `GifSource` gains `Keyframes { Anchors []FrameRef; Multiplier int }`
+  (amended 2026-10-14 to the shipped API: the field is `anchors`, not
+  `refs`; the frame count is `(len(anchors)-1)*multiplier + 1`, not the
+  drafted `ceil(n*m)`).
+  - `anchors`: 2..16 `FrameRef`s (existing `FrameRef` resolution, same as
+    `from_frames`).
+  - `multiplier`: 2..10, default 3 (0 means the default).
+  - Validation: `(len(anchors)-1)*multiplier + 1` must be ≤ 64, else
+    `validation_error` with a suggestion to lower multiplier
+    (min(10, 63/(n-1))) or use fewer anchors.
 - `RIFE_URL` unset → same validation_error shape as SDXL-pinned tile jobs
   today ("requires the RIFE sidecar (RIFE_URL)"). This replaces the
   `not_implemented` branch entirely; a `not_implemented` code path disappears
@@ -154,12 +159,21 @@ Go's stdlib `image/png` cannot write tEXt chunks, but a PNG chunk is a
 simple framing format — img-gen grows a ~60-line pure-stdlib chunk writer.
 
 - Every rendered PNG (generate + compose render path) gets tEXt chunks
-  inserted between the last IDAT and IEND:
-  - `software: img-gen`
-  - `parameters: <single-line A1111-style dump>` — prompt, negative, seed,
-    model, size, loras, routing target, and for compose assets: kind, name,
-    set id. Long values are truncated at 4096 bytes (spec limit is larger,
-    but truncation keeps history.jsonl and PNGs from diverging wildly).
+  inserted between the last IDAT and IEND — one tEXt chunk per key, sorted
+  by key (amended 2026-10-14 to the shipped writer: the drafted single-line
+  A1111-style `parameters` dump does not ship; the same data is carried as
+  individual key/value chunks instead):
+  - `software: img-gen` on every embedded PNG (render and compose paths both).
+  - Render path (`renderParamsKV`): `prompt`, `model`, `size`, `mode`, and
+    `job` always; `seed`, `negative`, `loras` (JSON array of LoRA
+    values/keys), and `routing` (the catalog key the lattice routed by) are
+    omitted when empty.
+  - Compose deliverables: `kind`, `name`, and `set` (the set id) on each
+    composed PNG, alongside `software`.
+  Long values are truncated at 4096 bytes (spec limit is larger, but
+  truncation keeps history.jsonl and PNGs from diverging wildly). An
+  A1111-interop combined `parameters` chunk can be added later if a consumer
+  demands it.
 - CRC32 per chunk (PNG framing requires it), validated by re-reading with
   the decoder fixture in tests.
 - History (history.jsonl) is untouched — both sources carry the same data
@@ -188,9 +202,9 @@ Idempotency mapping is currently process-local (`cmd/img-gen/v1.go:516`).
   full keyframes→gif pipeline.
 - Golden tests: Phaser JSON, Unity JSON, Sparrow XML, Tiled tsx generated
   from a fixed fake atlas/kit — byte-exact fixtures for stability.
-- PNG tEXt: round-trip decode (stdlib) confirms chunks parse and
-  `parameters` is recoverable; hand-mangled chunk is rejected by decoder
-  (proving CRC correctness).
+- PNG tEXt: round-trip decode (stdlib) confirms chunks parse and every
+  embedded key (e.g. `job`) is recoverable; hand-mangled chunk is rejected
+  by decoder (proving CRC correctness).
 - Idempotency: restart simulation in test (construct queue, submit, rebuild
   queue with same DATA_DIR, replay returns same id).
 

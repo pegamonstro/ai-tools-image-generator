@@ -2392,7 +2392,11 @@ func TestSubmitAssetSetRembgBarKeepsFill(t *testing.T) {
 	if err := png.Encode(&rb, rembgImg); err != nil {
 		t.Fatal(err)
 	}
-	o.Ops.Rembg = func(ctx context.Context, imageB64 string) ([]byte, error) { return rb.Bytes(), nil }
+	rembgCalled := 0
+	o.Ops.Rembg = func(ctx context.Context, imageB64 string) ([]byte, error) {
+		rembgCalled++
+		return rb.Bytes(), nil
+	}
 	m := New(o)
 	seed := int64(7)
 	id, err := m.SubmitAssetSet(AssetSetRequest{
@@ -2420,5 +2424,8 @@ func TestSubmitAssetSetRembgBarKeepsFill(t *testing.T) {
 	}
 	if _, err := m.opts.Store.ReadSetFile(id, "hp-fill.png"); err != nil {
 		t.Fatalf("fill file: %v", err)
+	}
+	if rembgCalled != 1 {
+		t.Fatalf("rembg calls = %d, want 1 (track only — fill is never rembg-processed)", rembgCalled)
 	}
 }

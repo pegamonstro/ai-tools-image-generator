@@ -305,7 +305,8 @@ chunk, sorted by key, spliced in just before the IEND trailer (any
 standard tEXt reader shows them, e.g. `exiftool` or `pngcheck -v`).
 Render-path images always embed `software` (`img-gen`), `prompt`,
 `model`, `size`, `mode`, and `job`, plus `seed`, `negative`, `loras`, and
-`routing` when they apply. `routing` is the models.json catalog key the
+`routing` when they apply, and `control` / `ip_adapter` when conditioning
+applies. `routing` is the models.json catalog key the
 submitted model resolved by — it appears whenever a catalog key matched,
 even under `IMAGE_ROUTING=direct`, so it identifies the model rather than
 how the render travelled. Composed asset-set deliverables instead carry

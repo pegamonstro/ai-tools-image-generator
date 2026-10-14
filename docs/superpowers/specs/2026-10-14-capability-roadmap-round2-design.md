@@ -116,7 +116,7 @@ replacing img-gen's contract.
 **API:** per-asset opt-in field on compose asset requests:
 
 ```json
-{ "kind": "atlas", "name": "chips", ..., "meta_formats": ["phaser", "unity", "sparrow", "tiled"] }
+{ "kind": "atlas", "name": "chips", ..., "meta_formats": ["phaser", "unity", "sparrow"] }
 ```
 
 - Subset of `{phaser, unity, sparrow, tiled}`; default `[]` (no new files →
@@ -128,10 +128,16 @@ set endpoint's `files` list, downloadable individually):
 
 | format | file | applies to | shape |
 |---|---|---|---|
-| phaser | `<name>.phaser.json` | atlas, kit | TexturePacker/Phaser 3 JSON-hash: `frames{file:{frame, rotated, trimmed, spriteSourceSize, sourceSize}}`, `meta{app:"img-gen compose", image}` — single-row strips and kit class sheets |
-| unity | `<name>.frames.json` | atlas, kit, npc(walk4/variants) | Unity Sprite Editor grid: array of sprites with frame rect + pivot |
-| sparrow | `<name>.sparrow.xml` | atlas, kit, npc | Sparrow/Starling XML: `<SubTexture name x y width height>`; npc walk4 uses 4-frame names, variants per-directory naming |
-| tiled | `<name>.tsx` (plus `<name>.png` collocated copy) | kit | Tiled tileset with a `<wangset>` mapping the 20 fixed wang classes to corner/edge/none tile colors so terrains/autotiling work out of the box |
+| phaser | `<name>.phaser.json` | atlas, npc | TexturePacker/Phaser 3 JSON-hash: `frames{file:{frame, rotated, trimmed, spriteSourceSize, sourceSize}}`, `meta{app:"img-gen compose", image}` pointing at the single sheet deliverable (`-sheet.png` / `-walk.png`) |
+| unity | `<name>.frames.json` | atlas, npc | Unity Sprite Editor grid: array of sprites with frame rect + pivot |
+| sparrow | `<name>.sparrow.xml` | atlas, npc | Sparrow/Starling XML: `<SubTexture name x y width height>`; npc walk4 uses the 4 direction frame names |
+| tiled | `<name>.tsx` + `<name>-wangset.png` (the assembled sheet it references) | kit | Tiled tileset whose `<wangset>` maps the 20 fixed wang classes to Tiled-native edge-color wangids so terrains/autotiling work out of the box |
+
+Single-texture formats target assets that ship one sheet (atlas, npc): phaser/
+unity/sparrow each reference exactly one texture image, while kit renders 20
+separate class PNGs with no sheet — only tiled, which assembles and ships its
+own wangset sheet, applies to kit. A valid format on a kind it does not serve
+is rejected at compose time as that asset's error.
 
 Wang class mapping in the tsx is mechanical: img-gen's 20 fixed classes
 already name the corner/edge configuration; the wangset `wangid` values are

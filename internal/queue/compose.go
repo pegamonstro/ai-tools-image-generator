@@ -47,7 +47,8 @@ type assetSpec struct {
 	FillStates   []int    `json:"fill_states,omitempty"`
 	Shape        string   `json:"shape,omitempty"`    // npc: "variants" | "walk4"
 	Variants     []string `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
-	Children     int      `json:"children"`           // generation jobs this asset owns, in order
+	MetaFormats  []string `json:"meta_formats,omitempty"`
+	Children     int      `json:"children"` // generation jobs this asset owns, in order
 }
 
 // compositeLayerSpec is one persisted static layer: its set file (saved at
@@ -360,6 +361,7 @@ type AssetSpecIn struct {
 	FillStates   []int    `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
 	Shape        string   `json:"shape,omitempty"`         // npc: "variants" | "walk4"
 	Variants     []string `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
+	MetaFormats  []string `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -399,21 +401,34 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 		if !validAssetSize(a.Size) {
 			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("asset %q: invalid size %q (want WxH, multiples of 16)", an, a.Size)}
 		}
+		// meta_formats (A2): only the format-name subset is queue-side
+		// validation. Kind-compat lives in compose.EmitMeta — a valid name on
+		// an unserving kind submits and surfaces as the asset's compose-time
+		// broken error, mirroring every other compose asset failure.
+		if len(a.MetaFormats) > 0 {
+			valid := map[string]bool{"phaser": true, "unity": true, "sparrow": true, "tiled": true}
+			for _, f := range a.MetaFormats {
+				if !valid[f] {
+					return "", &ValidationError{Code: "validation_error",
+						Msg: fmt.Sprintf("asset %q: meta_formats: format %q unknown (valid: phaser, unity, sparrow, tiled)", an, f)}
+				}
+			}
+		}
 		var built []SubmitRequest
 		var as assetSpec
 		switch a.Kind {
 		case "element":
 			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
-			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent}
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, MetaFormats: a.MetaFormats}
 		case "kit":
 			built = kitChildren(prompt, a.Negative, a.Size, *req.Seed)
-			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size}
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, MetaFormats: a.MetaFormats}
 		case "atlas":
 			if a.Frames < 2 || a.Frames > 64 {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frames must be 2..64", an)}
 			}
 			built = atlasChildren(prompt, a.Negative, a.Size, *req.Seed, a.Frames)
-			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns}
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Frames: a.Frames, Columns: a.Columns, MetaFormats: a.MetaFormats}
 		case "frame":
 			if a.FrameMargins < 1 {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins is required for frames", an)}
@@ -423,7 +438,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: frame_margins must be 1..size/2-1", an)}
 			}
 			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
-			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins}
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, MetaFormats: a.MetaFormats}
 		case "bar":
 			if a.BarFill == "" {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: bar_fill is required for bars", an)}
@@ -461,7 +476,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			}
 			built = append(elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent),
 				elementChildren(a.BarFill, a.Negative, a.Size, *req.Seed, false)...)
-			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, BarFill: a.BarFill, FillStates: uniq}
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, BarFill: a.BarFill, FillStates: uniq, MetaFormats: a.MetaFormats}
 		case "npc":
 			switch a.Shape {
 			case "variants":
@@ -479,7 +494,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: npc shape must be variants or walk4", an)}
 			}
 			built = npcChildren(prompt, a.Negative, a.Size, *req.Seed, a.Shape, a.Variants)
-			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants, Columns: a.Columns}
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants, Columns: a.Columns, MetaFormats: a.MetaFormats}
 		default:
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
 		}
@@ -689,6 +704,19 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				}
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
+			}
+			// Engine-metadata emission (A2): opt-in via meta_formats, running
+			// right after per-kind composition so failures read exactly like
+			// compose failures — the reason breaks the asset (its own composed
+			// outputs are dropped with it, whole-asset delivery), lands in the
+			// manifest, and the set's partial-success rule applies unchanged.
+			if err == nil && len(a.MetaFormats) > 0 {
+				metas, merr := compose.EmitMeta(a.Kind, a.Name, a.MetaFormats, outs)
+				if merr == nil {
+					outs = append(outs, metas...)
+				} else {
+					err = merr
+				}
 			}
 			if err == nil {
 				outsByAsset[ai] = outs

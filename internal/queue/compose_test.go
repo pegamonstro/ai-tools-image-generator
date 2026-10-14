@@ -574,6 +574,131 @@ func TestSubmitAssetSetAtlas(t *testing.T) {
 	}
 }
 
+func TestAssetSetEmitsMetaFiles(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(19)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "walk", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "atlas", Name: "walk", Prompt: "robot walk", Size: "32x32", Frames: 3, Columns: 0, MetaFormats: []string{"phaser"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("set: %s %q", j.Status, j.Error)
+	}
+
+	// The phaser JSON is a real set file: 3 frames, image ref on the sheet.
+	raw, err := m.opts.Store.ReadSetFile(id, "walk.phaser.json")
+	if err != nil {
+		t.Fatalf("phaser meta: %v", err)
+	}
+	var ph struct {
+		Frames map[string]struct {
+			Frame compose.Rect `json:"frame"`
+		} `json:"frames"`
+		Meta map[string]string `json:"meta"`
+	}
+	if err := json.Unmarshal(raw, &ph); err != nil {
+		t.Fatalf("phaser JSON: %v", err)
+	}
+	if len(ph.Frames) != 3 {
+		t.Fatalf("phaser frames: %d", len(ph.Frames))
+	}
+	if ph.Meta["image"] != "walk-sheet.png" {
+		t.Fatalf("phaser meta.image = %q", ph.Meta["image"])
+	}
+
+	// GET /api/v1/sets/<id> serves job.Files (v1.go serveSet) and set read
+	// endpoints list per-asset files from the manifest — assert both,
+	// identically to how TestSubmitAssetSetAtlas asserts atlas.json.
+	found := false
+	for _, f := range j.Files {
+		if f.Name == "walk.phaser.json" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("job files missing meta deliverable: %+v", j.Files)
+	}
+	mraw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(mraw, &man); err != nil {
+		t.Fatal(err)
+	}
+	mfiles := man.Assets[0].Files
+	if len(mfiles) != 3 || mfiles[2] != "walk.phaser.json" {
+		t.Fatalf("manifest files: %q", mfiles)
+	}
+
+	// The persisted spec carries meta_formats, so a mid-render restart
+	// rebuilds the same set (same field on assetSpec and AssetSpecIn).
+	var spec composeSpec
+	if err := json.Unmarshal([]byte(j.ComposeSpec), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Assets) != 1 || len(spec.Assets[0].MetaFormats) != 1 || spec.Assets[0].MetaFormats[0] != "phaser" {
+		t.Fatalf("persisted meta_formats: %+v", spec.Assets)
+	}
+}
+
+func TestAssetSetEmitsKitTiled(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "pipes", Seed: ptr64(71),
+		Assets: []AssetSpecIn{{Kind: "kit", Name: "pipes", Prompt: "blue pipes", Size: "64x64", MetaFormats: []string{"tiled"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("set: %s %q", j.Status, j.Error)
+	}
+	// tsx + assembled wangset sheet persist under names that pass the set
+	// file rule unchanged (no new escaping).
+	for _, name := range []string{"pipes.tsx", "pipes-wangset.png"} {
+		if _, err := m.opts.Store.ReadSetFile(id, name); err != nil {
+			t.Fatalf("kit meta %s: %v", name, err)
+		}
+	}
+	n := 0
+	for _, f := range j.Files {
+		if f.Name == "pipes.tsx" || f.Name == "pipes-wangset.png" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("job files: %+v", j.Files)
+	}
+	wraw, err := m.opts.Store.ReadSetFile(id, "pipes-wangset.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := png.Decode(bytes.NewReader(wraw)); err != nil {
+		t.Fatalf("wangset sheet: %v", err)
+	}
+	txt, err := m.opts.Store.ReadSetFile(id, "pipes.tsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Full tsx shape: one tileset per 20-kit, one wangtile per class.
+	for _, want := range []string{`tilecount="20"`, `<wangset name="pipes"`} {
+		if !strings.Contains(string(txt), want) {
+			t.Fatalf("pipes.tsx missing %q", want)
+		}
+	}
+	if got := strings.Count(string(txt), "<wangtile "); got != len(compose.KitClasses) {
+		t.Fatalf("wangtiles: %d, want %d", got, len(compose.KitClasses))
+	}
+}
+
 func TestSubmitAssetSetFrameKind(t *testing.T) {
 	cap := &genCapture{}
 	o := composeTestOpts(t, t.TempDir(), cap)
@@ -829,6 +954,92 @@ func TestSubmitAssetSetValidation(t *testing.T) {
 		if _, err := m.SubmitAssetSet(req); err == nil {
 			t.Fatalf("case %d: want validation error", i)
 		}
+	}
+}
+
+// setWithMeta builds a minimal one-asset asset-set request carrying
+// meta_formats. The atlas-valid Frames minimum keeps the helper single-shape;
+// element and kit ignore frames.
+func setWithMeta(kind string, formats []string) AssetSetRequest {
+	return AssetSetRequest{
+		Name: "meta", Seed: ptr64(17),
+		Assets: []AssetSpecIn{{Kind: kind, Name: "meta", Prompt: "meta asset", Size: "32x32", Frames: 3, MetaFormats: formats}},
+	}
+}
+
+func TestMetaFormatsValidation(t *testing.T) {
+	m := New(composeTestOpts(t, t.TempDir(), &genCapture{}))
+
+	// Submit-time subset validation: format names outside
+	// {phaser, unity, sparrow, tiled} are validation_error before anything
+	// ships. Kind-compat is EmitMeta's job at compose time (below) — only the
+	// name check is queue-side.
+	bad := func(req AssetSetRequest, want string) {
+		_, err := m.SubmitAssetSet(req)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("want %q, got %v", want, err)
+		}
+	}
+	bad(setWithMeta("atlas", []string{"nope"}), "unknown")
+	bad(setWithMeta("atlas", []string{"tiled", "nope"}), "unknown")
+	bad(setWithMeta("element", []string{"nope"}), "unknown")
+
+	// Kind-compat failures surface honestly at compose time, never silently:
+	// a valid format name on an unserving kind submits fine and breaks the
+	// asset during composition — a single-asset set therefore fails the
+	// parent with the named reason, whole-asset (its own composed outputs do
+	// not ship either).
+	broken := func(kind string, formats []string, want string) {
+		id, err := m.SubmitAssetSet(setWithMeta(kind, formats))
+		if err != nil {
+			t.Fatalf("%s %v: submit: %v", kind, formats, err)
+		}
+		j := waitFor(t, m, id, "failed")
+		if j.Status != "failed" || !strings.Contains(j.Error, "compose_error") || !strings.Contains(j.Error, want) {
+			t.Fatalf("%s %v: parent = %s %q, want failure naming %q", kind, formats, j.Status, j.Error, want)
+		}
+	}
+	broken("element", []string{"phaser"}, `does not apply to kind "element"`)
+	broken("atlas", []string{"tiled"}, `"tiled" does not apply to kind "atlas"`)
+	broken("kit", []string{"phaser"}, `does not apply to kind "kit"`)
+
+	// Partial success holds for meta failures too: in a mixed set the healthy
+	// asset ships and the broken-meta asset records the reason in the
+	// manifest with zero files.
+	seed := int64(23)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "mixmeta", Seed: &seed,
+		Assets: []AssetSpecIn{
+			{Kind: "element", Name: "ok", Prompt: "ok", Size: "16x16"},
+			{Kind: "atlas", Name: "sheet", Prompt: "sheet", Size: "16x16", Frames: 2, MetaFormats: []string{"tiled"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("mixed set: %s %q", j.Status, j.Error)
+	}
+	mraw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(mraw, &man); err != nil {
+		t.Fatal(err)
+	}
+	if man.Assets[0].Error != "" || len(man.Assets[0].Files) != 1 {
+		t.Fatalf("element should have succeeded: %+v", man.Assets[0])
+	}
+	if !strings.Contains(man.Assets[1].Error, `does not apply to kind "atlas"`) {
+		t.Fatalf("atlas meta error must be recorded: %+v", man.Assets[1])
+	}
+	if len(man.Assets[1].Files) != 0 {
+		t.Fatalf("broken asset ships no files: %+v", man.Assets[1])
+	}
+	if _, err := m.opts.Store.ReadSetFile(id, "sheet-sheet.png"); err == nil {
+		t.Fatal("broken asset's composed outputs must not ship")
 	}
 }
 

@@ -184,14 +184,26 @@ simple framing format — img-gen grows a ~60-line pure-stdlib chunk writer.
 
 ## A4. Idempotency-key persistence
 
-Idempotency mapping is currently process-local (`cmd/img-gen/v1.go:516`).
+Idempotency mapping is persisted to disk in production; the process-local
+(un-persisted) store survives only as the empty-path form used by tests
+(amended 2026-10-14 to the shipped store; `cmd/img-gen/main.go` always wires
+`DATA_DIR/idempotency.jsonl`).
 
-- Map persists as append-only JSONL at `DATA_DIR/idempotency.jsonl`:
-  `{"key": "...", "scope": "jobs"|"asset-sets"|"gifs", "id": "...", "ts": ...}`.
+- Map persists as append-only JSONL at `DATA_DIR/idempotency.jsonl`
+  (amended 2026-10-14 to the shipped store: each completed record is
+  `{"key","status","body"}` — the full response, body base64-encoded —
+  rather than the first-drafted `{"key","scope","id","ts"}`, so a replayed
+  key returns the byte-identical original response).
 - On boot, replayed (last 10 000 lines scanned) into the in-memory map so a
-  retried `Idempotency-Key` after restart returns the same job id.
-- Append is synchronous with the map insert (same mutex), fsync-free
-  (crash may lose the tail entry — acceptable: same crash lost the job).
+  retried `Idempotency-Key` after restart returns the original response.
+  Only the v1 job submit endpoint is keyed today — asset-set and GIF
+  submits are not, so no records originate from them. A failed submit
+  releases its reservation instead of completing it, so only
+  response-carrying records are appended.
+- The reservation is inserted into the in-memory map at submit time but
+  never persisted; the completed-state write and the JSONL append happen
+  together at completion, under the same mutex. fsync-free (crash may lose
+  the tail entry — acceptable: same crash lost the job).
 - Existing semantics unchanged: in-memory fast path on every request,
   persistence only widens the survivable window.
 

@@ -144,15 +144,14 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 			writeV1Err(w, http.StatusBadRequest, "validation_error", "image is not valid base64", "")
 			return
 		}
-		pre, err := png.Decode(bytes.NewReader(raw))
+		cfg, err := png.DecodeConfig(bytes.NewReader(raw))
 		if err != nil {
 			writeV1Err(w, http.StatusBadRequest, "validation_error", "image is not a PNG", "")
 			return
 		}
-		pb := pre.Bounds()
-		if pb.Dx() > compose.RepairMaxDim || pb.Dy() > compose.RepairMaxDim {
+		if cfg.Width > compose.RepairMaxDim || cfg.Height > compose.RepairMaxDim {
 			writeV1Err(w, http.StatusBadRequest, "validation_error",
-				fmt.Sprintf("image is %dx%d; repair supports up to %dx%d", pb.Dx(), pb.Dy(), compose.RepairMaxDim, compose.RepairMaxDim), "")
+				fmt.Sprintf("image is %dx%d; repair supports up to %dx%d", cfg.Width, cfg.Height, compose.RepairMaxDim, compose.RepairMaxDim), "")
 			return
 		}
 		out, err := compose.RepairPNG(raw, req.Cell, colors)

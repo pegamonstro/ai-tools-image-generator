@@ -115,4 +115,3 @@ func TestScanTextChunksRejectsMangledCRC(t *testing.T) {
 		t.Fatal("want CRC mismatch error")
 	}
 }
-

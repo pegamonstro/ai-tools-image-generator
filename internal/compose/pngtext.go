@@ -102,4 +102,3 @@ func ScanTextChunks(p []byte) (map[string]string, error) {
 	}
 	return out, nil
 }
-

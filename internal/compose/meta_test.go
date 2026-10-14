@@ -461,6 +461,223 @@ func TestEmitMetaGoldenByteExact(t *testing.T) {
 	}
 }
 
+// findData returns the data of the output file with the exact name, or nil.
+func findData(files []OutputFile, name string) []byte {
+	for _, of := range files {
+		if of.Name == name {
+			return of.Data
+		}
+	}
+	return nil
+}
+
+// tsxDoc mirrors the subset of Tiled's .tsx tileset XML the kit emitter
+// writes; used to parse tsx output in the tests below.
+type tsxDoc struct {
+	XMLName   xml.Name `xml:"tileset"`
+	Name      string   `xml:"name,attr"`
+	TileCount int      `xml:"tilecount,attr"`
+	Columns   int      `xml:"columns,attr"`
+	Image     struct {
+		Source string `xml:"source,attr"`
+		W      int    `xml:"width,attr"`
+		H      int    `xml:"height,attr"`
+	} `xml:"image"`
+	Wangset struct {
+		Name       string `xml:"name,attr"`
+		Type       string `xml:"type,attr"`
+		EdgeColors []struct {
+			Color string `xml:"color,attr"`
+		} `xml:"wangedgecolors>color"`
+		WangTiles []struct {
+			TileID int    `xml:"tileid,attr"`
+			WangID string `xml:"wangid,attr"`
+		} `xml:"wangtiles>wangtile"`
+	} `xml:"wangset"`
+}
+
+func tsxParse(b []byte) (tsxDoc, error) {
+	var d tsxDoc
+	err := xml.Unmarshal(b, &d)
+	return d, err
+}
+
+// kitClassImages encodes one deterministic 16x16 flat png per kit class, in
+// KitClasses order.
+func kitClassImages(t *testing.T) [][]byte {
+	images := make([][]byte, len(KitClasses))
+	for i := range KitClasses {
+		c := color.RGBA{R: uint8(i * 50), G: uint8(i * 30), B: uint8(i * 100), A: 255}
+		images[i] = pngBytes(t, solid(16, 16, c))
+	}
+	return images
+}
+
+func TestEmitMetaKitTiled(t *testing.T) {
+	images := kitClassImages(t)
+	outs, err := ComposeKit("circuit", images)
+	if err != nil {
+		t.Fatalf("kit: %v", err)
+	}
+	meta, err := EmitMeta("kit", "circuit", []string{"tiled"}, outs)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if len(meta) != 2 {
+		t.Fatalf("want tsx + wangset png, got %d files", len(meta))
+	}
+	var pngName, tsxName string
+	for _, of := range meta {
+		switch {
+		case strings.HasSuffix(of.Name, ".tsx"):
+			tsxName = of.Name
+		case strings.HasSuffix(of.Name, ".png"):
+			pngName = of.Name
+		}
+	}
+	if tsxName != "circuit.tsx" || pngName != "circuit-wangset.png" {
+		t.Fatalf("names: %s %s", tsxName, pngName)
+	}
+	// The wangset png must be a real png of 4 cols x 5 rows of 16px = 64x80.
+	im, err := png.Decode(bytes.NewReader(findData(meta, pngName)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if im.Bounds().Dx() != 64 || im.Bounds().Dy() != 80 {
+		t.Fatalf("wangset png %v", im.Bounds())
+	}
+	// tsx parses: tilecount 20, columns 4, image source + dims, and one
+	// <wangtile> per class whose tileid ordering matches KitClasses[0..19]
+	// laid out row-major into the 4-col sheet.
+	doc, err := tsxParse(findData(meta, tsxName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.TileCount != 20 || doc.Columns != 4 {
+		t.Fatalf("tiles: %+v", doc)
+	}
+	if doc.Image.Source != "circuit-wangset.png" || doc.Image.W != 64 || doc.Image.H != 80 {
+		t.Fatalf("image: %+v", doc.Image)
+	}
+	if len(doc.Wangset.WangTiles) != 20 {
+		t.Fatalf("wangtiles: %d", len(doc.Wangset.WangTiles))
+	}
+	for i, wt := range doc.Wangset.WangTiles {
+		if wt.TileID != i {
+			t.Fatalf("wangtile %d tileid: want %d got %d", i, i, wt.TileID)
+		}
+	}
+	// spot-check edge-id table (wang.go Hints are the semantic reference):
+	// line-h -> [0,1,0,1], line-v -> [1,0,1,0], corner-out-nw -> [1,0,0,1],
+	// t-e -> [1,1,1,0]
+	want := map[string]string{
+		"line-h":        "0,1,0,1",
+		"line-v":        "1,0,1,0",
+		"corner-out-nw": "1,0,0,1",
+		"t-e":           "1,1,1,0",
+	}
+	for i, kc := range KitClasses {
+		if w, ok := want[kc.Key]; ok && doc.Wangset.WangTiles[i].WangID != w {
+			t.Fatalf("wangid for %s: want %s got %s", kc.Key, w, doc.Wangset.WangTiles[i].WangID)
+		}
+	}
+}
+
+func TestEmitMetaKitTiledNegative(t *testing.T) {
+	// atlas outs have no per-class files: the first missing class must name
+	// itself in the error (honest failure, not a silent skip).
+	outs := atlasOuts(t, "chips", 16, 16, 4)
+	_, err := EmitMeta("kit", "chips", []string{"tiled"}, outs)
+	if err == nil {
+		t.Fatal("expected error for missing kit class file")
+	}
+	if !strings.Contains(err.Error(), "kit class file chips-line-h.png missing") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestKitTiledGoldenByteExact(t *testing.T) {
+	// circuit.tsx and circuit-wangset.png bytes equal testdata/golden/…
+	// (regen via -update; the tsx is deterministic — fixed 20-class order,
+	// fixed wangid derivation, fixed color hexes — and png.Encode of the
+	// same PackGrid output is byte-stable). Reuses the same -update flag as
+	// TestEmitMetaGoldenByteExact.
+	outs, err := ComposeKit("circuit", kitClassImages(t))
+	if err != nil {
+		t.Fatalf("kit: %v", err)
+	}
+	meta, err := EmitMeta("kit", "circuit", []string{"tiled"}, outs)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	pairs := []struct{ out, golden string }{
+		{"circuit.tsx", filepath.Join("testdata", "golden", "circuit.tsx")},
+		{"circuit-wangset.png", filepath.Join("testdata", "golden", "circuit-wangset.png")},
+	}
+	for _, p := range pairs {
+		data := findData(meta, p.out)
+		if data == nil {
+			t.Fatalf("meta output %s missing", p.out)
+		}
+		if *updateGolden {
+			if err := os.WriteFile(p.golden, data, 0o644); err != nil {
+				t.Fatalf("write golden %s: %v", p.golden, err)
+			}
+			t.Logf("updated golden file: %s", p.golden)
+			continue
+		}
+		expected, err := os.ReadFile(p.golden)
+		if err != nil {
+			t.Fatalf("read golden file %s: %v (regen with -update)", p.golden, err)
+		}
+		if !bytes.Equal(data, expected) {
+			t.Fatalf("golden file mismatch for %s (regen with -update)", p.out)
+		}
+	}
+}
+
+func TestWangIDForClassCoversAllKitClasses(t *testing.T) {
+	// Every KitClasses key must map (brief: "every key must be covered"); an
+	// unmapped class would surface as a named error at emit time.
+	for _, kc := range KitClasses {
+		id, err := wangIDForClass(kc.Key)
+		if err != nil {
+			t.Fatalf("class %q: %v", kc.Key, err)
+		}
+		if id[0] < 0 || id[0] > 1 || id[1] < 0 || id[1] > 1 || id[2] < 0 || id[2] > 1 || id[3] < 0 || id[3] > 1 {
+			t.Fatalf("class %q wangid out of range: %v", kc.Key, id)
+		}
+	}
+	// semantic spot-checks beyond TestEmitMetaKitTiled's four
+	want := map[string][4]int{
+		"cross":        {1, 1, 1, 1},
+		"single":       {0, 0, 0, 0},
+		"cap-e":        {0, 1, 0, 0},
+		"cap-w":        {0, 0, 0, 1},
+		"cap-n":        {1, 0, 0, 0},
+		"cap-s":        {0, 0, 1, 0},
+		"t-w":          {1, 0, 1, 1},
+		"t-n":          {1, 1, 0, 1},
+		"t-s":          {0, 1, 1, 1},
+		"corner-in-se": {0, 1, 1, 0}, // edge-color-only: joins S+E like corner-out-se
+	}
+	for key, wantID := range want {
+		id, err := wangIDForClass(key)
+		if err != nil {
+			t.Fatalf("class %q: %v", key, err)
+		}
+		if id != wantID {
+			t.Fatalf("class %q: want %v got %v", key, wantID, id)
+		}
+	}
+	// unknown or malformed keys are named errors, never zero ids
+	for _, key := range []string{"bogus", "empty", "t-x", "cap-x", "cap-toolong", "corner-out-xx"} {
+		if _, err := wangIDForClass(key); err == nil {
+			t.Fatalf("class %q: want error for unmapped key", key)
+		}
+	}
+}
+
 func TestEmitMetaRejectsAndIsStable(t *testing.T) {
 	outs := atlasOuts(t, "chips", 16, 16, 4)
 	// - unknown format "phaza" error

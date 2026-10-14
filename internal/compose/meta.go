@@ -14,9 +14,9 @@ import (
 // Each references exactly one texture image, which is why kit (20 separate
 // class files, no sheet) supports tiled only — see the spec's Phase A table.
 var MetaFormats = map[string][]string{
-	"phaser":  {"atlas", "npc"},
-	"unity":   {"atlas", "npc"},
-	"sparrow": {"atlas", "npc"},
+	"phaser":  {"atlas", "npc", "sheet"},
+	"unity":   {"atlas", "npc", "sheet"},
+	"sparrow": {"atlas", "npc", "sheet"},
 	"tiled":   {"kit"},
 }
 
@@ -46,12 +46,12 @@ func EmitMeta(kind, name string, formats []string, outs []OutputFile) ([]OutputF
 		}
 	}
 	switch kind {
-	case "atlas", "npc":
+	case "atlas", "npc", "sheet":
 		return emitStripMeta(kind, name, formats, outs)
 	case "kit":
 		return emitKitMeta(name, formats, outs)
 	}
-	return nil, fmt.Errorf("meta formats apply to atlas, npc, kit — not %q", kind)
+	return nil, fmt.Errorf("meta formats apply to atlas, npc, sheet, kit — not %q", kind)
 }
 
 func findFile(outs []OutputFile, suffix string) (OutputFile, bool) {
@@ -63,20 +63,24 @@ func findFile(outs []OutputFile, suffix string) (OutputFile, bool) {
 	return OutputFile{}, false
 }
 
-// emitStripMeta reads <name>-atlas.json + locates the sheet and emits one
+// emitStripMeta reads <name>-atlas.json (sheet: -sheet.json) + locates the sheet and emits one
 // file per requested format. Both npc shapes ship exactly one sheet under
 // different names: walk4 composes <name>-walk.png, variants composes through
 // the atlas path as <name>-sheet.png — the probe tries walk first
 // (deterministic order; both present cannot occur in practice) and only
 // errors when neither exists, naming both candidates.
 func emitStripMeta(kind, name string, formats []string, outs []OutputFile) ([]OutputFile, error) {
-	aj, ok := findFile(outs, "-atlas.json")
+	metaSuffix := "-atlas.json"
+	if kind == "sheet" {
+		metaSuffix = "-sheet.json"
+	}
+	aj, ok := findFile(outs, metaSuffix)
 	if !ok {
-		return nil, fmt.Errorf("atlas metadata missing for %q", name)
+		return nil, fmt.Errorf("%s missing for %q", metaSuffix, name)
 	}
 	var doc atlasJSONDoc
 	if err := json.Unmarshal(aj.Data, &doc); err != nil {
-		return nil, fmt.Errorf("atlas metadata %s: %w", aj.Name, err)
+		return nil, fmt.Errorf("%s: %w", metaSuffix, err)
 	}
 	sheetSuffixes := []string{"-sheet.png"}
 	if kind == "npc" {

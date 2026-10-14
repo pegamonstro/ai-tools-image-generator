@@ -771,13 +771,55 @@ func TestEmitMetaRejectsAndIsStable(t *testing.T) {
 	if meta != nil {
 		t.Fatalf("expected nil meta for empty formats, got %v", meta)
 	}
-	// - atlas outs with no -atlas.json file -> error "atlas metadata missing"
+	// - atlas outs with no -atlas.json file -> error "-atlas.json missing"
 	noAtlas := []OutputFile{{Name: "chips-sheet.png", Data: []byte{}}}
 	_, err = EmitMeta("atlas", "chips", []string{"phaser"}, noAtlas)
 	if err == nil {
 		t.Fatalf("expected error for missing atlas metadata")
 	}
-	if !strings.Contains(err.Error(), "atlas metadata missing") {
+	if !strings.Contains(err.Error(), "-atlas.json missing") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEmitMetaSheet(t *testing.T) {
+	cells := []sheetCell{
+		{View: "front", Img: solid(16, 16, color.RGBA{R: 255, A: 255})},
+		{View: "side", Img: solid(16, 16, color.RGBA{G: 255, A: 255})},
+	}
+	outs, err := ComposeSheet("hero", cells, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas, err := EmitMeta("sheet", "hero", []string{"phaser", "unity", "sparrow"}, outs)
+	if err != nil {
+		t.Fatalf("sheet meta: %v", err)
+	}
+	got := map[string]bool{}
+	for _, m := range metas {
+		got[m.Name] = true
+	}
+	for _, want := range []string{"hero.phaser.json", "hero.frames.json", "hero.sparrow.xml"} {
+		if !got[want] {
+			t.Fatalf("missing %s in %v", want, got)
+		}
+	}
+	if _, err := EmitMeta("sheet", "hero", []string{"tiled"}, outs); err == nil {
+		t.Fatal("tiled must be rejected for sheet")
+	}
+	if _, err := EmitMeta("sheet", "hero", []string{"phaser"}, []OutputFile{{Name: "hero-sheet.png", Data: []byte("not-a-real-png")}}); err == nil {
+		t.Fatal("missing -sheet.json must error")
+	}
+	if _, ok := MetaFormats["phaser"]; !ok {
+		t.Fatal("phaser missing")
+	}
+	supported := false
+	for _, k := range MetaFormats["phaser"] {
+		if k == "sheet" {
+			supported = true
+		}
+	}
+	if !supported {
+		t.Fatalf("phaser list must include sheet: %v", MetaFormats["phaser"])
 	}
 }

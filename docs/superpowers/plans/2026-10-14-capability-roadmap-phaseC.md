@@ -2258,7 +2258,7 @@ func main() {
 		panic(err)
 	}
 	f.Close()
-	down, err := compose.RepairImage(raw, cell, 32)
+	down, err := compose.RepairPNG(raw, cell, 32)
 	if err != nil {
 		panic(err)
 	}

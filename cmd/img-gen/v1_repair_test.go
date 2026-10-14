@@ -95,7 +95,7 @@ func TestV1RepairErrors(t *testing.T) {
 		want string
 	}{
 		{"missing image", `{}`, "image is required"},
-		{"bad base64", `{"image":"@@@not-b64@@@"}` , "base64"},
+		{"bad base64", `{"image":"@@@not-b64@@@"}`, "base64"},
 		{"not a PNG", `{"image":"` + mustB64(t, []byte("junk")) + `"}`, "not a PNG"},
 		{"too large", `{"image":"` + mustB64(t, testPixelGrid(t, 1056, 16, 4)) + `","cell":4}`, "repair supports up to 1024x1024"},
 		{"cell high", `{"image":"` + mustB64(t, in) + `","cell":65}`, "cell must be between 2 and 64"},

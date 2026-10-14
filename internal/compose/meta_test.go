@@ -567,14 +567,15 @@ func TestEmitMetaKitTiled(t *testing.T) {
 			t.Fatalf("wangtile %d tileid: want %d got %d", i, i, wt.TileID)
 		}
 	}
-	// spot-check edge-id table (wang.go Hints are the semantic reference):
-	// line-h -> [0,1,0,1], line-v -> [1,0,1,0], corner-out-nw -> [1,0,0,1],
-	// t-e -> [1,1,1,0]
+	// spot-check edge-id table (wang.go Hints are the semantic reference;
+	// wangid values are Tiled's native 8-element [TL,T,TR,L,R,BL,B,BR] lists
+	// with edges at 1=N, 3=W, 4=E, 6=S): line-h -> [0,1,0,1],
+	// line-v -> [1,0,1,0], corner-out-nw -> [1,0,0,1], t-e -> [1,1,1,0]
 	want := map[string]string{
-		"line-h":        "0,1,0,1",
-		"line-v":        "1,0,1,0",
-		"corner-out-nw": "1,0,0,1",
-		"t-e":           "1,1,1,0",
+		"line-h":        "0,0,0,1,1,0,0,0",
+		"line-v":        "0,1,0,0,0,0,1,0",
+		"corner-out-nw": "0,1,0,1,0,0,0,0",
+		"t-e":           "0,1,0,0,1,0,1,0",
 	}
 	for i, kc := range KitClasses {
 		if w, ok := want[kc.Key]; ok && doc.Wangset.WangTiles[i].WangID != w {
@@ -674,6 +675,41 @@ func TestWangIDForClassCoversAllKitClasses(t *testing.T) {
 	for _, key := range []string{"bogus", "empty", "t-x", "cap-x", "cap-toolong", "corner-out-xx"} {
 		if _, err := wangIDForClass(key); err == nil {
 			t.Fatalf("class %q: want error for unmapped key", key)
+		}
+	}
+	// the Tiled lift produces 8-element wangid lists: corners (0,2,5,7) zero,
+	// edge indices carrying the tuple exactly (1=N, 3=W, 4=E, 6=S)
+	for _, kc := range KitClasses {
+		id, err := wangIDForClass(kc.Key)
+		if err != nil {
+			t.Fatalf("class %q: %v", kc.Key, err)
+		}
+		w := tiledWangID(id)
+		for _, ci := range []int{0, 2, 5, 7} {
+			if w[ci] != 0 {
+				t.Fatalf("class %q: corner index %d must stay 0, got %d", kc.Key, ci, w[ci])
+			}
+		}
+		if w[1] != id[0] || w[4] != id[1] || w[6] != id[2] || w[3] != id[3] {
+			t.Fatalf("class %q: lift mismatch edges %v -> %v", kc.Key, id, w)
+		}
+	}
+	// representative edge-index layout checks: t-e (stem E) paints top+right+
+	// bottom; cap-n paints only top; line-h paints left+right; cross paints
+	// all four edge indices
+	layout := map[string][8]int{
+		"t-e":    {0, 1, 0, 0, 1, 0, 1, 0},
+		"cap-n":  {0, 1, 0, 0, 0, 0, 0, 0},
+		"line-h": {0, 0, 0, 1, 1, 0, 0, 0},
+		"cross":  {0, 1, 0, 1, 1, 0, 1, 0},
+	}
+	for key, want := range layout {
+		id, err := wangIDForClass(key)
+		if err != nil {
+			t.Fatalf("class %q: %v", key, err)
+		}
+		if got := tiledWangID(id); got != want {
+			t.Fatalf("class %q: want %v got %v", key, want, got)
 		}
 	}
 }

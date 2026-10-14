@@ -212,7 +212,8 @@ func emitKitMeta(name string, formats []string, outs []OutputFile) ([]OutputFile
 		if err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(&buf, `   <wangtile tileid="%d" wangid="%d,%d,%d,%d"/>`+"\n", i, id[0], id[1], id[2], id[3])
+		w := tiledWangID(id)
+		fmt.Fprintf(&buf, `   <wangtile tileid="%d" wangid="%d,%d,%d,%d,%d,%d,%d,%d"/>`+"\n", i, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7])
 	}
 	buf.WriteString(`  </wangtiles>` + "\n")
 	buf.WriteString(` </wangset>` + "\n")
@@ -223,15 +224,30 @@ func emitKitMeta(name string, formats []string, outs []OutputFile) ([]OutputFile
 	}, nil
 }
 
-// wangIDForClass derives a kit class's 4-element Tiled edge wangid
+// tiledWangID lifts an [north, east, south, west] edge tuple into Tiled's
+// native 8-element wangid layout [TL, T, TR, L, R, BL, B, BR]: the edge
+// positions are 1=Top(N), 3=Left(W), 4=Right(E), 6=Bottom(S), and the corner
+// positions 0, 2, 5, 7 stay 0 (every kit class is a pure edge configuration).
+func tiledWangID(edges [4]int) [8]int {
+	var id [8]int
+	id[1] = edges[0] // top == north
+	id[3] = edges[3] // left == west
+	id[4] = edges[1] // right == east
+	id[6] = edges[2] // bottom == south
+	return id
+}
+
+// wangIDForClass derives a kit class's edge-connectivity tuple
 // [north, east, south, west] with colors 0=none 1=line-color, from the
-// class's connectivity as documented in wang.go's Hint strings. NOTE
-// (documented limitation, see spec): this is an EDGE-color-only wangset —
-// inner and outer corner classes share connectivity, so Tiled's autotile
-// may pick either. The full 20 classes remain individually selectable in
-// the terrain brush. The single source of truth for the mapping is this
-// function; reconcile it against the real KitClasses table (wang.go:13)
-// when implementing — every key must be covered.
+// class's connectivity as documented in wang.go's Hint strings. emitKitMeta
+// lifts this tuple into Tiled's native 8-element wangid format via
+// tiledWangID. NOTE (documented limitation, see spec): this is an
+// EDGE-color-only wangset — inner and outer corner classes share
+// connectivity, so Tiled's autotile may pick either. The full 20 classes
+// remain individually selectable in the terrain brush. The single source of
+// truth for the mapping is this function; reconcile it against the real
+// KitClasses table (wang.go:13) when implementing — every key must be
+// covered.
 //
 // Semantic reference (verified against wang.go Hints): line-h runs E–W;
 // line-v runs N–S; corner-out-<q> enters one edge and exits the adjacent

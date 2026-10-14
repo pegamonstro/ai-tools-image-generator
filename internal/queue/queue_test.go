@@ -1518,7 +1518,7 @@ func TestSubmitConditioningDispatch(t *testing.T) {
 
 func TestRenderParamsKVConditioning(t *testing.T) {
 	kv := renderParamsKV(storage.Job{ID: "j1", Mode: "generate"}, imageInputs{
-		Control:   &storage.ControlParams{Net: "pose", Strength: 0.7},
+		Control:   &storage.ControlParams{Net: "pose", Image: "b64can", Strength: 0.7},
 		IPAdapter: &storage.IPAdapterParams{Image: "x", Strength: 0.6},
 	})
 	if kv["control"] != "pose/0.70" || kv["ip_adapter"] != "0.60" {

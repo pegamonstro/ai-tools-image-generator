@@ -187,7 +187,7 @@ func (s *Store) DeleteHistory(id string) error {
 	for sc.Scan() {
 		var j Job
 		if err := json.Unmarshal(sc.Bytes(), &j); err != nil {
-			return nil
+			return err
 		}
 		if j.ID == id {
 			continue

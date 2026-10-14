@@ -3,10 +3,12 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1397,5 +1399,142 @@ func TestDeleteSurvivesListRescue(t *testing.T) {
 	}
 	if got := m.List(); len(got) != 0 {
 		t.Fatalf("List resurrected the deleted job: %+v", got)
+	}
+}
+
+// sdxlCatalog offers one SDXL-sidecar model and one default-sidecar model,
+// so tests can drive both engine-gate branches through resolveModelValues.
+func sdxlCatalog() *models.Catalog {
+	return &models.Catalog{Models: []models.Entry{
+		{Key: "pony", Label: "Pony V6 XL", Value: "/m/sdxl/pony.safetensors", Sidecar: "sdxl"},
+		{Key: "persephone", Label: "Persephone 2.0", Value: "/m/persephone-4bit"},
+	}}
+}
+
+func TestSubmitConditioningValidationMatrix(t *testing.T) {
+	m := New(testOpts(t))
+	cases := []struct {
+		name    string
+		req     SubmitRequest
+		wantMsg string
+	}{
+		{"mode conflict: edit", SubmitRequest{Mode: "edit", Prompt: "p", Image: "b64", Size: "512x512",
+			Control: &storage.ControlParams{Net: "pose", Image: "x"}},
+			`control and ip_adapter require mode "generate"`},
+		{"mode conflict: inpaint", SubmitRequest{Mode: "inpaint", Prompt: "p", Image: "b64", Mask: "m64",
+			IPAdapter: &storage.IPAdapterParams{Image: "x"}},
+			`control and ip_adapter require mode "generate"`},
+		{"bad net", SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+			Control: &storage.ControlParams{Net: "edges", Image: "x"}},
+			"control.net must be one of pose, depth, canny"},
+		{"missing control.image", SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+			Control: &storage.ControlParams{Net: "pose"}},
+			"control.image is required"},
+		{"control.strength range", SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+			Control: &storage.ControlParams{Net: "pose", Image: "x", Strength: 5}},
+			"out of range 0.1..1.0"},
+		{"missing ip_adapter.image", SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+			IPAdapter: &storage.IPAdapterParams{}},
+			"ip_adapter.image is required"},
+		{"ip_adapter.strength range", SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+			IPAdapter: &storage.IPAdapterParams{Image: "x", Strength: 1.5}},
+			"out of range 0.1..1.0"},
+	}
+	for _, tc := range cases {
+		_, err := m.Submit(tc.req)
+		var verr *ValidationError
+		if !errors.As(err, &verr) {
+			t.Fatalf("%s: want ValidationError, got %v", tc.name, err)
+		}
+		// The strength/net cases carry the offending value in the message
+		// ("(got %q)" / "%v"), so the assertion matches on the distinctive
+		// fragment every wantMsg must be (substring), not full equality.
+		if verr.Code != "validation_error" || !strings.Contains(verr.Msg, tc.wantMsg) {
+			t.Fatalf("%s: msg = %q, want %q", tc.name, verr.Msg, tc.wantMsg)
+		}
+	}
+}
+
+func TestSubmitConditioningEngineGate(t *testing.T) {
+	o := testOpts(t)
+	o.Models = sdxlCatalog()
+	o.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		return []byte("PNG"), nil, nil
+	}
+	m := New(o)
+	req := func(model string) SubmitRequest {
+		return SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+			Model:   model,
+			Control: &storage.ControlParams{Net: "pose", Image: "x", Strength: 0.7}}
+	}
+	if _, err := m.Submit(req("persephone")); err == nil {
+		t.Fatal("non-SDXL model must be rejected")
+	} else if verr, ok := err.(*ValidationError); !ok || !strings.Contains(verr.Msg, "engine unsupported for control") {
+		t.Fatalf("gate error = %v", err)
+	}
+	id, err := m.Submit(req("pony"))
+	if err != nil {
+		t.Fatalf("SDXL model accepted: %v", err)
+	}
+	waitFor(t, m, id, "done")
+}
+
+func TestSubmitConditioningDispatch(t *testing.T) {
+	o := testOpts(t)
+	o.Models = sdxlCatalog()
+	var mu sync.Mutex
+	var gotCtrl *storage.ControlParams
+	var gotIPA *storage.IPAdapterParams
+	o.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		mu.Lock()
+		gotCtrl, gotIPA = ctrl, ipa
+		mu.Unlock()
+		return []byte("PNG"), nil, nil
+	}
+	m := New(o)
+	s := int64(11)
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+		Model:     "pony",
+		Control:   &storage.ControlParams{Net: "canny", Image: "b64can", Strength: 0.5},
+		IPAdapter: &storage.IPAdapterParams{Image: "b64ipa"},
+		Seed:      &s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	mu.Lock()
+	if gotCtrl == nil || gotCtrl.Net != "canny" || gotCtrl.Image != "b64can" || gotCtrl.Strength != 0.5 {
+		t.Fatalf("control reached dispatch = %+v", gotCtrl)
+	}
+	if gotIPA == nil || gotIPA.Image != "b64ipa" || gotIPA.Strength != 0.6 {
+		t.Fatalf("ip_adapter reached dispatch with defaulted strength = %+v", gotIPA)
+	}
+	mu.Unlock()
+	// The strength 0 → 0.6 default must be visible in the A3 tEXt params.
+	if kv := renderParamsKV(storage.Job{ID: id, Mode: "generate"}, imageInputs{IPAdapter: gotIPA}); kv["ip_adapter"] != "0.60" {
+		t.Fatalf("ip_adapter param = %q", kv["ip_adapter"])
+	}
+}
+
+func TestRenderParamsKVConditioning(t *testing.T) {
+	kv := renderParamsKV(storage.Job{ID: "j1", Mode: "generate"}, imageInputs{
+		Control:   &storage.ControlParams{Net: "pose", Strength: 0.7},
+		IPAdapter: &storage.IPAdapterParams{Image: "x", Strength: 0.6},
+	})
+	if kv["control"] != "pose/0.70" || kv["ip_adapter"] != "0.60" {
+		t.Fatalf("conditioning params = %q / %q", kv["control"], kv["ip_adapter"])
+	}
+	// No b64 ever lands in tEXt: the control key carries net/strength only.
+	for k, v := range kv {
+		if strings.Contains(v, "b64can") {
+			t.Fatalf("key %q leaked b64: %q", k, v)
+		}
+	}
+	zero := renderParamsKV(storage.Job{ID: "j1", Mode: "generate"}, imageInputs{})
+	if _, ok := zero["control"]; ok {
+		t.Fatal("control key must be omit-when-empty")
+	}
+	if _, ok := zero["ip_adapter"]; ok {
+		t.Fatal("ip_adapter key must be omit-when-empty")
 	}
 }

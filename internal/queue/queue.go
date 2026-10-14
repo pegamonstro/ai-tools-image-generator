@@ -39,6 +39,13 @@ type SubmitRequest struct {
 	Images    []string  `json:"images"`    // base64: blend references
 	Strengths []float64 `json:"strengths"` // blend per-reference weights
 
+	// Control/IPAdapter condition generate-mode runs on reference images
+	// (B1): SDXL-sidecar models only, mutually exclusive with the
+	// edit-family modes. Both are opt-in; nil on both preserves the prior
+	// request shape byte for byte.
+	Control   *storage.ControlParams   `json:"control,omitempty"`
+	IPAdapter *storage.IPAdapterParams `json:"ip_adapter,omitempty"`
+
 	Model string            `json:"model"` // model value or catalog key (path / HF id); "" = sidecar default
 	Loras []storage.LoraRef `json:"loras"` // lora values or catalog keys; nil = none
 
@@ -143,6 +150,11 @@ type imageInputs struct {
 	Images    []string // base64 (blend refs)
 	Strengths []float64
 	Strength  float64
+
+	// Control/IPAdapter carry the B1 generate-mode conditioning references.
+	// Runtime-only like the other image inputs — never persisted on the job.
+	Control   *storage.ControlParams
+	IPAdapter *storage.IPAdapterParams
 }
 
 type Manager struct {
@@ -348,8 +360,9 @@ func (m *Manager) withRenderParams(pngBytes []byte, kv map[string]string) []byte
 
 // renderParamsKV builds the A3 params map embedded into a rendered PNG from
 // the job record: prompt/model/size/mode/job always, then seed, negative,
-// loras, and the routing catalog key when present (omit-when-empty).
-func renderParamsKV(job storage.Job) map[string]string {
+// loras, and the routing catalog key when present (omit-when-empty),
+// and the B1 conditioning pair when present.
+func renderParamsKV(job storage.Job, inputs imageInputs) map[string]string {
 	kv := map[string]string{
 		"prompt": job.Prompt, "model": job.Model, "size": job.Size,
 		"mode": job.Mode, "job": job.ID,
@@ -370,6 +383,12 @@ func renderParamsKV(job storage.Job) map[string]string {
 	if job.ModelKey != "" {
 		kv["routing"] = job.ModelKey
 	}
+	if inputs.Control != nil {
+		kv["control"] = fmt.Sprintf("%s/%.2f", inputs.Control.Net, inputs.Control.Strength)
+	}
+	if inputs.IPAdapter != nil {
+		kv["ip_adapter"] = fmt.Sprintf("%.2f", inputs.IPAdapter.Strength)
+	}
 	return kv
 }
 
@@ -384,7 +403,7 @@ func (m *Manager) saveRecovered(id string, png []byte) {
 		j = *job
 	}
 	m.mu.Unlock()
-	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(j)))
+	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(j, imageInputs{})))
 	if err != nil {
 		m.log(id, "saving the recovered image failed: %v", err)
 		m.finish(id, "failed", err.Error())
@@ -452,6 +471,8 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		if !contains(g.Sizes, req.Size) {
 			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("size %q not allowed for genre %q", req.Size, req.Genre)}
 		}
+		inputs.Control = req.Control
+		inputs.IPAdapter = req.IPAdapter
 	case "edit":
 		if strings.TrimSpace(req.Prompt) == "" {
 			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for edit"}
@@ -520,6 +541,19 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		return "", &ValidationError{Code: "unknown_mode", Msg: fmt.Sprintf("unknown mode %q", mode)}
 	}
 
+	// B1: control/ip-adapter only ever steer generate runs. The edit-family
+	// modes own their init-image semantics, so the pair is mutually
+	// exclusive with them — a request carrying both is rejected, never
+	// silently deprioritized.
+	if req.Control != nil || req.IPAdapter != nil {
+		if mode != "generate" {
+			return "", &ValidationError{Code: "validation_error", Msg: "control and ip_adapter require mode \"generate\""}
+		}
+		if verr := normalizeConditioning(req.Control, req.IPAdapter); verr != nil {
+			return "", verr
+		}
+	}
+
 	if req.Style != "" {
 		if _, ok := m.opts.Genres.Style(req.Style); !ok {
 			return "", &ValidationError{Code: "unknown_style", Msg: fmt.Sprintf("unknown style %q", req.Style)}
@@ -566,6 +600,12 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("mode %s is not supported on engine sdxl", mode)}
 	}
 
+	// Conditioning is an SDXL-sidecar engine feature (B1): a non-SDXL model
+	// with conditioning present is a validation error, never a silent drop.
+	if (req.Control != nil || req.IPAdapter != nil) && req.Sidecar != "sdxl" {
+		return "", &ValidationError{Code: "validation_error", Msg: "engine unsupported for control: control and ip_adapter apply to SDXL-sidecar models only"}
+	}
+
 	id := newID()
 	job := &storage.Job{
 		ID:             id,
@@ -593,6 +633,11 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 	m.mu.Lock()
 	m.jobs[id] = job
 	if mode != "generate" && mode != "asset" {
+		m.inputs[id] = inputs
+	} else if inputs.Control != nil || inputs.IPAdapter != nil {
+		// B1: generate with conditioning — the references are runtime-only
+		// request fields stored beside the other image inputs so dispatch
+		// has them; every other generate input stays empty as before.
 		m.inputs[id] = inputs
 	}
 	m.order = append(m.order, id)
@@ -683,6 +728,39 @@ func normalizeLoras(refs []storage.LoraRef) []storage.LoraRef {
 		out[i] = r
 	}
 	return out
+}
+
+// normalizeConditioning validates the B1 conditioning structs and folds an
+// omitted strength (0) onto the sd.cpp sidecar defaults (0.7 / 0.6), so every
+// layer downstream — dispatch, tEXt params, sidecar payload — sees the
+// effective value.
+func normalizeConditioning(ctrl *storage.ControlParams, ipa *storage.IPAdapterParams) *ValidationError {
+	if ctrl != nil {
+		switch ctrl.Net {
+		case "pose", "depth", "canny":
+		default:
+			return &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("control.net must be one of pose, depth, canny (got %q)", ctrl.Net)}
+		}
+		if ctrl.Image == "" {
+			return &ValidationError{Code: "validation_error", Msg: "control.image is required"}
+		}
+		if ctrl.Strength == 0 {
+			ctrl.Strength = 0.7
+		} else if ctrl.Strength < 0.1 || ctrl.Strength > 1.0 {
+			return &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("control.strength %v out of range 0.1..1.0", ctrl.Strength)}
+		}
+	}
+	if ipa != nil {
+		if ipa.Image == "" {
+			return &ValidationError{Code: "validation_error", Msg: "ip_adapter.image is required"}
+		}
+		if ipa.Strength == 0 {
+			ipa.Strength = 0.6
+		} else if ipa.Strength < 0.1 || ipa.Strength > 1.0 {
+			return &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("ip_adapter.strength %v out of range 0.1..1.0", ipa.Strength)}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) worker() {
@@ -779,7 +857,7 @@ func (m *Manager) run(id string) {
 	}
 	m.log(id, "lattice returned %d bytes in %s", len(png), roundDur(time.Since(start)))
 
-	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(*job)))
+	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(*job, inputs)))
 	if err != nil {
 		m.log(id, "save failed: %v", err)
 		m.finish(id, "failed", err.Error())
@@ -824,8 +902,14 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 			m.log(id, "requesting pose (strength=%.2f)", inputs.Strength)
 			png, seed, err = m.opts.Ops.Controlnet(ctx, prompt, job.Size, inputs.Image, inputs.Strength, spec, sp)
 		default:
+			if inputs.Control != nil {
+				m.log(id, "control %s (strength=%.2f)", inputs.Control.Net, inputs.Control.Strength)
+			}
+			if inputs.IPAdapter != nil {
+				m.log(id, "ip-adapter (strength=%.2f)", inputs.IPAdapter.Strength)
+			}
 			m.log(id, "requesting image from lattice (size=%s)", job.Size)
-			png, seed, err = m.opts.Ops.Generate(ctx, prompt, job.Size, nil, nil, spec, sp)
+			png, seed, err = m.opts.Ops.Generate(ctx, prompt, job.Size, inputs.Control, inputs.IPAdapter, spec, sp)
 		}
 		done <- result{png, seed, err}
 	}()

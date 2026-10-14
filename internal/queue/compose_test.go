@@ -2117,6 +2117,7 @@ func TestComposeGIFKeyframesUnwiredRifeFailsParent(t *testing.T) {
 		t.Fatalf("unwired rife parent: %s %q", j.Status, j.Error)
 	}
 }
+
 // --- model inheritance on compose children ---------------------------------
 
 // Compose children must never reach the lattice with an empty model: the

@@ -1142,34 +1142,24 @@ Expected: FAIL — `emitKitMeta` returns "meta formats apply to atlas, npc, kit"
 Add to `meta.go`:
 
 ```go
-// wangEdgeID maps a kit class key to its 4-element Tiled edge wangid
-// [north, east, south, west] with colors 0=none 1=line-color. Derived from
-// each class's documented edge connectivity. NOTE (documented limitation,
-// see spec): this is an EDGE-color-only wangset — inner and outer corner
-// classes share connectivity, so Tiled's autotile may pick either. The full
-// 20 classes remain individually selectable in the terrain brush.
-var wangEdgeID = map[string][4]int{
-	"line-h": {0, 1, 0, 1}, "line-v": {1, 0, 1, 0},
-	"corner-out-nw": {1, 0, 0, 1}, "corner-out-ne": {1, 1, 0, 0},
-	"corner-out-sw": {0, 0, 1, 1}, "corner-out-se": {0, 1, 1, 0},
-	"corner-in-nw": {1, 0, 0, 1}, "corner-in-ne": {1, 1, 0, 0},
-	"corner-in-sw": {0, 0, 1, 1}, "corner-in-se": {0, 1, 1, 0},
-	"t-e": {1, 1, 1, 0}, "t-w": {1, 1, 1, 0}, "t-n": {1, 1, 0, 1}, "t-s": {0, 1, 1, 1},
-	"cross": {1, 1, 1, 1},
-	"cap-e": {0, 1, 0, 0}, "cap-w": {0, 0, 0, 1}, "cap-n": {1, 0, 0, 0}, "cap-s": {0, 0, 1, 0},
-	"empty": {0, 0, 0, 0},
-}
-
-// CHECK against wang.go: if any of the 20 KitClasses keys is missing from
-// this map, emitKitMeta must still work — build the table the first time in
-// an init() that derives connectivity from KitClasses and panics on a key
-// the map lacks, forcing the implementer to reconcile the two tables. (See
-// Task 7 implementation note below for the exact init code.)
-```
-
-Implementation note (do this): DO NOT hardcode both tables. Instead derive edge ids from a per-class structural field: `line-h`/`line-v`/`cross`/`t-*`/`cap-*` are name-parseable (h/v/cross/t-<dir>/cap-<dir>), corners are `corner-(out|in)-<nw|ne|sw|se>`. Implement:
-
-```go
+// wangIDForClass derives a kit class's 4-element Tiled edge wangid
+// [north, east, south, west] with colors 0=none 1=line-color, from the
+// class's connectivity as documented in wang.go's Hint strings. NOTE
+// (documented limitation, see spec): this is an EDGE-color-only wangset —
+// inner and outer corner classes share connectivity, so Tiled's autotile
+// may pick either. The full 20 classes remain individually selectable in
+// the terrain brush. The single source of truth for the mapping is this
+// function; reconcile it against the real KitClasses table (wang.go:13)
+// when implementing — every key must be covered.
+//
+// Semantic reference (verified against wang.go Hints): line-h runs E–W;
+// line-v runs N–S; corner-out-<q> enters one edge and exits the adjacent
+// edge through quarter-circle <q>; corner-in-* joins the same edge pair;
+// t-<dir> has its crossbar spanning the two edges perpendicular to <dir>
+// with the stem exiting <dir> (t-e: crossbar N–S + stem E → [1,1,1,0];
+// t-w: crossbar N–S + stem W → [1,0,1,1]; t-n: crossbar E–W + stem N →
+// [1,1,0,1]; t-s: crossbar E–W + stem S → [0,1,1,1]); cap-<dir> carries
+// line on the single <dir> edge only; cross joins all four; empty none.
 func wangIDForClass(key string) ([4]int, error) {
 	switch {
 	case key == "line-h": return [4]int{0, 1, 0, 1}, nil
@@ -1177,18 +1167,17 @@ func wangIDForClass(key string) ([4]int, error) {
 	case key == "cross":  return [4]int{1, 1, 1, 1}, nil
 	case key == "empty":  return [4]int{0, 0, 0, 0}, nil
 	case strings.HasPrefix(key, "t-"):
-		stem := key[2:] // the stem edge carries the line too
-		id := [4]int{1, 1, 0, 1} // t-e baseline: N,E,W
-		id = [4]int{1, 0, 1, 0}  // start line-v N,S
-		switch stem {
-		case "e": id[1] = 1
-		case "w": id[3] = 1
-		case "n": id[0] = 1
-		case "s": id[2] = 1
-		default: return [4]int{}, fmt.Errorf("kit class %q: bad t-stem", key)
+		switch key[2:] {
+		case "e": return [4]int{1, 1, 1, 0}, nil // crossbar N–S, stem E
+		case "w": return [4]int{1, 0, 1, 1}, nil // crossbar N–S, stem W
+		case "n": return [4]int{1, 1, 0, 1}, nil // crossbar E–W, stem N
+		case "s": return [4]int{0, 1, 1, 1}, nil // crossbar E–W, stem S
 		}
-		return id, nil
+		return [4]int{}, fmt.Errorf("kit class %q: bad t-stem", key)
 	case strings.HasPrefix(key, "cap-"):
+		if len(key) != 5 {
+			return [4]int{}, fmt.Errorf("kit class %q: bad cap", key)
+		}
 		id := [4]int{0, 0, 0, 0}
 		switch key[4:] {
 		case "e": id[1] = 1

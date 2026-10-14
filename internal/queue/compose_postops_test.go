@@ -392,6 +392,120 @@ func TestSubmitAssetSetOutlineValidation(t *testing.T) {
 	}
 }
 
+// frameVaryingGen renders per-frame-varying block art: the frame index
+// (seed - base) selects a palette rotation, and frame 2 additionally paints
+// its top-left cell magenta. Frames are 2×2 blocks of quarter-size cells, so
+// every frame decomposes on the same 3-color grid.
+func frameVaryingGen(t *testing.T, base int64) func(context.Context, string, string, *storage.ControlParams, *storage.IPAdapterParams, storage.ModelSpec, storage.SamplingParams) ([]byte, *int64, error) {
+	t.Helper()
+	return func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		ws, hs, _ := strings.Cut(size, "x")
+		w, _ := strconv.Atoi(ws)
+		h, _ := strconv.Atoi(hs)
+		if w < 1 || h < 1 {
+			w, h = 8, 8
+		}
+		// SamplingParams.Seed is *int64 (the repo's nil-safe idiom, as in
+		// genCapture.add): atlas children are seeded seed+i for frame index i,
+		// so frame = *sp.Seed - base recovers the frame index.
+		frame := 0
+		if sp.Seed != nil {
+			frame = int(*sp.Seed - base)
+		}
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		cyan := color.RGBA{R: 0, G: 255, B: 255, A: 255}
+		black := color.RGBA{A: 255}
+		white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+		magenta := color.RGBA{R: 255, G: 0, B: 255, A: 255}
+		for y := 0; y < h; y += h / 2 {
+			for x := 0; x < w; x += w / 2 {
+				var c color.RGBA
+				switch (x/(w/2) + y/(h/2)) % 3 {
+				case 0:
+					c = cyan
+				case 1:
+					c = black
+				default:
+					c = white
+				}
+				if frame == 2 && x < w/2 && y < h/2 {
+					c = magenta // the deviant only frame 2 paints
+				}
+				for yy := y; yy < y+h/2; yy++ {
+					for xx := x; xx < x+w/2; xx++ {
+						img.Set(xx, yy, c)
+					}
+				}
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes(), sp.Seed, nil
+	}
+}
+
+func hasMagenta(t *testing.T, data []byte) bool {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			if r>>8 == 255 && g>>8 == 0 && bl>>8 == 255 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestAtlasSetPaletteCoherent(t *testing.T) {
+	seed := int64(70)
+	o := composeTestOpts(t, t.TempDir(), nil)
+	o.Ops.Generate = frameVaryingGen(t, seed)
+	m := New(o)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "coh", Seed: &seed, PaletteLock: true,
+		Assets: []AssetSpecIn{{Kind: "atlas", Name: "sheet", Prompt: "cycle", Size: "32x32", Frames: 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	data, err := m.opts.Store.ReadSetFile(id, "sheet-sheet.png")
+	if err != nil {
+		t.Fatalf("sheet: %v", err)
+	}
+	if hasMagenta(t, data) {
+		t.Fatal("magenta survived under palette_lock — C3 pre-assembly remap missing")
+	}
+
+	// Control: without palette_lock the old behavior keeps magenta.
+	o2 := composeTestOpts(t, t.TempDir(), nil)
+	o2.Ops.Generate = frameVaryingGen(t, seed)
+	m2 := New(o2)
+	id2, err := m2.SubmitAssetSet(AssetSetRequest{
+		Name: "coh2", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "atlas", Name: "sheet", Prompt: "cycle", Size: "32x32", Frames: 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m2, id2, "done")
+	data2, err := m2.opts.Store.ReadSetFile(id2, "sheet-sheet.png")
+	if err != nil {
+		t.Fatalf("sheet2: %v", err)
+	}
+	if !hasMagenta(t, data2) {
+		t.Fatal("magenta vanished without palette_lock — C3 leaked into defaults (R8 violation)")
+	}
+}
+
 // TestComposePixelFixRembgOrdering pins the executor order: the pixel_fix
 // repair runs on the RAW render BEFORE the rembg branch replaces imgs[0]
 // (R10). Rembg returns a DIFFERENT valid grid (cell 4): if a future edit

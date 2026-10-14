@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"log"
 	"os"
@@ -799,6 +800,10 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 	var firstErr string
 	var files []storage.FileRef
 	outsByAsset := make([][]compose.OutputFile, len(spec.Assets))
+	// C3: the set-level coherent palette, computed once from the set's first
+	// decodable render and remapped onto every atlas frame BEFORE assembly.
+	var setPal color.Palette
+	setPalLocked := false
 	for ai, a := range spec.Assets {
 		ma := manifestAsset{Kind: a.Kind, Name: a.Name, Prompt: a.Prompt, Size: a.Size, Variants: a.Variants, Views: a.Views}
 		end := cursor + a.Children
@@ -823,6 +828,17 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 			imgs[i] = png
 		}
 		if broken == "" {
+			// C3: the coherent-palette source is the first decodable render
+			// among the set's children in order (render 0 of the set).
+			if spec.PaletteLock && !setPalLocked {
+				for _, data := range imgs {
+					if sim, derr := png.Decode(bytes.NewReader(data)); derr == nil {
+						setPal = compose.SetPalette([]image.Image{sim}, 255)
+						setPalLocked = true
+						break
+					}
+				}
+			}
 			// C1 pixel repair (opt-in): quantize every render onto its
 			// dominant palette and downscale by the detected grid cell. The
 			// cell is detected ONCE on the first render, so dual-pair bounds
@@ -880,6 +896,21 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 			case "kit":
 				outs, err = compose.ComposeKit(a.Name, imgs)
 			case "atlas":
+				// C3: remap every frame onto the coherent set palette BEFORE
+				// assembly — a deviant frame's colors must not contribute to
+				// (and survive) the post-assembly pass. When setPalLocked is
+				// false (no decodable render anywhere) the atlas passes
+				// through unchanged.
+				if spec.PaletteLock && setPalLocked {
+					for i := range imgs {
+						nb, rerr := compose.RemapPNG(imgs[i], setPal)
+						if rerr != nil {
+							m.log(id, "set palette: frame %d left unremapped: %v", i, rerr)
+							continue
+						}
+						imgs[i] = nb
+					}
+				}
 				outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
 			case "frame":
 				black := []byte(nil)

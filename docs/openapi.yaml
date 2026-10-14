@@ -82,7 +82,7 @@ components:
           $ref: "#/components/schemas/Error"
     ControlParams:
       type: object
-      description: B1 ControlNet conditioning (SDXL-sidecar models only; mutually exclusive with edit/inpaint/blend).
+      description: B1 ControlNet conditioning (SDXL-sidecar models only; generate mode only — other modes get validation_error).
       required: [net, image]
       properties:
         net:

@@ -75,7 +75,7 @@ The composer drives the mflux sidecar in several modes:
 - `control`: `{"net": "pose"|"depth"|"canny", "image": "<b64>", "strength": 0.1..1.0 (default 0.7)}` — the image is the conditioning reference; for `net: "canny"` the sidecar preprocesses (`--canny`), pose and depth expect ready-made maps.
 - `ip_adapter`: `{"image": "<b64>", "strength": 0.1..1.0 (default 0.6)}` — identity pinning via IP-Adapter.
 
-Both are exclusive with `mode: edit|inpaint|blend`, apply to SDXL-sidecar models only (`validation_error` otherwise — never silently ignored), and under lattice routing ride the request's `extension` object: a gateway that predates the field rejects it with an error telling you to upgrade the lattice gateway or set `IMAGE_ROUTING=direct`.
+Both are accepted only with `mode: generate` (any other mode, including pose/outpaint/upscale, gets `validation_error`), and apply to SDXL-sidecar models only (`validation_error` otherwise — never silently ignored), and under lattice routing ride the request's `extension` object: a gateway that predates the field rejects it with an error telling you to upgrade the lattice gateway or set `IMAGE_ROUTING=direct`.
 
 ## Adding a genre
 

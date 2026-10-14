@@ -1023,8 +1023,10 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("keyframes multiplier must be 2..10, got %d", mult)}
 		}
 		if total := (n-1)*mult + 1; total > 64 {
+			// Largest multiplier satisfying (n-1)*m+1 <= 64 is 63/(n-1)
+			// (n=16 → 4), clamped to the allowed 2..10 range (small n).
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf(
-				"keyframes would produce %d frames, cap is 64 — use multiplier ≤ %d or fewer anchors", total, 64/(n-1)+1)}
+				"keyframes would produce %d frames, cap is 64 — use multiplier ≤ %d or fewer anchors", total, min(10, 63/(n-1)))}
 		}
 		id := newID()
 		names := make([]string, 0, len(kfs.Anchors))

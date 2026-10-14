@@ -1499,15 +1499,18 @@ func harnessWithoutRife(t *testing.T) *Manager {
 }
 
 // harnessWithFakeRife wires a stub Rife (ImageOps.Rife was never wired in
-// composeTestOpts): echo the anchors back as the interpolated frames. Submit-
-// path validation resolves anchors itself and must never reach the sidecar.
-func harnessWithFakeRife(t *testing.T) *Manager {
+// composeTestOpts): echo the anchors back as the interpolated frames, counting
+// calls. Submit-path validation resolves anchors itself and must never reach
+// the sidecar — the second return lets tests assert that with *rifeCalls.
+func harnessWithFakeRife(t *testing.T) (*Manager, *int) {
 	t.Helper()
 	o := composeTestOpts(t, t.TempDir(), &genCapture{})
+	rifeCalls := 0
 	o.Ops.Rife = func(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error) {
+		rifeCalls++
 		return anchors, nil
 	}
-	return New(o)
+	return New(o), &rifeCalls
 }
 
 func TestSubmitGIFKeyframesValidation(t *testing.T) {
@@ -1531,7 +1534,7 @@ func TestSubmitGIFKeyframesValidation(t *testing.T) {
 		GifRequest{Name: "k0", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: []FrameRef{a, b}}}},
 		"requires the RIFE sidecar (RIFE_URL)")
 
-	mgr := harnessWithFakeRife(t)
+	mgr, rife := harnessWithFakeRife(t)
 	bad(mgr, GifRequest{Name: "k1", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: []FrameRef{a}}}},
 		"anchors takes 2..16")
 	bad(mgr, GifRequest{Name: "k2", Source: GifSource{Type: "keyframes"}},
@@ -1545,13 +1548,19 @@ func TestSubmitGIFKeyframesValidation(t *testing.T) {
 	bad(mgr, GifRequest{Name: "k3b", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: many}}},
 		"anchors takes 2..16")
 
-	// 16 anchors x multiplier 5 => (16-1)*5+1 = 76 frames > the 64 cap.
+	// 16 anchors x multiplier 5 => (16-1)*5+1 = 76 frames > the 64 cap; the
+	// suggestion names the true bound (63/15 = 4), not the breaching 5.
 	anchors := make([]FrameRef, 16)
 	for i := range anchors {
 		anchors[i] = anchor(red)
 	}
 	bad(mgr, GifRequest{Name: "k4", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: anchors, Multiplier: 5}}},
-		"would produce 76 frames, cap is 64")
+		"cap is 64 — use multiplier ≤ 4")
+	// Every validation-erroring submit above failed before any sidecar work:
+	// the stub Rife was never reached during submit.
+	if *rife != 0 {
+		t.Fatalf("submit-path validation reached the Rife stub %d time(s)", *rife)
+	}
 	// The same anchors at the default multiplier ((16-1)*3+1 = 46 <= 64)
 	// pass validation and submit; the parent goes terminal child-free, so
 	// waitFor settles on whichever state the current compose stage yields.
@@ -1573,7 +1582,7 @@ func TestSubmitGIFKeyframesStoresAnchors(t *testing.T) {
 	// Terminal state is Task 5's executor concern (until that composeGIF branch
 	// lands the child-free parent ends at the neither-frames-nor-children
 	// precedent) — waitFor accepts failed, and this test asserts persistence.
-	m := harnessWithFakeRife(t)
+	m, _ := harnessWithFakeRife(t)
 	anchors := []FrameRef{
 		{B64: b64PNG(t, 4, 4, color.NRGBA{R: 255, A: 255})},
 		{B64: b64PNG(t, 4, 4, color.NRGBA{B: 255, A: 255})},

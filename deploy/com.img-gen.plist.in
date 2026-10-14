@@ -30,6 +30,12 @@
              back to IMAGE_URL when empty; leave a placeholder for the same reason. -->
         <key>UPSCALE_URL</key>
         <string>__UPSCALE_URL__</string>
+        <!-- Route frame interpolation to the practical-rife sidecar (a distinct
+             host:port). Left empty when no RIFE sidecar is configured —
+             interpolation jobs then fail validation; placeholder for the same
+             reason as IMAGE_URL. -->
+        <key>RIFE_URL</key>
+        <string>__RIFE_URL__</string>
     </dict>
 
     <key>RunAtLoad</key>

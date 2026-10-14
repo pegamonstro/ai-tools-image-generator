@@ -33,6 +33,7 @@ type config struct {
 	FillURL       string
 	ReduxURL      string
 	UpscaleURL    string
+	RifeURL       string
 	SDXLURL       string
 	DataDir       string
 	GenresFile    string
@@ -53,6 +54,7 @@ func loadConfig() config {
 		FillURL:       envOr("FILL_URL", ""),
 		ReduxURL:      envOr("REDUX_URL", ""),
 		UpscaleURL:    envOr("UPSCALE_URL", ""),
+		RifeURL:       envOr("RIFE_URL", ""),
 		SDXLURL:       envOr("SDXL_URL", ""),
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
@@ -88,9 +90,18 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat.FillURL = cfg.FillURL
 	lat.ReduxURL = cfg.ReduxURL
 	lat.UpscaleURL = cfg.UpscaleURL
+	lat.RifeURL = cfg.RifeURL
 	lat.SDXLImageURL = cfg.SDXLURL
 	lat.ImagesViaLattice = cfg.ImageRouting != "direct"
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
+
+	// Rife is wired only when the sidecar is configured: nil Ops.Rife must
+	// unambiguously mean "RIFE sidecar not configured" so submit-time
+	// validation can refuse interpolation jobs with the honest error.
+	var rifeOp func(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error)
+	if cfg.RifeURL != "" {
+		rifeOp = lat.Rife
+	}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
 		return lat.Chat(ctx, cfg.EnhanceModel, msgs)
@@ -108,6 +119,7 @@ func newHandler(cfg config) (http.Handler, error) {
 			Blend:      lat.Blend,
 			Upscale:    lat.Upscale,
 			Controlnet: lat.Controlnet,
+			Rife:       rifeOp,
 			Progress:   lat.Progress,
 			Status:     lat.Status,
 			Result:     lat.Result,

@@ -24,6 +24,7 @@ type Client struct {
 	FillURL      string // optional separate mflux sidecar for /fill (inpainting); defaults to ImageURL
 	ReduxURL     string // optional separate mflux sidecar for /redux (multi-reference); defaults to ImageURL
 	UpscaleURL   string // optional Real-ESRGAN sidecar for /upscale; defaults to ImageURL
+	RifeURL      string // optional Practical-RIFE sidecar for POST /interpolate keyframes interpolation
 	SDXLImageURL string // optional stable-diffusion.cpp sidecar; spec.Sidecar "sdxl" routes here
 	HTTP         *http.Client
 	// ImagesViaLattice routes Generate/Edit through the frontend's OpenAI
@@ -236,6 +237,49 @@ func (c *Client) Upscale(ctx context.Context, imageB64 string) ([]byte, error) {
 	}
 	png, _, err := c.postImage(ctx, "/upscale", body, "")
 	return png, err
+}
+
+// Rife interpolates between anchor frames on the RIFE sidecar. anchors are
+// raw PNG bytes; the returned slice holds one raw PNG per interpolated
+// frame, count (n-1)*multiplier+1, anchors included in order.
+func (c *Client) Rife(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error) {
+	imgs := make([]string, len(anchors))
+	for i, a := range anchors {
+		imgs[i] = base64.StdEncoding.EncodeToString(a)
+	}
+	body, err := json.Marshal(map[string]any{"images": imgs, "multiplier": multiplier})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.RifeURL, "/")+"/interpolate",
+		bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("rife sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("rife sidecar: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Frames []string `json:"frames"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("rife sidecar body: %w", err)
+	}
+	frames := make([][]byte, 0, len(out.Frames))
+	for i, f := range out.Frames {
+		raw, err := base64.StdEncoding.DecodeString(f)
+		if err != nil {
+			return nil, fmt.Errorf("rife frame %d: %w", i, err)
+		}
+		frames = append(frames, raw)
+	}
+	return frames, nil
 }
 
 // statusResp is the sidecar's GET /status payload.

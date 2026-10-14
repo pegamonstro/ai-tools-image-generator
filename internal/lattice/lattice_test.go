@@ -1,10 +1,13 @@
 package lattice
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -705,6 +708,70 @@ func TestGenerateThroughLatticeRequiresBaseURL(t *testing.T) {
 	}
 }
 
+func TestRife(t *testing.T) {
+	anchor := renderTinyPNG(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/interpolate" {
+			t.Fatalf("path %s", r.URL.Path)
+		}
+		var req struct {
+			Images     []string `json:"images"`
+			Multiplier int      `json:"multiplier"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("body: %v", err)
+		}
+		if len(req.Images) != 2 || req.Multiplier != 3 {
+			t.Fatalf("req mismatch: %d imgs, mult %d", len(req.Images), req.Multiplier)
+		}
+		// echo back 5 frames (2 anchors + 3 in-betweens) as png b64
+		resp := map[string]any{"frames": []string{b64(anchor), b64(anchor), b64(anchor), b64(anchor), b64(anchor)}}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	c := New("")
+	c.RifeURL = srv.URL
+	c.HTTP = srv.Client()
+	frames, err := c.Rife(context.Background(), [][]byte{anchor, anchor}, 3)
+	if err != nil {
+		t.Fatalf("rife: %v", err)
+	}
+	if len(frames) != 5 {
+		t.Fatalf("want 5 frames, got %d", len(frames))
+	}
+	for i, f := range frames {
+		if string(f) != string(anchor) {
+			t.Fatalf("frame %d not round-tripped", i)
+		}
+	}
+}
+
+func TestRifeSurfacesHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	c := New("")
+	c.RifeURL = srv.URL
+	c.HTTP = srv.Client()
+	if _, err := c.Rife(context.Background(), [][]byte{[]byte("x")}, 3); err == nil {
+		t.Fatal("want error on 503")
+	}
+}
+
 func intPtrL(v int) *int             { return &v }
 func int64PtrL(v int64) *int64       { return &v }
 func float64PtrL(v float64) *float64 { return &v }
+
+// b64 encodes raw bytes the way the sidecar JSON carriers do.
+func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
+// renderTinyPNG renders a real 1x1 gray PNG to stand in for an anchor frame.
+func renderTinyPNG(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewGray(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatalf("render tiny png: %v", err)
+	}
+	return buf.Bytes()
+}

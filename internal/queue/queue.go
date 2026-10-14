@@ -99,6 +99,10 @@ type ImageOps struct {
 	Blend      func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
 	Upscale    func(ctx context.Context, imageB64 string) ([]byte, error)
 	Controlnet func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
+	// Rife interpolates anchor frames on the RIFE sidecar (frame animation).
+	// nil means the sidecar is unconfigured (RIFE_URL unset): submit-time
+	// validation reports that honestly instead of dispatching the job.
+	Rife func(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error)
 	// Progress polls the in-flight generation's step/total plus the sidecar's
 	// gen id (empty when idle/not running), piggybacked on the same poll. The
 	// sidecar arg routes to the job's engine ("" = default sidecar).

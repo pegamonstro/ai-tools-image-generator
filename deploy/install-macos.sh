@@ -28,6 +28,11 @@ LATTICE_FRONTEND_URL="${LATTICE_FRONTEND_URL:-http://127.0.0.1:8080}"
 # unset, but the sidecar is a different port so pass it explicitly:
 #   UPSCALE_URL=http://<m6>:8901 ./deploy/install-macos.sh
 UPSCALE_URL="${UPSCALE_URL:-}"
+# Optional: the practical-rife sidecar for frame interpolation (keyframes).
+# Left empty (the default) when no RIFE sidecar is configured — interpolation
+# jobs then fail validation instead of silently running:
+#   RIFE_URL=http://<rife-sidecar>:<port> ./deploy/install-macos.sh
+RIFE_URL="${RIFE_URL:-}"
 
 if [[ ! -x "$BIN" ]]; then
   echo "error: $BIN is missing or not executable." >&2
@@ -58,6 +63,7 @@ sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__IMAGE_URL__|$IMAGE_URL|g" \
     -e "s|__LATTICE_FRONTEND_URL__|$LATTICE_FRONTEND_URL|g" \
     -e "s|__UPSCALE_URL__|$UPSCALE_URL|g" \
+    -e "s|__RIFE_URL__|$RIFE_URL|g" \
     "$TEMPLATE" > "$DEST"
 
 launchctl bootstrap "$DOMAIN" "$DEST"

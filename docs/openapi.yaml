@@ -80,6 +80,35 @@ components:
       properties:
         error:
           $ref: "#/components/schemas/Error"
+    ControlParams:
+      type: object
+      description: B1 ControlNet conditioning (SDXL-sidecar models only; mutually exclusive with edit/inpaint/blend).
+      required: [net, image]
+      properties:
+        net:
+          type: string
+          enum: [pose, depth, canny]
+        image:
+          type: string
+          description: base64 conditioning reference (pose/depth map, or photo for canny)
+        strength:
+          type: number
+          minimum: 0.1
+          maximum: 1.0
+          description: defaults to 0.7 (sd.cpp --control-strength)
+    IPAdapterParams:
+      type: object
+      description: B1 IP-Adapter identity conditioning (SDXL-sidecar models only).
+      required: [image]
+      properties:
+        image:
+          type: string
+          description: base64 identity reference
+        strength:
+          type: number
+          minimum: 0.1
+          maximum: 1.0
+          description: defaults to 0.6
     LoraRef:
       type: object
       required: [name]
@@ -163,6 +192,10 @@ components:
           type: number
         negative_prompt:
           type: string
+        control:
+          $ref: "#/components/schemas/ControlParams"
+        ip_adapter:
+          $ref: "#/components/schemas/IPAdapterParams"
     Job:
       type: object
       required: [id, genre, prompt, fields, size, enhance, status, created_at]
@@ -274,10 +307,10 @@ components:
       properties:
         kind:
           type: string
-          enum: [element, kit, atlas, frame, bar, npc]
+          enum: [element, kit, atlas, frame, bar, npc, sheet]
           description: >
             frame requires frame_margins; bar requires bar_fill and
-            frame_margins; npc requires shape
+            frame_margins; npc requires shape; sheet requires views
         name: { type: string }
         prompt: { type: string }
         negative: { type: string }
@@ -291,10 +324,23 @@ components:
           description: atlas only — one generation job per frame (seed+i)
         columns:
           type: integer
-          description: atlas/npc atlas-sheet columns; 0 = single row; ignored by walk4 (its sheet is always one column)
+          description: >
+            atlas/npc/sheet grid columns; 0 = single row; for sheet rejected
+            outside 0..len(views); ignored by walk4 (its sheet is always one
+            column)
+        views:
+          type: array
+          description: sheet kind — cell view names (2..8); every cell shares the set seed; columns bounds the grid (0 = single row).
+          items:
+            type: string
+          minItems: 2
+          maxItems: 8
         transparent:
-          type: boolean
-          description: element|frame|bar — white+black double pass, alpha unmixed
+          description: element/frame/bar. true = white+black dual pass (legacy spell); "rembg" = U²-Net extraction via the REMBG_URL sidecar.
+          oneOf:
+            - type: boolean
+            - type: string
+              enum: [rembg, dual]
         frame_margins:
           type: integer
           minimum: 1
@@ -324,10 +370,10 @@ components:
             enum: [phaser, unity, sparrow, tiled]
           description: >
             Engine metadata sidecars, extra set files. phaser/unity/sparrow
-            apply to atlas and npc; tiled (the Tiled 1.10 edge-color wangset
-            `.tsx` + assembled `-wangset.png`) applies to kit. Unknown names
-            and duplicates fail the submit; kind mismatches fail the asset at
-            compose time.
+            apply to atlas, npc and sheet; tiled (the Tiled 1.10 edge-color
+            wangset `.tsx` + assembled `-wangset.png`) applies to kit. Unknown
+            names and duplicates fail the submit; kind mismatches fail the
+            asset at compose time.
     GifRequest:
       type: object
       required: [name, source]

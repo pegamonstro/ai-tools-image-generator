@@ -33,7 +33,9 @@ pose/blend/upscale which stay direct); `FILL_URL` and
 `REDUX_URL` — sidecar endpoints for inpaint/outpaint when served separately;
 `UPSCALE_URL` — the Real-ESRGAN sidecar; `RIFE_URL` — the optional
 Practical-RIFE sidecar used for keyframes GIF interpolation (see
-"Keyframes interpolation" below); `SDXL_URL` — the optional second
+"Keyframes interpolation" below); `REMBG_URL` — optional rembg sidecar
+(POST /segment); transparent `"rembg"` assets need it, unset makes them
+fail validation honestly; `SDXL_URL` — the optional second
 image engine (a
 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) sidecar
 that speaks the same body contract, used only by models whose catalog entry
@@ -65,6 +67,15 @@ The composer drives the mflux sidecar in several modes:
 - **Upscale** — enhance a finished image with Real-ESRGAN (`UPSCALE_URL`).
 - **Pose** — ControlNet-guided generation: submit a pose/edge reference and
   the composition is honored in the output.
+
+### Controlled generation (SDXL models, B1)
+
+`/api/v1/generate` and job submission accept two optional conditioning objects:
+
+- `control`: `{"net": "pose"|"depth"|"canny", "image": "<b64>", "strength": 0.1..1.0 (default 0.7)}` — the image is the conditioning reference; for `net: "canny"` the sidecar preprocesses (`--canny`), pose and depth expect ready-made maps.
+- `ip_adapter`: `{"image": "<b64>", "strength": 0.1..1.0 (default 0.6)}` — identity pinning via IP-Adapter.
+
+Both are exclusive with `mode: edit|inpaint|blend`, apply to SDXL-sidecar models only (`validation_error` otherwise — never silently ignored), and under lattice routing ride the request's `extension` object: a gateway that predates the field rejects it with an error telling you to upgrade the lattice gateway or set `IMAGE_ROUTING=direct`.
 
 ## Adding a genre
 
@@ -167,7 +178,9 @@ surface as `isError` tool results containing the v1 error envelope.
 img-gen doubles as an asset factory for coding agents. Two workflows:
 
 - **Asset sets** — `POST /api/v1/asset-sets` with 1–8 assets of kind
-  `element` (one image, optional `transparent` double-pass), `kit`
+  `element` (one image, optional `transparent` accepting `true`
+  (white+black dual pass) or `"rembg"` (U²-Net extraction via REMBG_URL,
+  single plain render)), `kit`
   (a fixed 20-class wang tileset: h/v lines, outer/inner corners, T's,
   cross, caps, single), or `atlas` (2–64 frame sheet + TexturePacker-style
   JSON), or `frame` (a nine-slice border PNG: `frame_margins`
@@ -182,7 +195,12 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   renders three direction views (down/up/right suffixes fixed, left
   mirrored from right) into a 4-row RPG-Maker-order sheet
   `<name>-walk.png` with individual cells. Standing views, not walk
-  animation). Every asset needs a prompt and a 16-multiple `WxH` size. The
+  animation), or **`sheet`** — multi-view character turnaround on one
+  grid: `views`: 2..8 view names, `columns` 0..len(views) (0 = single
+  row); every cell shares the set seed; deliverable `<name>-sheet.png` +
+  `<name>-sheet.json` (view name per cell rect), and `meta_formats`
+  phaser/unity/sparrow apply. Every asset needs a prompt and a
+  16-multiple `WxH` size. The
   set's children all render with the request's `model` (registry name or raw
   value) when given — lattice routing rejects model-less children, so also
   set the server's `IMAGE_MODEL` as the default for model-less submits. A
@@ -258,13 +276,14 @@ partial-success unchanged):
 
 | format | file(s) | applies to |
 |---|---|---|
-| phaser | `<name>.phaser.json` | atlas, npc |
-| unity | `<name>.frames.json` | atlas, npc |
-| sparrow | `<name>.sparrow.xml` | atlas, npc |
+| phaser | `<name>.phaser.json` | atlas, npc, sheet |
+| unity | `<name>.frames.json` | atlas, npc, sheet |
+| sparrow | `<name>.sparrow.xml` | atlas, npc, sheet |
 | tiled | `<name>.tsx` + `<name>-wangset.png` | kit |
 
-Single-texture formats target the kinds that ship one sheet — atlas and
-npc (`-sheet.png`, or `-walk.png` for walk4). Kit renders 20 separate
+Single-texture formats target the kinds that ship one sheet — atlas,
+npc, and sheet (`-sheet.png`; walk4 ships `-walk.png`). Kit renders 20
+separate
 class files with no sheet, so only `tiled` — which assembles and ships
 its own wangset sheet — applies to it. The tiled `.tsx` is a Tiled 1.10
 tileset whose wangset maps the 20 fixed wang classes onto Tiled-native

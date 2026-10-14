@@ -145,6 +145,7 @@ func minInt(a, b int) int {
 	}
 	return b
 }
+
 // DownscaleByCell shrinks src to floor(w/cell)×floor(h/cell) by sampling
 // each cell's center pixel; a partial trailing cell (bounds not a multiple
 // of cell) is dropped. RepairImage rejects non-multiples before this ever

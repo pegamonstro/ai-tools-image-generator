@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"img-gen/internal/compose"
 	"img-gen/internal/genres"
 	"img-gen/internal/lattice"
 	"img-gen/internal/models"
@@ -316,10 +318,51 @@ func (m *Manager) attach(id string) {
 	}
 }
 
+// withRenderParams best-effort embeds generation params as tEXt chunks.
+// Embed failures never fail a render — the PNG is delivered unmodified.
+func (m *Manager) withRenderParams(pngBytes []byte, kv map[string]string) []byte {
+	if kv == nil {
+		kv = map[string]string{}
+	}
+	kv["software"] = "img-gen"
+	out, err := compose.EmbedTextPNG(pngBytes, kv)
+	if err != nil {
+		m.log("params", "tEXt embed skipped: %v", err)
+		return pngBytes
+	}
+	return out
+}
+
 // saveRecovered stores the re-attached image and marks the job done, or fails
 // the job if the save itself fails.
 func (m *Manager) saveRecovered(id string, png []byte) {
-	rel, err := m.opts.Store.SaveImage(id, png)
+	// The re-attached job's record holds the original request params; embed
+	// them alongside the recovered bytes (best-effort, A3).
+	m.mu.Lock()
+	var j storage.Job
+	if job := m.jobs[id]; job != nil {
+		j = *job
+	}
+	m.mu.Unlock()
+	kv := map[string]string{
+		"prompt": j.Prompt, "model": j.Model, "size": j.Size,
+		"mode": j.Mode, "job": id,
+	}
+	if j.Seed != nil {
+		kv["seed"] = strconv.FormatInt(*j.Seed, 10)
+	}
+	if j.NegativePrompt != "" {
+		kv["negative"] = j.NegativePrompt
+	}
+	if len(j.Loras) > 0 {
+		if b, jerr := json.Marshal(j.Loras); jerr == nil {
+			kv["loras"] = string(b)
+		}
+	}
+	if j.ModelKey != "" {
+		kv["routing"] = j.ModelKey
+	}
+	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, kv))
 	if err != nil {
 		m.log(id, "saving the recovered image failed: %v", err)
 		m.finish(id, "failed", err.Error())
@@ -709,7 +752,29 @@ func (m *Manager) run(id string) {
 	}
 	m.log(id, "lattice returned %d bytes in %s", len(png), roundDur(time.Since(start)))
 
-	rel, err := m.opts.Store.SaveImage(id, png)
+	// A3: embed the render params that reproduce this image as tEXt chunks —
+	// best-effort (withRenderParams delivers the bytes unchanged on failure).
+	kv := map[string]string{
+		"prompt": job.Prompt, "model": job.Model, "size": job.Size,
+		"mode": job.Mode, "job": id,
+	}
+	if seed != nil {
+		kv["seed"] = strconv.FormatInt(*seed, 10)
+	}
+	if job.NegativePrompt != "" {
+		kv["negative"] = job.NegativePrompt
+	}
+	if len(job.Loras) > 0 {
+		if b, jerr := json.Marshal(job.Loras); jerr == nil {
+			kv["loras"] = string(b)
+		}
+	}
+	// ModelKey is the catalog key the lattice routed this render by; when
+	// empty no routing decision was recorded at this site, so omit the key.
+	if job.ModelKey != "" {
+		kv["routing"] = job.ModelKey
+	}
+	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, kv))
 	if err != nil {
 		m.log(id, "save failed: %v", err)
 		m.finish(id, "failed", err.Error())

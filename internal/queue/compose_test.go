@@ -414,6 +414,33 @@ func TestSubmitAssetSetElement(t *testing.T) {
 	}
 }
 
+func TestComposedOutputsCarryTextParams(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(7)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "txt-elem", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "b", Prompt: "a button", Size: "16x16"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	raw, err := m.opts.Store.ReadSetFile(id, "b.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ScanTextChunks comes from Task 1 (compose package); it fully
+	// per-chunk-verifies CRCs, so it doubles as a structural PNG check here.
+	got, err := compose.ScanTextChunks(raw)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if got["software"] != "img-gen" || got["kind"] != "element" || got["name"] != "b" || got["set"] != id {
+		t.Fatalf("unexpected params: %v", got)
+	}
+}
+
 func TestSubmitAssetSetTransparent(t *testing.T) {
 	cap := &genCapture{}
 	m := New(composeTestOpts(t, t.TempDir(), cap))

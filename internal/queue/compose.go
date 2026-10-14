@@ -754,6 +754,24 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 		}
 	}
 
+	// Compose-level params (A3): every composed PNG deliverable carries the
+	// set identity (kind/name/set); the child jobs' own renders already carry
+	// their render params on the child images. Runs after the palette pass
+	// (RemapPNG re-encodes and would strip tEXt chunks) and best-effort: an
+	// embed failure leaves the bytes unchanged. GIF/WebP outputs are not
+	// PNG — no embed path for them.
+	for ai := range outsByAsset {
+		a := spec.Assets[ai]
+		for j := range outsByAsset[ai] {
+			of := &outsByAsset[ai][j]
+			if strings.HasSuffix(of.Name, ".png") {
+				of.Data = m.withRenderParams(of.Data, map[string]string{
+					"kind": a.Kind, "name": a.Name, "set": id,
+				})
+			}
+		}
+	}
+
 	// Save phase: every composed output lands here, after the palette pass.
 	// A save failure fails the parent immediately (the composeGIF precedent)
 	// instead of the old per-asset break-marking — storage save failures were

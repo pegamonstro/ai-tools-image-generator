@@ -85,6 +85,7 @@ type assetSpec struct {
 	Views        []string        `json:"views,omitempty"`    // sheet: 2..8 view names
 	MetaFormats  []string        `json:"meta_formats,omitempty"`
 	PixelFix     bool            `json:"pixel_fix,omitempty"` // pixel-art repair post-op (opt-in)
+	Outline      *OutlineSpec    `json:"outline,omitempty"`   // element + frame only
 	Children     int             `json:"children"`            // generation jobs this asset owns, in order
 }
 
@@ -385,6 +386,13 @@ type AssetSetRequest struct {
 	Assets      []AssetSpecIn `json:"assets"`          // 1..8
 }
 
+// OutlineSpec opts an element-like asset into quantize-before-outline
+// post-processing (ArcBrush rule: strokes follow palette-cleaned edges).
+type OutlineSpec struct {
+	Width int    `json:"width,omitempty"` // 1..2; omitted/0 normalizes to 1
+	Color string `json:"color,omitempty"` // ""/"auto" = darkest palette entry; else #rgb/#rrggbb
+}
+
 type AssetSpecIn struct {
 	Kind         string          `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
 	Name         string          `json:"name"`
@@ -402,6 +410,7 @@ type AssetSpecIn struct {
 	Views        []string        `json:"views,omitempty"`         // sheet: 2..8 view names
 	MetaFormats  []string        `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
 	PixelFix     bool            `json:"pixel_fix,omitempty"`     // pixel-art repair post-op (opt-in)
+	Outline      *OutlineSpec    `json:"outline,omitempty"`       // element + frame only
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -598,6 +607,34 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			}
 		}
 		as.PixelFix = a.PixelFix
+		// C2: outline is opt-in per asset and only meaningful for element-like
+		// single-subject art; the stroke width and color spec re-validate here
+		// so bad specs land in the envelope, and OutlinePNG re-validates at
+		// execution time as defense in depth.
+		if a.Outline != nil {
+			switch a.Kind {
+			case "element", "frame":
+			default:
+				return "", &ValidationError{Code: "validation_error",
+					Msg: fmt.Sprintf("asset %q: outline is supported for element and frame", an)}
+			}
+			if a.Outline.Width < 0 || a.Outline.Width > 2 {
+				return "", &ValidationError{Code: "validation_error",
+					Msg: fmt.Sprintf("asset %q: outline width must be 1..2", an)}
+			}
+			if a.Outline.Width == 0 {
+				a.Outline.Width = 1
+			}
+			switch c := a.Outline.Color; c {
+			case "", "auto":
+			default:
+				if _, cerr := compose.ParseHexColor(c); cerr != nil {
+					return "", &ValidationError{Code: "validation_error",
+						Msg: fmt.Sprintf("asset %q: %v", an, cerr)}
+				}
+			}
+		}
+		as.Outline = a.Outline
 		// The request-level model seeds every child of the set; children built
 		// with an empty model then inherit the queue's lattice default
 		// (submitOne) or stay engine-default on direct routing.
@@ -882,6 +919,22 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				}
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
+			}
+			// C2 outline post-op (opt-in): quantize-then-stroke so the ring
+			// follows palette-cleaned edges. Transparent deliverables gain a
+			// hard (1-bit) alpha edge via the shared palette remap.
+			if err == nil && a.Outline != nil {
+				for j := range outs {
+					if !strings.HasSuffix(outs[j].Name, ".png") {
+						continue
+					}
+					nb, oerr := compose.OutlinePNG(outs[j].Data, a.Outline.Width, a.Outline.Color)
+					if oerr != nil {
+						err = oerr
+						break
+					}
+					outs[j].Data = nb
+				}
 			}
 			// Engine-metadata emission (A2): opt-in via meta_formats, running
 			// right after per-kind composition so failures read exactly like

@@ -256,6 +256,9 @@ components:
         seed:
           type: integer
           format: int64
+        model:
+          type: string
+          description: Catalog key or raw value applied to every generated child; empty falls back to the server default under lattice routing
         assets:
           type: array
           maxItems: 8
@@ -305,6 +308,9 @@ components:
             type: string
             enum: [gif, webp]
           default: [gif]
+        model:
+          type: string
+          description: Catalog key or raw value; fills from_spec frames whose request omits a model
         source: { $ref: "#/components/schemas/GifSource" }
     GifSource:
       type: object

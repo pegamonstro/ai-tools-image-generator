@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"img-gen/internal/compose"
+	"img-gen/internal/models"
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
 )
@@ -1462,4 +1463,141 @@ func TestResolveFrameRefSetFile(t *testing.T) {
 	if _, err := m.resolveFrameRef(FrameRef{Set: sid, File: "dot.png", Path: "x"}); err == nil {
 		t.Fatal("want error for mixed source kinds")
 	}
+}
+
+// --- model inheritance on compose children ---------------------------------
+
+// Compose children must never reach the lattice with an empty model: the
+// registry routes by model name and the frontend rejects model "" with
+// "no adequate gateway for capability local model". Under lattice routing the
+// queue falls back to the configured default catalog key (options.DefaultModel
+// seeded from IMAGE_MODEL), so asset sets work without carrying a model field.
+func TestComposeChildrenLatticeDefaultModel(t *testing.T) {
+	opts := composeTestOpts(t, t.TempDir(), &genCapture{})
+	opts.ImagesViaLattice = true
+	opts.DefaultModel = "asset-default"
+	opts.Models = &models.Catalog{Models: []models.Entry{{Key: "asset-default", Value: "/m/asset-default-4bit"}}}
+	m := New(opts)
+	seed := int64(9)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "lattice", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "orb", Prompt: "orb", Size: "32x32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	p, _ := m.Get(id)
+	if len(p.Children) != 1 {
+		t.Fatalf("children: %d", len(p.Children))
+	}
+	c, ok := m.Get(p.Children[0])
+	if !ok {
+		t.Fatal("child job missing")
+	}
+	if c.Model != "/m/asset-default-4bit" || c.ModelKey != "asset-default" {
+		t.Fatalf("child not seeded with the lattice default model: model=%q key=%q", c.Model, c.ModelKey)
+	}
+}
+
+// An explicit request-level model (catalog key) wins over the lattice default
+// and carries sidecar derivation through the same path caller-submitted
+// models take: the sdxl entry must move the child onto the sdxl engine.
+func TestAssetSetRequestModelOverridesDefault(t *testing.T) {
+	opts := composeTestOpts(t, t.TempDir(), &genCapture{})
+	opts.ImagesViaLattice = true
+	opts.DefaultModel = "asset-default"
+	opts.Models = &models.Catalog{Models: []models.Entry{
+		{Key: "asset-default", Value: "/m/asset-default-4bit"},
+		{Key: "sdxl-ckpt", Value: "/m/sdxl-ckpt.safetensors", Sidecar: "sdxl"},
+	}}
+	m := New(opts)
+	seed := int64(9)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "pick", Seed: &seed, Model: "sdxl-ckpt",
+		Assets: []AssetSpecIn{{Kind: "element", Name: "orb", Prompt: "orb", Size: "32x32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	p, _ := m.Get(id)
+	if len(p.Children) != 1 {
+		t.Fatalf("children: %d", len(p.Children))
+	}
+	c, _ := m.Get(p.Children[0])
+	if c.Model != "/m/sdxl-ckpt.safetensors" || c.ModelKey != "sdxl-ckpt" || c.Sidecar != "sdxl" {
+		t.Fatalf("request model override: model=%q key=%q sidecar=%q", c.Model, c.ModelKey, c.Sidecar)
+	}
+}
+
+// Direct routing keeps the engine-default contract: Model stays empty even
+// when a lattice default is configured — the sidecar's own default model is
+// meaningful there, so the fallback must not rewrite it.
+func TestComposeChildrenDirectRoutingKeepsEngineDefault(t *testing.T) {
+	opts := composeTestOpts(t, t.TempDir(), &genCapture{})
+	opts.DefaultModel = "asset-default"
+	opts.Models = &models.Catalog{Models: []models.Entry{{Key: "asset-default", Value: "/m/asset-default-4bit"}}}
+	m := New(opts)
+	seed := int64(9)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "direct", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "orb", Prompt: "orb", Size: "32x32"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	p, _ := m.Get(id)
+	if len(p.Children) != 1 {
+		t.Fatalf("children: %d", len(p.Children))
+	}
+	c, _ := m.Get(p.Children[0])
+	if c.Model != "" || c.ModelKey != "" {
+		t.Fatalf("direct routing must keep engine default: model=%q key=%q", c.Model, c.ModelKey)
+	}
+}
+
+// GIF from_spec children inherit GifRequest.Model (a catalog key or value)
+// when the caller leaves source.request.Model empty; an explicit base request
+// model still wins so per-gif requests keep the tighter contract.
+func TestGIFFromSpecModelInheritance(t *testing.T) {
+	catalog := &models.Catalog{Models: []models.Entry{{Key: "asset-default", Value: "/m/asset-default-4bit"}}}
+	seed := int64(30)
+	run := func(seedReq GifRequest, wantModel, wantKey string) {
+		opts := composeTestOpts(t, t.TempDir(), &genCapture{})
+		opts.ImagesViaLattice = true
+		opts.DefaultModel = "asset-default"
+		opts.Models = catalog
+		m := New(opts)
+		id, err := m.SubmitGIF(seedReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, m, id, "done")
+		p, _ := m.Get(id)
+		if len(p.Children) != 4 {
+			t.Fatalf("children: %d", len(p.Children))
+		}
+		c, _ := m.Get(p.Children[0])
+		if c.Model != wantModel || c.ModelKey != wantKey {
+			t.Fatalf("gif child model: model=%q key=%q, want %q/%q", c.Model, c.ModelKey, wantModel, wantKey)
+		}
+	}
+	run(GifRequest{
+		Name: "pulse", Model: "asset-default",
+		Source: GifSource{
+			Type:    "from_spec",
+			Request: &SubmitRequest{Mode: "asset", Prompt: "pulse orb", Size: "32x32", Seed: &seed},
+			Count:   4,
+		},
+	}, "/m/asset-default-4bit", "asset-default")
+	run(GifRequest{
+		Name: "pulse2",
+		Source: GifSource{
+			Type:    "from_spec",
+			Request: &SubmitRequest{Mode: "asset", Prompt: "pulse orb", Size: "32x32", Seed: &seed, Model: "asset-default"},
+			Count:   4,
+		},
+	}, "/m/asset-default-4bit", "asset-default")
 }

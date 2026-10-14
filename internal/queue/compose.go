@@ -341,7 +341,8 @@ type AssetSetRequest struct {
 	Dest        string        `json:"dest,omitempty"` // absolute dir to deliver into; empty = EXPORT_DIR fallback chain
 	Seed        *int64        `json:"seed"`           // required
 	PaletteLock bool          `json:"palette_lock,omitempty"`
-	Assets      []AssetSpecIn `json:"assets"` // 1..8
+	Model       string        `json:"model,omitempty"` // catalog key or raw value; seeds every child ("" = queue default / engine default)
+	Assets      []AssetSpecIn `json:"assets"`          // 1..8
 }
 
 type AssetSpecIn struct {
@@ -480,6 +481,12 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Shape: a.Shape, Variants: a.Variants, Columns: a.Columns}
 		default:
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc)", an, a.Kind)}
+		}
+		// The request-level model seeds every child of the set; children built
+		// with an empty model then inherit the queue's lattice default
+		// (submitOne) or stay engine-default on direct routing.
+		for i := range built {
+			built[i].Model = req.Model
 		}
 		as.Children = len(built)
 		total += as.Children
@@ -849,6 +856,7 @@ type GifRequest struct {
 	DelayMS int       `json:"delay_ms,omitempty"` // 10..5000; 0 = default 100
 	Loop    int       `json:"loop,omitempty"`     // >= 0; 0 = infinite loop
 	Formats []string  `json:"formats,omitempty"`  // subset of {gif,webp}; default ["gif"]
+	Model   string    `json:"model,omitempty"`    // catalog key or raw value; fills from_spec frames whose request omits a model ("" = queue default / engine default)
 	Source  GifSource `json:"source"`
 }
 
@@ -1009,7 +1017,11 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 		if req.Source.Count < 2 || req.Source.Count > 64 {
 			return "", &ValidationError{Code: "validation_error", Msg: "gif frames must be 2..64"}
 		}
-		return m.submitComposeParent(newID(), spec, specFrames(*base, req.Source.Count))
+		frames := *base
+		if frames.Model == "" {
+			frames.Model = req.Model
+		}
+		return m.submitComposeParent(newID(), spec, specFrames(frames, req.Source.Count))
 	case "composite":
 		cs := req.Source.Composite
 		if cs == nil {

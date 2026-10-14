@@ -442,6 +442,44 @@ func TestSubmitNilCatalogSkipsResolution(t *testing.T) {
 	}
 }
 
+// On lattice routing an empty model is unroutable (the registry routes by
+// model name), so a submit without one must fall back to the configured
+// default catalog key and resolve like any caller key. Direct routing keeps
+// the engine-default contract: Model stays "".
+func TestSubmitLatticeDefaultModel(t *testing.T) {
+	opts := testOpts(t)
+	opts.ImagesViaLattice = true
+	opts.DefaultModel = "persephone"
+	opts.Models = &models.Catalog{
+		Models: []models.Entry{{Key: "persephone", Value: "/m/persephone-4bit"}},
+	}
+	m := New(opts)
+	id, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Model != "/m/persephone-4bit" || j.ModelKey != "persephone" {
+		t.Fatalf("lattice default not applied: model=%q key=%q", j.Model, j.ModelKey)
+	}
+
+	dOpts := testOpts(t)
+	dOpts.Models = opts.Models
+	direct := New(dOpts)
+	id, err = direct.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "a valley"}, Size: "512x512",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j = waitFor(t, direct, id, "done")
+	if j.Model != "" || j.ModelKey != "" {
+		t.Fatalf("direct routing must keep engine default: model=%q key=%q", j.Model, j.ModelKey)
+	}
+}
+
 // The submitted catalog key must survive resolution: on the lattice path the
 // frontend routes by registry name (the key), while the resolved value is only
 // the direct-sidecar fallback. Losing the key makes every catalog submit

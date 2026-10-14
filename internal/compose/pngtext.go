@@ -75,11 +75,15 @@ func ScanTextChunks(p []byte) (map[string]string, error) {
 		if off+12 > len(p) {
 			return nil, errors.New("pngtext: truncated chunk header")
 		}
-		l := int(binary.BigEndian.Uint32(p[off : off+4]))
-		typ := string(p[off+4 : off+8])
-		if off+12+l > len(p) {
+		ll := int64(binary.BigEndian.Uint32(p[off : off+4]))
+		if ll < 0 {
+			return nil, errors.New("pngtext: negative chunk length")
+		}
+		if int64(off)+12+ll > int64(len(p)) {
 			return nil, errors.New("pngtext: truncated chunk body")
 		}
+		l := int(ll)
+		typ := string(p[off+4 : off+8])
 		data := p[off+8 : off+8+l]
 		if crc32.ChecksumIEEE(p[off+4:off+8+l]) != binary.BigEndian.Uint32(p[off+8+l:off+12+l]) {
 			return nil, fmt.Errorf("pngtext: chunk %s crc mismatch", typ)
@@ -98,3 +102,4 @@ func ScanTextChunks(p []byte) (map[string]string, error) {
 	}
 	return out, nil
 }
+

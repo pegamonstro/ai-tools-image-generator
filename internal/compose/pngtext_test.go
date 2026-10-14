@@ -86,7 +86,9 @@ func TestEmbedTextPNGRejectsAndTruncates(t *testing.T) {
 		t.Fatal("want error for non-png input")
 	}
 	// IEND tamper: truncate past last chunk
-	if _, err := EmbedTextPNG(renderTestPNG(t, 16, 16)[:8], nil); err == nil {
+	full := renderTestPNG(t, 16, 16)
+	bad := full[:len(full)-12]
+	if _, err := EmbedTextPNG(bad, nil); err == nil {
 		t.Fatal("want error for missing IEND")
 	}
 	long := strings.Repeat("x", 5000)
@@ -113,3 +115,4 @@ func TestScanTextChunksRejectsMangledCRC(t *testing.T) {
 		t.Fatal("want CRC mismatch error")
 	}
 }
+

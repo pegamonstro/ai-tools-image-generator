@@ -1490,3 +1490,125 @@ func TestResolveFrameRefSetFile(t *testing.T) {
 		t.Fatal("want error for mixed source kinds")
 	}
 }
+
+// harnessWithoutRife builds the plain fake-ops manager: composeTestOpts never
+// wires Ops.Rife, so keyframes submits must report the unconfigured sidecar.
+func harnessWithoutRife(t *testing.T) *Manager {
+	t.Helper()
+	return New(composeTestOpts(t, t.TempDir(), &genCapture{}))
+}
+
+// harnessWithFakeRife wires a stub Rife (ImageOps.Rife was never wired in
+// composeTestOpts): echo the anchors back as the interpolated frames. Submit-
+// path validation resolves anchors itself and must never reach the sidecar.
+func harnessWithFakeRife(t *testing.T) *Manager {
+	t.Helper()
+	o := composeTestOpts(t, t.TempDir(), &genCapture{})
+	o.Ops.Rife = func(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error) {
+		return anchors, nil
+	}
+	return New(o)
+}
+
+func TestSubmitGIFKeyframesValidation(t *testing.T) {
+	// FrameRef B64 sources need no setup — decoding happens inside
+	// resolveFrameRef at submit. Two harness variants prove both error
+	// families: a manager WITHOUT Ops.Rife (unconfigured sidecar) and the
+	// fake-ops manager WITH a stub Rife wired (never reached during submit).
+	bad := func(m *Manager, req GifRequest, want string) {
+		_, err := m.SubmitGIF(req)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("want %q err, got %v", want, err)
+		}
+	}
+	anchor := func(b64 string) FrameRef { return FrameRef{B64: b64} }
+	red := b64PNG(t, 4, 4, color.NRGBA{R: 255, A: 255})
+	blue := b64PNG(t, 4, 4, color.NRGBA{B: 255, A: 255})
+	a := anchor(red)
+	b := anchor(blue)
+
+	bad(harnessWithoutRife(t),
+		GifRequest{Name: "k0", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: []FrameRef{a, b}}}},
+		"requires the RIFE sidecar (RIFE_URL)")
+
+	mgr := harnessWithFakeRife(t)
+	bad(mgr, GifRequest{Name: "k1", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: []FrameRef{a}}}},
+		"anchors takes 2..16")
+	bad(mgr, GifRequest{Name: "k2", Source: GifSource{Type: "keyframes"}},
+		"keyframes source requires anchors")
+	bad(mgr, GifRequest{Name: "k3", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: []FrameRef{a, b}, Multiplier: 11}}},
+		"multiplier must be 2..10")
+	many := make([]FrameRef, 17)
+	for i := range many {
+		many[i] = anchor(red)
+	}
+	bad(mgr, GifRequest{Name: "k3b", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: many}}},
+		"anchors takes 2..16")
+
+	// 16 anchors x multiplier 5 => (16-1)*5+1 = 76 frames > the 64 cap.
+	anchors := make([]FrameRef, 16)
+	for i := range anchors {
+		anchors[i] = anchor(red)
+	}
+	bad(mgr, GifRequest{Name: "k4", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: anchors, Multiplier: 5}}},
+		"would produce 76 frames, cap is 64")
+	// The same anchors at the default multiplier ((16-1)*3+1 = 46 <= 64)
+	// pass validation and submit; the parent goes terminal child-free, so
+	// waitFor settles on whichever state the current compose stage yields.
+	id, err := mgr.SubmitGIF(GifRequest{Name: "k5", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: anchors}}})
+	if err != nil {
+		t.Fatalf("16 anchors at default multiplier must submit: %v", err)
+	}
+	waitFor(t, mgr, id, "done")
+	// Every failed submit above never registered a parent: only k5 remains.
+	if n := len(mgr.List()); n != 1 {
+		t.Fatalf("failed submits left %d extra job(s) registered", n-1)
+	}
+}
+
+func TestSubmitGIFKeyframesStoresAnchors(t *testing.T) {
+	// Keyframes submit mirrors from_frames: each anchor resolves exactly once
+	// and persists as keyframe-%04d.png, with spec.GIF.Keyframes carrying the
+	// resolved set-relative files so a restart recomposes without re-resolving.
+	// Terminal state is Task 5's executor concern (until that composeGIF branch
+	// lands the child-free parent ends at the neither-frames-nor-children
+	// precedent) — waitFor accepts failed, and this test asserts persistence.
+	m := harnessWithFakeRife(t)
+	anchors := []FrameRef{
+		{B64: b64PNG(t, 4, 4, color.NRGBA{R: 255, A: 255})},
+		{B64: b64PNG(t, 4, 4, color.NRGBA{B: 255, A: 255})},
+	}
+	id, err := m.SubmitGIF(GifRequest{
+		Name:   "kf",
+		Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: anchors}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"keyframe-0000.png", "keyframe-0001.png"} {
+		if _, err := m.opts.Store.ReadSetFile(id, f); err != nil {
+			t.Fatalf("%s persisted at submit: %v", f, err)
+		}
+	}
+	waitFor(t, m, id, "done")
+	// Rebuild the spec the way a restart does: the persisted ComposeSpec from
+	// history round-trips through JSON with the anchors resolved in place.
+	j, ok := m.Get(id)
+	if !ok {
+		t.Fatal("job not registered")
+	}
+	var spec composeSpec
+	if err := json.Unmarshal([]byte(j.ComposeSpec), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.GIF == nil || spec.GIF.Keyframes == nil {
+		t.Fatalf("spec missing keyframes block: %+v", spec)
+	}
+	files := spec.GIF.Keyframes.Files
+	if len(files) != 2 || files[0] != "keyframe-0000.png" || files[1] != "keyframe-0001.png" {
+		t.Fatalf("keyframes files: %v", files)
+	}
+	if spec.GIF.Keyframes.Multiplier != 3 {
+		t.Fatalf("multiplier: %d", spec.GIF.Keyframes.Multiplier)
+	}
+}

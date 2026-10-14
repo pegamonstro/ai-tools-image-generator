@@ -59,6 +59,7 @@ type compositeLayerSpec struct {
 type gifPayload struct {
 	Frames    []string             `json:"frames,omitempty"` // set-relative source files (from_frames/composite anim)
 	Composite []compositeLayerSpec `json:"composite,omitempty"`
+	Keyframes *keyframesPayload    `json:"keyframes,omitempty"` // keyframes: resolved anchors as keyframe-%04d.png
 	DelayMS   int                  `json:"delay_ms"`
 	Loop      int                  `json:"loop"`
 	Formats   []string             `json:"formats"`
@@ -856,11 +857,10 @@ const (
 	maxGifDelayMS     = 5000
 )
 
-// GifRequest builds an animated GIF. Four source modes:
+// GifRequest builds an animated GIF. Four source modes, all real:
 // from_frames (assemble given images), from_spec (generate the frames here),
-// composite (statics blitted over every frame of an animation),
-// keyframes (interpolate between keyframes — requires the phase-3 RIFE
-// sidecar and is rejected with not_implemented for now).
+// composite (statics blitted over every frame of an animation), keyframes
+// (interpolate between 2..16 anchors on the RIFE sidecar — RIFE_URL).
 type GifRequest struct {
 	Name    string    `json:"name"`
 	Dest    string    `json:"dest,omitempty"`
@@ -876,6 +876,21 @@ type GifSource struct {
 	Request   *SubmitRequest   `json:"request,omitempty"` // from_spec: base asset request
 	Count     int              `json:"count,omitempty"`   // from_spec: 2..64 frames
 	Composite *CompositeSource `json:"composite,omitempty"`
+	Keyframes *KeyframesSource `json:"keyframes,omitempty"` // 2..16 anchors on the RIFE sidecar
+}
+
+// KeyframesSource is the RIFE interpolation source: 2..16 anchor frame refs
+// with an optional multiplier (default 3, allowed 2..10).
+type KeyframesSource struct {
+	Anchors    []FrameRef `json:"anchors"`
+	Multiplier int        `json:"multiplier,omitempty"`
+}
+
+// keyframesPayload persists a keyframes gif source for restart recovery:
+// the resolved anchors live as set-relative files, mirroring gp.Frames.
+type keyframesPayload struct {
+	Files      []string `json:"files"`
+	Multiplier int      `json:"multiplier"`
 }
 
 // CompositeSource layers one animated frame list (the base canvas) under
@@ -954,10 +969,11 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 }
 
 // SubmitGIF registers the compose parent and queues frame generation when
-// the source is from_spec. from_frames and composite resolve and persist
-// every source into the set at submit time (source-frame-%04d.png; composite
-// statics additionally as static-layer-%02d.png with their positions kept in
-// the persisted spec) so a restart can recompose without re-fetching.
+// the source is from_spec. from_frames, composite, and keyframes resolve and
+// persist every source into the set at submit time (source-frame-%04d.png;
+// keyframes anchors as keyframe-%04d.png; composite statics additionally as
+// static-layer-%02d.png with their positions kept in the persisted spec) so a
+// restart can recompose without re-fetching.
 func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 	name := validComposeAssetName(req.Name)
 	if name == "" {
@@ -988,7 +1004,45 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 	spec := composeSpec{Kind: "gif", Name: name, Dest: req.Dest, GIF: &gifPayload{DelayMS: delay, Loop: req.Loop, Formats: formats}}
 	switch req.Source.Type {
 	case "keyframes":
-		return "", &ValidationError{Code: "not_implemented", Msg: "keyframes interpolation requires the RIFE sidecar (RIFE_URL); planned for phase 3"}
+		if m.opts.Ops.Rife == nil {
+			return "", &ValidationError{Code: "validation_error", Msg: "keyframes requires the RIFE sidecar (RIFE_URL)"}
+		}
+		if req.Source.Keyframes == nil {
+			return "", &ValidationError{Code: "validation_error", Msg: "keyframes source requires anchors"}
+		}
+		kfs := req.Source.Keyframes
+		n := len(kfs.Anchors)
+		if n < 2 || n > 16 {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("keyframes anchors takes 2..16, got %d", n)}
+		}
+		mult := kfs.Multiplier
+		if mult == 0 {
+			mult = 3
+		}
+		if mult < 2 || mult > 10 {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("keyframes multiplier must be 2..10, got %d", mult)}
+		}
+		if total := (n-1)*mult + 1; total > 64 {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf(
+				"keyframes would produce %d frames, cap is 64 — use multiplier ≤ %d or fewer anchors", total, 64/(n-1)+1)}
+		}
+		id := newID()
+		names := make([]string, 0, len(kfs.Anchors))
+		for i, ref := range kfs.Anchors {
+			data, err := m.resolveFrameRef(ref)
+			if err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("frame %d: %v", i, err)}
+			}
+			fname := fmt.Sprintf("keyframe-%04d.png", i)
+			if err := m.opts.Store.SaveSetFile(id, fname, data); err != nil {
+				m.opts.Store.RemoveSet(id)
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("frame %d: %v", i, err)}
+			}
+			names = append(names, fname)
+		}
+		spec.GIF.Keyframes = &keyframesPayload{Files: names, Multiplier: mult}
+		return m.submitComposeParent(id, spec, nil)
 	case "from_frames":
 		if len(req.Source.Frames) < 2 || len(req.Source.Frames) > 64 {
 			return "", &ValidationError{Code: "validation_error", Msg: "from_frames takes 2..64 frames"}
@@ -1076,7 +1130,7 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 		spec.GIF.Composite = statics
 		return m.submitComposeParent(id, spec, nil)
 	default:
-		return "", &ValidationError{Code: "validation_error", Msg: "source.type must be from_frames, from_spec, or composite"}
+		return "", &ValidationError{Code: "validation_error", Msg: "source.type must be from_frames, from_spec, composite, or keyframes"}
 	}
 }
 

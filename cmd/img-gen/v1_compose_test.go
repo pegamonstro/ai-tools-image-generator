@@ -136,9 +136,10 @@ func TestV1ComposeValidationEnvelope(t *testing.T) {
 	if e["code"] != "validation_error" {
 		t.Fatalf("code: %v", e)
 	}
-	// keyframes gif → 400 not_implemented
+	// keyframes gif with no configured RIFE sidecar (this harness sets no
+	// RIFE_URL) → 400 validation_error from submit-path validation
 	code, out = postV1(t, srv, "/api/v1/gifs", `{"name":"k","source":{"type":"keyframes","count":4}}`)
-	if code != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "not_implemented" {
+	if code != http.StatusBadRequest || out["error"].(map[string]any)["code"] != "validation_error" {
 		t.Fatalf("keyframes: %d %v", code, out)
 	}
 }

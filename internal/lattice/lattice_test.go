@@ -911,6 +911,48 @@ func TestGenerateLatticeExtension(t *testing.T) {
 	}
 }
 
+func TestGenerateLatticeExtensionHalves(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"data":[{"b64_json":"` + base64.StdEncoding.EncodeToString([]byte("fake-png")) + `","seed":1}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	c.ImagesViaLattice = true
+	if _, _, err := c.Generate(context.Background(), "p", "512x512", nil,
+		&storage.IPAdapterParams{Image: "SWQ=", Strength: 0.6},
+		storage.ModelSpec{Sidecar: "sdxl"}, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	ext := got["extension"].(map[string]any)
+	if _, ok := ext["control"]; ok {
+		t.Fatal("nil ctrl must omit extension.control")
+	}
+	if _, ok := ext["ip_adapter"].(map[string]any); !ok {
+		t.Fatalf("ip_adapter half missing: %v", ext)
+	}
+
+	// Strength 0 means "sidecar default" and is omitted on the extension too.
+	if _, _, err := c.Generate(context.Background(), "p", "512x512",
+		&storage.ControlParams{Net: "canny", Image: "Q2E="}, nil,
+		storage.ModelSpec{Sidecar: "sdxl"}, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	ext = got["extension"].(map[string]any)
+	if _, ok := ext["ip_adapter"]; ok {
+		t.Fatal("nil ipa must omit extension.ip_adapter")
+	}
+	cn := ext["control"].(map[string]any)
+	if cn["net"] != "canny" {
+		t.Fatalf("extension.control = %v", cn)
+	}
+	if _, ok := cn["strength"]; ok {
+		t.Fatalf("zero strength must be omitted: %v", cn)
+	}
+}
+
 func TestGenerateLatticeRejestsExtension(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"unknown field \"extension\""}}`, http.StatusBadRequest)

@@ -86,3 +86,24 @@ guaranteed single-identity across directions (direction-prompt drift is the
 researched failure mode). True walk cycles need anchor-image conditioning,
 which the text+seed engine does not have. An NPC party (N distinct NPCs) is
 the palette-lock party pattern above: N elements, `palette_lock: true`.
+
+## Engine metadata (`meta_formats`)
+
+Engines expect their own metadata formats; per-asset
+`"meta_formats": [...]` (subset of `phaser`, `unity`, `sparrow`, `tiled`,
+default `[]`) emits them as extra set files:
+
+| format | file(s) | applies to |
+|---|---|---|
+| phaser | `<name>.phaser.json` | atlas, npc |
+| unity | `<name>.frames.json` | atlas, npc |
+| sparrow | `<name>.sparrow.xml` | atlas, npc |
+| tiled | `<name>.tsx` + `<name>-wangset.png` | kit |
+
+Unknown names and duplicates fail the submit; a format that does not
+serve the asset's kind fails that asset at compose time (recorded in the
+manifest, set partial-success unchanged). Mind the one-letter difference:
+unity metadata is `<name>.frames.json`, while the frame-kind nine-slice
+sidecar is `<name>.frame.json`. The tiled `.tsx` is a Tiled 1.10 tileset
+with an edge-color wangset mapping all 20 kit classes (autotile-ready,
+with classes individually selectable in the terrain brush).

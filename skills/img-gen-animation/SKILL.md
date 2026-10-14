@@ -18,8 +18,13 @@ description: Build animated GIFs with the img-gen service — assemble frames fr
   "count":8}`. Frames get `seed+i` and a frame-index suffix; keep prompts
   style-stable (state the shared style once and describe only per-frame
   motion).
-- `keyframes` — interpolation between keyframes needs the RIFE sidecar;
-  rejected with `not_implemented` until phase 3.
+- `keyframes` — smooth in-between motion between 2-16 anchor frames on the
+  RIFE sidecar: `{"type":"keyframes","keyframes":{"anchors":[<2-16 frame
+  refs>],"multiplier":3}}`. `multiplier` takes 2-10 (default 3) and the
+  projected frame count `(anchors-1)*multiplier+1` is capped at 64. The
+  anchor frame refs take the same four forms as from_frames. A submit
+  fails with `validation_error` naming `RIFE_URL` when the img-gen server
+  has no RIFE sidecar configured.
 - `composite` — layer statics under an animation: `{"type":"composite",
   "composite":{"anim":[<2-64 frame refs>],"statics":[{"from":<frame ref>,
   "pos":[x,y]}, ...]}}`. The overlay must fit inside the anim canvas or the
@@ -45,5 +50,6 @@ skip is recorded in `manifest.json` (`gif.webp`), not an error.
 3. Deliver with `"dest"` or copy from the set dir
    (`DATA_DIR/sets/{set_id}/<name>.gif`). A delivered GIF set contains:
    `<name>.gif`, the optional `.webp` variant, `<name>.manifest.json`, and the
-   source frames (`source-frame-NNNN.png` — from-frames and composite anim)
+   source frames (`source-frame-NNNN.png` — from-frames and composite anim;
+   `keyframe-NNNN.png` — keyframes anchors)
    plus composite static layers (`static-layer-NN.png`).

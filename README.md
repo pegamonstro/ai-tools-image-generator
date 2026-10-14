@@ -27,7 +27,9 @@ the lattice-routed generate/edit and chat enhancement go through; `IMAGE_URL`
 (default `http://127.0.0.1:8899`) — the mflux sidecar (direct mode, plus
 pose/blend/upscale which stay direct); `FILL_URL` and
 `REDUX_URL` — sidecar endpoints for inpaint/outpaint when served separately;
-`UPSCALE_URL` — the Real-ESRGAN sidecar; `SDXL_URL` — the optional second
+`UPSCALE_URL` — the Real-ESRGAN sidecar; `RIFE_URL` — the optional
+Practical-RIFE sidecar used for keyframes GIF interpolation (see
+"Keyframes interpolation" below); `SDXL_URL` — the optional second
 image engine (a
 [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) sidecar
 that speaks the same body contract, used only by models whose catalog entry
@@ -104,6 +106,17 @@ typed error envelopes, `Idempotency-Key` support, and a sync generate-and-wait
 endpoint. The full surface is specified in `docs/openapi.yaml`; the legacy
 unversioned `/api/*` endpoints remain byte-identical for the bundled web UI.
 
+Idempotency: sending an `Idempotency-Key` header on a v1 submit (job, asset
+set, or GIF) returns the original response for every repeat of that key. The
+mapping persists to `DATA_DIR/idempotency.jsonl` — each completed submit
+appends `{"key","status","body"}` with the response body base64-encoded — and
+on boot the server replays the most recent ≤10k records, so a retry with a key
+whose submit completed before a restart returns the same response it would
+have returned before. Past 20k lines the file is compacted to that 10k replay
+tail at boot. In-flight keys are deliberately not persisted (a restart killed
+their jobs, so their reservations are dead); a torn final line from a crash is
+tolerated and skipped.
+
 Auth: set `IMG_GEN_TOKEN` on the img-gen process to require
 `Authorization: Bearer <IMG_GEN_TOKEN>` on every `/api/*` call (the web UI's
 static assets are never authenticated). Unset → the API is open, which is the
@@ -179,8 +192,9 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   layers, each `{from: <frame ref>, pos: [x,y]}`, alpha-composited
   pre-quantization — statics from already-rendered sets cost zero renders;
   frame refs accept `{job}`, `{path}`, `{b64}`, or `{set, file}` for set
-  files), and `keyframes` (needs the phase-3 RIFE sidecar; rejected with
-  `not_implemented` until then). `delay_ms` 10–5000 (default 100),
+  files), and `keyframes` (interpolates 2–16 anchor frames on the RIFE
+  sidecar — see "Keyframes interpolation" below). `delay_ms` 10–5000
+  (default 100),
   `loop` >= 0, optional `formats: ["gif","webp"]` (`webp` is a
   best-effort extra — gif2webp on PATH or the skip is recorded).
 
@@ -194,6 +208,100 @@ into an agent's project directory — the manifest ships as
 `<name>.manifest.json`, so two sets can share one destination (absolute
 path required — delivery refuses to overwrite, so retry after clearing
 the destination).
+
+#### Keyframes interpolation (RIFE sidecar)
+
+`source.type: "keyframes"` animates smooth motion between 2–16 anchor
+frames (`source.keyframes.anchors`, each a frame ref — `{job}`, `{path}`,
+`{b64}`, or `{set, file}`) on a Practical-RIFE sidecar pointed at by
+`RIFE_URL`. The sidecar returns `(anchors−1) × multiplier + 1` frames —
+anchors included, in order — with `multiplier` taking 2..10 (default 3).
+The projected frame count is capped at 64: a submit that would exceed the
+cap is rejected with a `validation_error` naming the largest multiplier
+that fits. Submitting valid anchors when the server has no sidecar
+configured (`RIFE_URL` unset) is likewise rejected with a
+`validation_error` mentioning `RIFE_URL` — no silent degradation. The
+resolved anchors persist in the set as `keyframe-NNNN.png` and a restart
+recomposes by re-calling the sidecar (interpolation is stateless, so the
+re-call is idempotent).
+
+The sidecar itself is a plain HTTP service speaking one route:
+
+    POST {RIFE_URL}/interpolate
+    {"images": ["<base64 png>", ...], "multiplier": <2..10>}
+
+and img-gen decodes the reply `{"frames": ["<base64 png>", ...]}` as the
+interpolated frame list. Any service answering that contract works as the
+sidecar.
+
+#### Engine metadata sidecars (`meta_formats`)
+
+Game engines read their own metadata formats, not img-gen's contract
+files, so every asset in a set can opt into engine-native sidecars with a
+per-asset `"meta_formats"` field — a subset of `{phaser, unity, sparrow,
+tiled}` (default `[]`: no new files). Unknown format names and duplicates
+fail the submit as `validation_error`; kind applicability is checked at
+compose time, where a format that does not serve that kind fails the
+asset like any compose error (recorded in `manifest.json`, set
+partial-success unchanged):
+
+| format | file(s) | applies to |
+|---|---|---|
+| phaser | `<name>.phaser.json` | atlas, npc |
+| unity | `<name>.frames.json` | atlas, npc |
+| sparrow | `<name>.sparrow.xml` | atlas, npc |
+| tiled | `<name>.tsx` + `<name>-wangset.png` | kit |
+
+Single-texture formats target the kinds that ship one sheet — atlas and
+npc (`-sheet.png`, or `-walk.png` for walk4). Kit renders 20 separate
+class files with no sheet, so only `tiled` — which assembles and ships
+its own wangset sheet — applies to it. The tiled `.tsx` is a Tiled 1.10
+tileset whose wangset maps the 20 fixed wang classes onto Tiled-native
+8-element edge-color wangids (edge-color only: inner and outer corner
+classes share connectivity, so Tiled's autotile may pick either — every
+class stays individually selectable in the terrain brush).
+
+Mind the one-letter difference: unity metadata is `<name>.frames.json`,
+while the frame-kind nine-slice sidecar is `<name>.frame.json`.
+
+Emitted files are ordinary set deliverables: they appear in
+`GET /api/v1/sets/{set_id}`'s `files` list, download individually, and
+are delivered to `dest` alongside everything else.
+
+#### PNG tEXt parameters
+
+Rendered PNGs carry their parameters in ASCII `tEXt` chunks — one key per
+chunk, sorted by key, spliced in just before the IEND trailer (any
+standard tEXt reader shows them, e.g. `exiftool` or `pngcheck -v`).
+Render-path images always embed `software` (`img-gen`), `prompt`,
+`model`, `size`, `mode`, and `job`, plus `seed`, `negative`, `loras`, and
+`routing` when they apply. `routing` is the models.json catalog key the
+submitted model resolved by — it appears whenever a catalog key matched,
+even under `IMAGE_ROUTING=direct`, so it identifies the model rather than
+how the render travelled. Composed asset-set deliverables instead carry
+the set identity: `software`, `kind`, `name`, and `set`. Values longer
+than 4096 bytes are truncated. Embedding is best-effort: a failure leaves
+the PNG unmodified and never fails the render, and GIF/WebP outputs are
+not PNG files, so they have no embed path.
+
+#### Kenney-style pack layout
+
+img-gen ships set files flat; a finished set can be laid out into the
+Kenney-asset-pack convention for sharing — purely a packaging step, no
+API involvement:
+
+- `images/` — individual sprites: element deliverables, kit class tiles,
+  bar track/fill/clip states, npc walk4 cells.
+- `atlases/` — atlas descriptors: `<name>-atlas.json`, plus engine
+  metadata JSON/XML (`<name>.phaser.json`, `<name>.frames.json`,
+  `<name>.sparrow.xml`) and the img-gen contract sidecars
+  (`<name>.frame.json`, `<name>.bar.json`, `<name>.palette.json`).
+- `spritesheets/` — the packed sheet images: `<name>-sheet.png`,
+  `<name>-walk.png`, and the tiled `<name>-wangset.png`.
+- `tilemaps/` — Tiled data: `<name>.tsx`.
+
+Keep `<name>.manifest.json` alongside — it names the original files, so
+the reshuffle is lossless and re-fetchable.
 
 MCP tools: `request_asset_set`, `make_gif`, `read_export`.
 

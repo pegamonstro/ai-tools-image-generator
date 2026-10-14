@@ -64,7 +64,6 @@ components:
             - generation_failed
             - cancelled
             - bad_idempotency_key
-            - not_implemented
           description: >
             Async composite failures do not use an envelope code: the job turns
             failed with its error field prefixed "compose_error:".
@@ -266,7 +265,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [element, kit, atlas]
+          enum: [element, kit, atlas, frame, bar, npc]
         name: { type: string }
         prompt: { type: string }
         negative: { type: string }
@@ -280,10 +279,43 @@ components:
           description: atlas only
         columns:
           type: integer
-          description: atlas atlas-sheet columns; 0 = single row
+          description: atlas/npc atlas-sheet columns; 0 = single row
         transparent:
           type: boolean
           description: element only — white+black double pass, alpha unmixed
+        frame_margins:
+          type: integer
+          minimum: 1
+          description: frame|bar only — 1..size/2-1; punches the interior transparent
+        bar_fill:
+          type: string
+          description: bar only — prompt for the fill art rendered into `<name>-fill.png`
+        fill_states:
+          type: array
+          maxItems: 16
+          items: { type: integer, minimum: 1, maximum: 100 }
+          description: bar only — ascending clip percentages (default 25/50/75/100), each rendered `<name>-fill-<NNN>.png`
+        shape:
+          type: string
+          enum: [variants, walk4]
+          description: npc only
+        variants:
+          type: array
+          minItems: 2
+          maxItems: 64
+          items: { type: string }
+          description: npc variants — per-variant prompt suffixes, all rendered with the set seed
+        meta_formats:
+          type: array
+          items:
+            type: string
+            enum: [phaser, unity, sparrow, tiled]
+          description: >
+            Engine metadata sidecars, extra set files. phaser/unity/sparrow
+            apply to atlas and npc; tiled (the Tiled 1.10 edge-color wangset
+            `.tsx` + assembled `-wangset.png`) applies to kit. Unknown names
+            and duplicates fail the submit; kind mismatches fail the asset at
+            compose time.
     GifRequest:
       type: object
       required: [name, source]
@@ -330,6 +362,8 @@ components:
           description: from_spec frames
         composite:
           $ref: "#/components/schemas/CompositeSource"
+        keyframes:
+          $ref: "#/components/schemas/KeyframesSource"
     CompositeSource:
       type: object
       required: [anim]
@@ -356,6 +390,22 @@ components:
           maxItems: 2
           items: { type: integer }
           description: x,y origin on the anim canvas — the overlay must fit inside it
+    KeyframesSource:
+      type: object
+      required: [anchors]
+      properties:
+        anchors:
+          type: array
+          minItems: 2
+          maxItems: 16
+          items: { $ref: "#/components/schemas/FrameRef" }
+          description: Anchor frames; the RIFE sidecar returns (anchors-1)*multiplier+1 frames with the anchors included in order
+        multiplier:
+          type: integer
+          minimum: 2
+          maximum: 10
+          default: 3
+          description: In-between frames per consecutive anchor pair; submits whose projected frame count exceeds 64 are rejected (the error names the largest multiplier that fits)
     FrameRef:
       type: object
       description: Exactly one of job, path, b64, or the pair set+file
@@ -654,9 +704,10 @@ paths:
       description: |
         Sources: from_frames (assemble given images), from_spec (generate
         the frames here), composite (statics composited over every frame of
-        a 2-64-frame animation, pre-quantization), keyframes (phase-3 RIFE
-        interpolation — rejected with code not_implemented while the sidecar
-        is absent).
+        a 2-64-frame animation, pre-quantization), keyframes (RIFE-sidecar
+        interpolation between 2-16 anchors — rejected with validation_error
+        naming RIFE_URL when the sidecar env is unset, or when the
+        projected (anchors-1)*multiplier+1 frame count exceeds 64).
       requestBody:
         required: true
         content:

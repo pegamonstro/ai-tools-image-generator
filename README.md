@@ -22,6 +22,10 @@ URLs remain the fallback route and the transport for the remaining modes.
 Env vars: `IMAGE_ROUTING` (`lattice`, default) — generate/edit go through the
 lattice (`LATTICE_FRONTEND_URL`); set `direct` to restore legacy direct-sidecar
 calls, in which case the lattice is only used for chat enhancement;
+`IMAGE_MODEL` — the model submitted when a request (including generated asset
+set / GIF children) carries none; a registry name or raw value, required for
+model-less submits to work under lattice routing since the registry routes by
+model name (direct routing ignores it and keeps the sidecar's own default);
 `LATTICE_FRONTEND_URL` (default `http://127.0.0.1:8080`) — the lattice frontend
 the lattice-routed generate/edit and chat enhancement go through; `IMAGE_URL`
 (default `http://127.0.0.1:8899`) — the mflux sidecar (direct mode, plus
@@ -163,7 +167,10 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   renders three direction views (down/up/right suffixes fixed, left
   mirrored from right) into a 4-row RPG-Maker-order sheet
   `<name>-walk.png` with individual cells. Standing views, not walk
-  animation). Every asset needs a prompt and a 16-multiple `WxH` size. A
+  animation). Every asset needs a prompt and a 16-multiple `WxH` size. The
+  set's children all render with the request's `model` (registry name or raw
+  value) when given — lattice routing rejects model-less children, so also
+  set the server's `IMAGE_MODEL` as the default for model-less submits. A
   `manifest.json` lands in the set with per-asset files and errors (per-asset
   seeds ride the child jobs). Setting `"palette_lock": true` builds one
   shared palette (up to 255 colors) over every composed image of the set and
@@ -174,7 +181,9 @@ img-gen doubles as an asset factory for coding agents. Two workflows:
   `from_frames` refs by job id read the raw pre-remap renders instead.
 - **GIFs** — `POST /api/v1/gifs` with `source.type` `from_frames`
   (assemble existing job ids, data-dir paths, or inline base64),
-  `from_spec` (img-gen generates the 2–64 frames at `seed+i`),
+  `from_spec` (img-gen generates the 2–64 frames at `seed+i`; the request
+  may carry a top-level `model` for the frame children, overridden by
+  `source.request.model` when the caller sets it there),
   `composite` (one animated base of 2–64 frames plus up to 8 static
   layers, each `{from: <frame ref>, pos: [x,y]}`, alpha-composited
   pre-quantization — statics from already-rendered sets cost zero renders;

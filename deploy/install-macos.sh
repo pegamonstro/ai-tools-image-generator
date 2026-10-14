@@ -33,6 +33,9 @@ UPSCALE_URL="${UPSCALE_URL:-}"
 # jobs then fail validation instead of silently running:
 #   RIFE_URL=http://<rife-sidecar>:<port> ./deploy/install-macos.sh
 RIFE_URL="${RIFE_URL:-}"
+# Optional: the rembg sidecar for background removal (u2netp alpha path).
+#   REMBG_URL=http://<rembg-sidecar>:<port> ./deploy/install-macos.sh
+REMBG_URL="${REMBG_URL:-}"
 # Optional: the model submitted when a request (including generated asset set
 # / GIF children) carries none — a catalog key or raw value. Empty on lattice
 # routing is unroutable (the registry routes by model name), so pass it:
@@ -69,6 +72,7 @@ sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__LATTICE_FRONTEND_URL__|$LATTICE_FRONTEND_URL|g" \
     -e "s|__UPSCALE_URL__|$UPSCALE_URL|g" \
     -e "s|__RIFE_URL__|$RIFE_URL|g" \
+    -e "s|__REMBG_URL__|$REMBG_URL|g" \
     -e "s|__IMAGE_MODEL__|$IMAGE_MODEL|g" \
     "$TEMPLATE" > "$DEST"
 

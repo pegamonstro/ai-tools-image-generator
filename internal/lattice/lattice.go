@@ -25,6 +25,7 @@ type Client struct {
 	ReduxURL     string // optional separate mflux sidecar for /redux (multi-reference); defaults to ImageURL
 	UpscaleURL   string // optional Real-ESRGAN sidecar for /upscale; defaults to ImageURL
 	RifeURL      string // optional Practical-RIFE sidecar for POST /interpolate keyframes interpolation
+	RembgURL     string // optional rembg u2netp sidecar for POST /segment background removal
 	SDXLImageURL string // optional stable-diffusion.cpp sidecar; spec.Sidecar "sdxl" routes here
 	HTTP         *http.Client
 	// ImagesViaLattice routes Generate/Edit through the frontend's OpenAI
@@ -330,6 +331,41 @@ func (c *Client) Rife(ctx context.Context, anchors [][]byte, multiplier int) ([]
 		frames = append(frames, raw)
 	}
 	return frames, nil
+}
+
+// Rembg removes the background of imageB64 (PNG) on the rembg sidecar and
+// returns the resulting RGBA PNG bytes. Errors carry the "rembg sidecar"
+// prefix so they read as sidecar failures, matching the Rife convention.
+func (c *Client) Rembg(ctx context.Context, imageB64 string) ([]byte, error) {
+	body, err := json.Marshal(map[string]any{"image": imageB64})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.RembgURL, "/")+"/segment",
+		bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("rembg sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("rembg sidecar: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		PNG string `json:"png"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("rembg sidecar body: %w", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(out.PNG)
+	if err != nil {
+		return nil, fmt.Errorf("rembg sidecar png: %w", err)
+	}
+	return raw, nil
 }
 
 // statusResp is the sidecar's GET /status payload.

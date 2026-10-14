@@ -110,6 +110,10 @@ type ImageOps struct {
 	// nil means the sidecar is unconfigured (RIFE_URL unset): submit-time
 	// validation reports that honestly instead of dispatching the job.
 	Rife func(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error)
+	// Rembg extracts an RGBA subject from one PNG via the rembg sidecar
+	// (B2). nil = not configured — SubmitAssetSet refuses transparent
+	// "rembg" assets with the honest validation error.
+	Rembg func(ctx context.Context, imageB64 string) ([]byte, error)
 	// Progress polls the in-flight generation's step/total plus the sidecar's
 	// gen id (empty when idle/not running), piggybacked on the same poll. The
 	// sidecar arg routes to the job's engine ("" = default sidecar).

@@ -36,6 +36,12 @@
              reason as IMAGE_URL. -->
         <key>RIFE_URL</key>
         <string>__RIFE_URL__</string>
+        <!-- Route background-subject extraction to the rembg sidecar (u2netp
+             weights). transparent "rembg" compose assets need it; leaving it
+             unset makes those submissions fail validation honestly. Placeholder,
+             substituted by install-macos.sh, for the same reason as __RIFE_URL__. -->
+        <key>REMBG_URL</key>
+        <string>__REMBG_URL__</string>
         <!-- The model used when a submit (including generated assets/GIF
              children) carries none. The lattice registry routes by model name,
              so model-less routing needs this; a sidecar default on direct. -->

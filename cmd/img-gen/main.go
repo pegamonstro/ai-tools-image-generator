@@ -35,6 +35,7 @@ type config struct {
 	ReduxURL      string
 	UpscaleURL    string
 	RifeURL       string
+	RembgURL      string
 	SDXLURL       string
 	DataDir       string
 	GenresFile    string
@@ -62,6 +63,7 @@ func loadConfig() config {
 		ReduxURL:      envOr("REDUX_URL", ""),
 		UpscaleURL:    envOr("UPSCALE_URL", ""),
 		RifeURL:       envOr("RIFE_URL", ""),
+		RembgURL:      envOr("REMBG_URL", ""),
 		SDXLURL:       envOr("SDXL_URL", ""),
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
@@ -98,6 +100,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat.ReduxURL = cfg.ReduxURL
 	lat.UpscaleURL = cfg.UpscaleURL
 	lat.RifeURL = cfg.RifeURL
+	lat.RembgURL = cfg.RembgURL
 	lat.SDXLImageURL = cfg.SDXLURL
 	lat.ImagesViaLattice = cfg.ImageRouting != "direct"
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
@@ -108,6 +111,14 @@ func newHandler(cfg config) (http.Handler, error) {
 	var rifeOp func(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error)
 	if cfg.RifeURL != "" {
 		rifeOp = lat.Rife
+	}
+
+	// Rembg is wired only when the sidecar is configured: nil Ops.Rembg must
+	// unambiguously mean "rembg sidecar not configured" so asset-set submit
+	// validation can refuse transparent "rembg" assets with the honest error.
+	var rembgOp func(ctx context.Context, imageB64 string) ([]byte, error)
+	if cfg.RembgURL != "" {
+		rembgOp = lat.Rembg
 	}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
@@ -129,6 +140,7 @@ func newHandler(cfg config) (http.Handler, error) {
 			Upscale:    lat.Upscale,
 			Controlnet: lat.Controlnet,
 			Rife:       rifeOp,
+			Rembg:      rembgOp,
 			Progress:   lat.Progress,
 			Status:     lat.Status,
 			Result:     lat.Result,

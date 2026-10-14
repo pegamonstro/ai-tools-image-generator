@@ -987,3 +987,41 @@ func TestGenerateLatticeBadRequestUnrelated(t *testing.T) {
 		t.Fatalf("unrelated 400 must keep the plain error, got: %v", err)
 	}
 }
+
+func TestRembg(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/segment" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"png":"` + base64.StdEncoding.EncodeToString([]byte("rgba-png")) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.RembgURL = srv.URL
+	raw, err := c.Rembg(context.Background(), "SU1H")
+	if err != nil {
+		t.Fatalf("Rembg: %v", err)
+	}
+	if string(raw) != "rgba-png" {
+		t.Fatalf("raw = %q", raw)
+	}
+	if got["image"] != "SU1H" {
+		t.Fatalf("body = %v", got)
+	}
+}
+
+func TestRembgSidecarError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "model warmup", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.RembgURL = srv.URL
+	if _, err := c.Rembg(context.Background(), "SU1H"); err == nil || !strings.Contains(err.Error(), "rembg sidecar") {
+		t.Fatalf("err = %v", err)
+	}
+}

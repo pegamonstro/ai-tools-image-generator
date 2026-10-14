@@ -67,7 +67,7 @@ func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
 		Store:     s,
 		ExportDir: filepath.Join(t.TempDir(), "exports"),
 		Ops: ImageOps{
-			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+			Generate: func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 				img := image.NewRGBA(image.Rect(0, 0, 8, 8))
 				var buf bytes.Buffer
 				if err := png.Encode(&buf, img); err != nil {
@@ -85,9 +85,9 @@ func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
 // checker PNG at the requested size (parsing WxH), recording in cap. Real
 // sizes matter: post-processing like the frame punch validates render
 // dimensions, so the 8x8 default fake is too small.
-func sizedGen(t *testing.T, cap *genCapture) func(context.Context, string, string, storage.ModelSpec, storage.SamplingParams) ([]byte, *int64, error) {
+func sizedGen(t *testing.T, cap *genCapture) func(context.Context, string, string, *storage.ControlParams, *storage.IPAdapterParams, storage.ModelSpec, storage.SamplingParams) ([]byte, *int64, error) {
 	t.Helper()
-	return func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	return func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		ws, hs, _ := strings.Cut(size, "x")
 		w, _ := strconv.Atoi(ws)
 		h, _ := strconv.Atoi(hs)
@@ -264,9 +264,9 @@ func TestComposeParentCancel(t *testing.T) {
 	// the cancel would race.
 	opts := composeTestOpts(t, t.TempDir(), cap)
 	base := opts.Ops.Generate
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		time.Sleep(100 * time.Millisecond)
-		return base(ctx, prompt, size, spec, sp)
+		return base(ctx, prompt, size, nil, nil, spec, sp)
 	}
 	m := New(opts)
 	spec := composeSpec{Kind: "gif", GIF: &gifPayload{DelayMS: 100, Loop: 0, Formats: []string{"gif"}}}
@@ -354,7 +354,7 @@ func composeTestOptsFail(t *testing.T, dir string, cap *failCapture) Options {
 		Store:     s,
 		ExportDir: filepath.Join(t.TempDir(), "exports"),
 		Ops: ImageOps{
-			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+			Generate: func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 				cap.mu.Lock()
 				call := cap.n
 				cap.n++

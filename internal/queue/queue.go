@@ -93,7 +93,7 @@ type LogLine struct {
 }
 
 type ImageOps struct {
-	Generate   func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
+	Generate   func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
 	Edit       func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
 	Inpaint    func(ctx context.Context, prompt, imageB64, maskB64 string) ([]byte, error)
 	Blend      func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
@@ -825,7 +825,7 @@ func (m *Manager) dispatch(ctx context.Context, id string, job *storage.Job, inp
 			png, seed, err = m.opts.Ops.Controlnet(ctx, prompt, job.Size, inputs.Image, inputs.Strength, spec, sp)
 		default:
 			m.log(id, "requesting image from lattice (size=%s)", job.Size)
-			png, seed, err = m.opts.Ops.Generate(ctx, prompt, job.Size, spec, sp)
+			png, seed, err = m.opts.Ops.Generate(ctx, prompt, job.Size, nil, nil, spec, sp)
 		}
 		done <- result{png, seed, err}
 	}()

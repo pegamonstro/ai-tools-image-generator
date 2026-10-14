@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"img-gen/internal/storage"
@@ -39,7 +40,7 @@ func TestGenerate(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	got, _, err := c.Generate(context.Background(), "a prompt", "512x512", storage.ModelSpec{}, storage.SamplingParams{})
+	got, _, err := c.Generate(context.Background(), "a prompt", "512x512", nil, nil, storage.ModelSpec{}, storage.SamplingParams{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestGenerateModelSpec(t *testing.T) {
 		Model: "/m/dev",
 		Loras: []storage.LoraRef{{Name: "shauray/flux-uncensored-lora", Scale: 0.8}},
 	}
-	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", spec, storage.SamplingParams{}); err != nil {
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", nil, nil, spec, storage.SamplingParams{}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if got.Model != "/m/dev" {
@@ -88,7 +89,7 @@ func TestGenerateOmitsEmptySpec(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", nil, nil, storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	if _, ok := got["model"]; ok {
@@ -102,7 +103,7 @@ func TestGenerateOmitsEmptySpec(t *testing.T) {
 func TestGenerateBadSize(t *testing.T) {
 	c := New("http://unused")
 	c.ImageURL = "http://unused"
-	if _, _, err := c.Generate(context.Background(), "p", "bogus", storage.ModelSpec{}, storage.SamplingParams{}); err == nil {
+	if _, _, err := c.Generate(context.Background(), "p", "bogus", nil, nil, storage.ModelSpec{}, storage.SamplingParams{}); err == nil {
 		t.Fatal("expected error for malformed size")
 	}
 }
@@ -128,7 +129,7 @@ func TestGenerateSamplingParams(t *testing.T) {
 	steps := 30
 	guidance := 3.5
 	sp := storage.SamplingParams{Seed: &seed, Steps: &steps, Guidance: &guidance, NegativePrompt: "blurry, watermark"}
-	_, used, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, sp)
+	_, used, err := c.Generate(context.Background(), "a cat", "512x512", nil, nil, storage.ModelSpec{}, sp)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestGenerateOmitsEmptySamplingParams(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", nil, nil, storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	for _, k := range []string{"seed", "steps", "guidance", "negative_prompt"} {
@@ -198,7 +199,7 @@ func TestGenerateNon200(t *testing.T) {
 
 	c := New("http://unused")
 	c.ImageURL = srv.URL
-	if _, _, err := c.Generate(context.Background(), "p", "512x512", storage.ModelSpec{}, storage.SamplingParams{}); err == nil {
+	if _, _, err := c.Generate(context.Background(), "p", "512x512", nil, nil, storage.ModelSpec{}, storage.SamplingParams{}); err == nil {
 		t.Fatal("expected error on 500")
 	}
 }
@@ -521,7 +522,7 @@ func TestGenerateRoutesToSdxlSidecar(t *testing.T) {
 	c.ImageURL = flux.URL
 	c.SDXLImageURL = sdxl.URL
 	spec := storage.ModelSpec{Model: "/m/sdxl/pony.safetensors", Sidecar: "sdxl"}
-	got, _, err := c.Generate(context.Background(), "a prompt", "512x512", spec, storage.SamplingParams{})
+	got, _, err := c.Generate(context.Background(), "a prompt", "512x512", nil, nil, spec, storage.SamplingParams{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -614,7 +615,7 @@ func TestGenerateThroughLattice(t *testing.T) {
 		Loras:        []storage.LoraRef{{Name: "shauray/flux-uncensored-lora", Scale: 0.8}},
 	}
 	sp := storage.SamplingParams{Seed: int64PtrL(42), Steps: intPtrL(28), Guidance: float64PtrL(3.5), NegativePrompt: "blurry"}
-	png, seed, err := c.Generate(context.Background(), "a cat", "1024x576", spec, sp)
+	png, seed, err := c.Generate(context.Background(), "a cat", "1024x576", nil, nil, spec, sp)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -658,7 +659,7 @@ func TestGenerateThroughLatticeFallsBackToRawValue(t *testing.T) {
 
 	c := New(frontend.URL)
 	c.ImagesViaLattice = true
-	_, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{Model: "flux-dev"}, storage.SamplingParams{})
+	_, _, err := c.Generate(context.Background(), "a cat", "512x512", nil, nil, storage.ModelSpec{Model: "flux-dev"}, storage.SamplingParams{})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -702,7 +703,7 @@ func TestEditThroughLattice(t *testing.T) {
 func TestGenerateThroughLatticeRequiresBaseURL(t *testing.T) {
 	c := New("")
 	c.ImagesViaLattice = true
-	_, _, err := c.Generate(context.Background(), "a cat", "512x512", storage.ModelSpec{}, storage.SamplingParams{})
+	_, _, err := c.Generate(context.Background(), "a cat", "512x512", nil, nil, storage.ModelSpec{}, storage.SamplingParams{})
 	if err == nil {
 		t.Fatal("expected an error without a lattice base URL")
 	}
@@ -774,4 +775,102 @@ func renderTinyPNG(t *testing.T) []byte {
 		t.Fatalf("render tiny png: %v", err)
 	}
 	return buf.Bytes()
+}
+
+
+// TestGenerateControlNetSDXL tests that the control_net field is present and correct when SDXL is used.
+func TestGenerateControlNetSDXL(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/generate" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString([]byte("fake-png")) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.SDXLImageURL = srv.URL
+	ctrl := &storage.ControlParams{Net: "canny", Image: "Q2FubnlNYXA=", Strength: 0.55}
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", ctrl, nil, storage.ModelSpec{Sidecar: "sdxl"}, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	cn, ok := got["control_net"].(map[string]any)
+	if !ok {
+		t.Fatalf("control_net missing from body: %v", got)
+	}
+	if cn["net"] != "canny" || cn["image"] != "Q2FubnlNYXA=" || cn["strength"] != 0.55 {
+		t.Fatalf("control_net = %v", cn)
+	}
+	if _, ok := got["ip_adapter"]; ok {
+		t.Fatalf("ip_adapter must be absent when nil")
+	}
+}
+
+// TestGenerateIPAdapterOmitsZeroStrength tests that the ip_adapter field is present without strength when strength is zero.
+func TestGenerateIPAdapterOmitsZeroStrength(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString([]byte("fake-png")) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.SDXLImageURL = srv.URL
+	ipa := &storage.IPAdapterParams{Image: "SWRlbnRpdHk="}
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", nil, ipa, storage.ModelSpec{Sidecar: "sdxl"}, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	ia, ok := got["ip_adapter"].(map[string]any)
+	if !ok {
+		t.Fatalf("ip_adapter missing from body: %v", got)
+	}
+	if ia["image"] != "SWRlbnRpdHk=" {
+		t.Fatalf("ip_adapter.image = %v", ia)
+	}
+	if _, ok := ia["strength"]; ok {
+		t.Fatalf("strength must be omitted when 0 (sidecar applies its 0.6 default)")
+	}
+}
+
+// TestGenerateControlOmittedByDefault tests that no conditioning fields are present when ctrl and ipa are nil.
+func TestGenerateControlOmittedByDefault(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"image":"` + base64.StdEncoding.EncodeToString([]byte("fake-png")) + `"}`))
+	}))
+	defer srv.Close()
+
+	c := New("http://unused")
+	c.ImageURL = srv.URL
+	if _, _, err := c.Generate(context.Background(), "a cat", "512x512", nil, nil, storage.ModelSpec{}, storage.SamplingParams{}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, key := range []string{"control_net", "ip_adapter"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("%s must be absent without conditioning (byte-identical legacy body)", key)
+		}
+	}
+}
+
+// TestGenerateConditioningGate tests that an error is returned when conditioning is provided but SDXL is not configured.
+func TestGenerateConditioningGate(t *testing.T) {
+	c := New("http://unused")
+	c.ImageURL = "http://127.0.0.1:1" // unreachable; the gate must fire before any HTTP
+	ctrl := &storage.ControlParams{Net: "pose", Image: "x", Strength: 0.7}
+	_, _, err := c.Generate(context.Background(), "p", "512x512", ctrl, nil, storage.ModelSpec{}, storage.SamplingParams{})
+	if err == nil {
+		t.Fatal("expected gate error without sdxl routing")
+	}
+	if !strings.Contains(err.Error(), "SDXL sidecar") {
+		t.Fatalf("gate error = %v", err)
+	}
+	ipa := &storage.IPAdapterParams{Image: "x", Strength: 0.6}
+	_, _, err = c.Generate(context.Background(), "p", "512x512", nil, ipa, storage.ModelSpec{}, storage.SamplingParams{})
+	if err == nil {
+		t.Fatal("expected gate error for ip_adapter without sdxl routing")
+	}
 }

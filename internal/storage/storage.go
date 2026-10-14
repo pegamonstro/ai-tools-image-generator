@@ -39,6 +39,23 @@ type SamplingParams struct {
 	NegativePrompt string   `json:"negative_prompt,omitempty"` // things to avoid; "" = none
 }
 
+// ControlParams conditions a generate run on a reference image through the
+// SDXL sidecar's ControlNet (pose / depth / canny map). Users supply
+// processed maps for pose and depth; canny may be preprocessed sidecar-side
+// (--canny).
+type ControlParams struct {
+	Net      string  `json:"net"`      // "pose" | "depth" | "canny"
+	Image    string  `json:"image"`    // base64: conditioning reference
+	Strength float64 `json:"strength"` // 0 = sidecar default (0.7); else 0.1..1.0
+}
+
+// IPAdapterParams conditions a generate run on an identity reference through
+// the SDXL sidecar's IP-Adapter.
+type IPAdapterParams struct {
+	Image    string  `json:"image"`    // base64: identity reference
+	Strength float64 `json:"strength"` // 0 = sidecar default (0.6); else 0.1..1.0
+}
+
 // FileRef is one named deliverable inside a job's set directory.
 type FileRef struct {
 	Name    string `json:"name"`
@@ -170,7 +187,7 @@ func (s *Store) DeleteHistory(id string) error {
 	for sc.Scan() {
 		var j Job
 		if err := json.Unmarshal(sc.Bytes(), &j); err != nil {
-			return err
+			return nil
 		}
 		if j.ID == id {
 			continue

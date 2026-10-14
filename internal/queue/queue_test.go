@@ -53,7 +53,7 @@ func testOptsAt(t *testing.T, dir string) Options {
 		Genres: testCatalog(),
 		Store:  s,
 		Ops: ImageOps{
-			Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+			Generate: func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 				return []byte("PNG"), nil, nil
 			},
 		},
@@ -130,7 +130,7 @@ func TestEnhanceJobCompletes(t *testing.T) {
 
 func TestGenerateErrorFailsJob(t *testing.T) {
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		return nil, nil, fmt.Errorf("lattice down")
 	}
 	m := New(opts)
@@ -177,7 +177,7 @@ func TestSingleSlotSerializes(t *testing.T) {
 	var active int32
 	release := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		n := atomic.AddInt32(&active, 1)
 		if n > 1 {
 			t.Errorf("two generations ran concurrently")
@@ -203,7 +203,7 @@ func TestSingleSlotSerializes(t *testing.T) {
 func TestCancelStopsRunningJob(t *testing.T) {
 	started := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, nil, ctx.Err()
@@ -234,7 +234,7 @@ func TestCancelTerminalJobFails(t *testing.T) {
 func TestProgressEventsStream(t *testing.T) {
 	release := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		<-release
 		return []byte("PNG"), nil, nil
 	}
@@ -321,7 +321,7 @@ func TestJobLogsStreamAndReplay(t *testing.T) {
 
 func editOps() ImageOps {
 	return ImageOps{
-		Generate: func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		Generate: func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 			return []byte("PNG"), nil, nil
 		},
 		Edit: func(ctx context.Context, prompt, size, img string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
@@ -490,7 +490,7 @@ func TestSubmitPreservesModelKey(t *testing.T) {
 		Models: []models.Entry{{Key: "persephone", Value: "/m/persephone-4bit"}},
 	}
 	var sawSpec storage.ModelSpec
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		sawSpec = spec
 		return []byte("PNG"), nil, nil
 	}
@@ -881,7 +881,7 @@ func TestSubmitComposesOptionalClauses(t *testing.T) {
 	var gotPrompt string
 	opts := testOpts(t)
 	opts.Genres = cat
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		gotPrompt = prompt
 		return []byte("PNG"), nil, nil
 	}
@@ -937,7 +937,7 @@ func TestPresetTriggerPrefixApplied(t *testing.T) {
 func TestSubmitPersistsQueuedJob(t *testing.T) {
 	blocked := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		<-blocked
 		return []byte("PNG"), nil, nil
 	}
@@ -990,7 +990,7 @@ func TestRestoreMarksInterruptedJobsFailed(t *testing.T) {
 	}
 	opts.Store = g
 	generateCalled := false
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		generateCalled = true
 		return []byte("PNG"), nil, nil
 	}
@@ -1048,7 +1048,7 @@ func TestDispatchCapturesGenIDAndPersists(t *testing.T) {
 	release := make(chan struct{})
 	dir := t.TempDir()
 	opts := testOptsAt(t, dir)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		<-release
 		return []byte("PNG"), nil, nil
 	}
@@ -1112,7 +1112,7 @@ func TestAttachRecoversResult(t *testing.T) {
 	}
 	opts := testOptsAt(t, dir)
 	generateCalled := false
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		generateCalled = true
 		return []byte("PNG"), nil, nil
 	}
@@ -1367,7 +1367,7 @@ func TestDeleteNonTerminalJobFails(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	opts := testOpts(t)
-	opts.Ops.Generate = func(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 		close(started)
 		<-release
 		return []byte("PNG"), nil, nil

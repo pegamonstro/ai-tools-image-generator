@@ -39,19 +39,43 @@ func New(baseURL string) *Client {
 	return &Client{BaseURL: baseURL, HTTP: &http.Client{}}
 }
 
-// Generate requests one image from the mflux sidecar and returns its raw PNG
+// Generate requests one image from the image sidecar and returns its raw PNG
 // bytes plus the seed the sidecar used (nil when the sidecar does not report
 // one). The sidecar takes explicit width/height rather than an OpenAI "size"
-// string, so "1024x576" is split into its dimensions.
-func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+// string, so "1024x576" is split into its dimensions. ctrl/ipa are the B1
+// SDXL-sidecar conditioning references: nil on both produces byte-for-byte
+// the same request as before, and either set on a non-SDXL route is rejected
+// honestly instead of silently dropped.
+func (c *Client) Generate(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 	if c.ImagesViaLattice {
-		return c.latticeImage(ctx, "/v1/images/generations", prompt, size, "", 0, spec, sp)
+		return c.latticeImage(ctx, "/v1/images/generations", prompt, size, "", 0, spec, sp, ctrl, ipa)
 	}
 	w, h, err := parseSize(size)
 	if err != nil {
 		return nil, nil, err
 	}
+	if ctrl != nil || ipa != nil {
+		// Conditioning needs the SDXL engine's ControlNet/IP-Adapter flags;
+		// any other target would drop the references on the floor.
+		if spec.Sidecar != "sdxl" || c.SDXLImageURL == "" {
+			return nil, nil, errors.New("control/ip-adapter requires the SDXL sidecar (model sidecar \"sdxl\" with SDXL_URL configured)")
+		}
+	}
 	body := map[string]any{"prompt": prompt, "width": w, "height": h}
+	if ctrl != nil {
+		cn := map[string]any{"net": ctrl.Net, "image": ctrl.Image}
+		if ctrl.Strength != 0 {
+			cn["strength"] = ctrl.Strength
+		}
+		body["control_net"] = cn
+	}
+	if ipa != nil {
+		ia := map[string]any{"image": ipa.Image}
+		if ipa.Strength != 0 {
+			ia["strength"] = ipa.Strength
+		}
+		body["ip_adapter"] = ia
+	}
 	applyModelSpec(body, spec)
 	applyGenParams(body, sp)
 	b, err := json.Marshal(body)
@@ -66,7 +90,7 @@ func (c *Client) Generate(ctx context.Context, prompt, size string, spec storage
 // the denoise strength in [0,1] (higher departs further from the source).
 func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
 	if c.ImagesViaLattice {
-		return c.latticeImage(ctx, "/v1/images/edits", prompt, size, imageB64, strength, spec, sp)
+		return c.latticeImage(ctx, "/v1/images/edits", prompt, size, imageB64, strength, spec, sp, nil, nil)
 	}
 	w, h, err := parseSize(size)
 	if err != nil {
@@ -90,8 +114,10 @@ func (c *Client) Edit(ctx context.Context, prompt, size, imageB64 string, streng
 // catalog key, falling back to the raw value), the size stays the "WxH" string,
 // and the Lattice extensions (loras + sampling knobs, plus edit's image/strength)
 // pass through so settings survive the proxy to the gateway. data[0] returns the
-// PNG and the seed the engine's run actually used.
-func (c *Client) latticeImage(ctx context.Context, path, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+// PNG and the seed the engine's run actually used. ctrl/ipa carry the B1
+// conditioning references; a later task serializes them onto the request's
+// "extension" object — until then they are accepted but not sent.
+func (c *Client) latticeImage(ctx context.Context, path, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams) ([]byte, *int64, error) {
 	if c.BaseURL == "" {
 		return nil, nil, errors.New("lattice image routing is on but no lattice base URL is configured (set IMAGE_ROUTING=direct to use sidecars directly)")
 	}

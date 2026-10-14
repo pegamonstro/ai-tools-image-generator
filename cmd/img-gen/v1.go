@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"img-gen/internal/compose"
 	"img-gen/internal/genres"
 	"img-gen/internal/models"
 	"img-gen/internal/presets"
@@ -107,6 +109,60 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 			return
 		}
 		d.handleV1Generate(w, r)
+	})
+
+	mux.HandleFunc("/api/v1/repair", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeV1Err(w, http.StatusMethodNotAllowed, "validation_error", "method not allowed", "")
+			return
+		}
+		var req repairRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<20)).Decode(&req); err != nil {
+			writeV1Err(w, http.StatusBadRequest, "validation_error", "bad body: "+err.Error(), "")
+			return
+		}
+		if req.Image == "" {
+			writeV1Err(w, http.StatusBadRequest, "validation_error", "image is required", "")
+			return
+		}
+		if req.Cell != 0 && (req.Cell < compose.RepairMinCell || req.Cell > compose.RepairMaxCell) {
+			writeV1Err(w, http.StatusBadRequest, "validation_error",
+				fmt.Sprintf("cell must be between %d and %d", compose.RepairMinCell, compose.RepairMaxCell), "")
+			return
+		}
+		colors := req.Colors
+		if colors == 0 {
+			colors = compose.RepairDefaultColors
+		}
+		if colors < 1 || colors > compose.RepairMaxColors {
+			writeV1Err(w, http.StatusBadRequest, "validation_error",
+				fmt.Sprintf("colors must be between 1 and %d", compose.RepairMaxColors), "")
+			return
+		}
+		raw, err := base64.StdEncoding.DecodeString(req.Image)
+		if err != nil {
+			writeV1Err(w, http.StatusBadRequest, "validation_error", "image is not valid base64", "")
+			return
+		}
+		pre, err := png.Decode(bytes.NewReader(raw))
+		if err != nil {
+			writeV1Err(w, http.StatusBadRequest, "validation_error", "image is not a PNG", "")
+			return
+		}
+		pb := pre.Bounds()
+		if pb.Dx() > compose.RepairMaxDim || pb.Dy() > compose.RepairMaxDim {
+			writeV1Err(w, http.StatusBadRequest, "validation_error",
+				fmt.Sprintf("image is %dx%d; repair supports up to %dx%d", pb.Dx(), pb.Dy(), compose.RepairMaxDim, compose.RepairMaxDim), "")
+			return
+		}
+		out, err := compose.RepairPNG(raw, req.Cell, colors)
+		if err != nil {
+			writeV1Err(w, http.StatusBadRequest, "validation_error", err.Error(), "")
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(out)
 	})
 
 	mux.HandleFunc("/api/v1/images/", func(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +445,12 @@ type setAndWaitRequest struct {
 type gifAndWaitRequest struct {
 	queue.GifRequest
 	WaitSeconds int `json:"wait_seconds"`
+}
+
+type repairRequest struct {
+	Image  string `json:"image"`
+	Cell   int    `json:"cell,omitempty"`
+	Colors int    `json:"colors,omitempty"`
 }
 
 // handleV1AssetSet submits an asset set. wait_seconds > 0 blocks on the

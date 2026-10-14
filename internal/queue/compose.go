@@ -2,6 +2,7 @@ package queue
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1167,6 +1168,45 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 		GIF: &manifestGIF{Name: spec.Name, DelayMS: gp.DelayMS, Loop: gp.Loop, Formats: gp.Formats}}
 	var frames []image.Image
 	switch {
+	case gp.Keyframes != nil:
+		// Keyframes interpolation (Task 5): the persisted anchors go to the
+		// RIFE sidecar, whose returned frames replace the anchor list
+		// wholesale before the shared encoder. ctx is Background because
+		// composition runs no other cancellable calls — cancelling a
+		// mid-compose keyframes parent is not modeled today.
+		if m.opts.Ops.Rife == nil {
+			// A restart can rehydrate a keyframes spec into a manager built
+			// without RIFE_URL: fail the parent honestly, never panic.
+			m.finish(id, "failed", "compose_error: rife: sidecar not wired")
+			return
+		}
+		ctx := context.Background()
+		raws := make([][]byte, len(gp.Keyframes.Files))
+		for i, name := range gp.Keyframes.Files {
+			data, err := m.opts.Store.ReadSetFile(id, name)
+			if err != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: keyframe %d: %v", i, err))
+				return
+			}
+			raws[i] = data
+		}
+		interp, rerr := m.opts.Ops.Rife(ctx, raws, gp.Keyframes.Multiplier)
+		if rerr != nil {
+			m.finish(id, "failed", fmt.Sprintf("compose_error: rife: %v", rerr))
+			return
+		}
+		if len(interp) == 0 {
+			m.finish(id, "failed", "compose_error: rife returned no frames")
+			return
+		}
+		for i, raw := range interp {
+			im, derr := png.Decode(bytes.NewReader(raw))
+			if derr != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: rife frame %d: %v", i, derr))
+				return
+			}
+			frames = append(frames, im)
+		}
 	case len(gp.Frames) > 0:
 		for i, name := range gp.Frames {
 			data, err := m.opts.Store.ReadSetFile(id, name)

@@ -11,6 +11,9 @@ import (
 	"image/draw"
 	"image/gif"
 	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +23,7 @@ import (
 	"time"
 
 	"img-gen/internal/compose"
+	"img-gen/internal/lattice"
 	"img-gen/internal/prompting"
 	"img-gen/internal/storage"
 )
@@ -1562,13 +1566,23 @@ func TestSubmitGIFKeyframesValidation(t *testing.T) {
 		t.Fatalf("submit-path validation reached the Rife stub %d time(s)", *rife)
 	}
 	// The same anchors at the default multiplier ((16-1)*3+1 = 46 <= 64)
-	// pass validation and submit; the parent goes terminal child-free, so
-	// waitFor settles on whichever state the current compose stage yields.
+	// pass validation and submit; the executor (Task 5) interpolates through
+	// the fake Rife echoing the anchors, so the parent must compose done.
 	id, err := mgr.SubmitGIF(GifRequest{Name: "k5", Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: anchors}}})
 	if err != nil {
 		t.Fatalf("16 anchors at default multiplier must submit: %v", err)
 	}
-	waitFor(t, mgr, id, "done")
+	j := waitFor(t, mgr, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("k5 parent must compose: %s %q", j.Status, j.Error)
+	}
+	raw, rerr := mgr.opts.Store.ReadSetFile(id, "k5.gif")
+	if rerr != nil {
+		t.Fatalf("k5.gif missing: %v", rerr)
+	}
+	if g, gerr := gif.DecodeAll(bytes.NewReader(raw)); gerr != nil || len(g.Image) != 16 {
+		t.Fatalf("k5.gif: %v frames=%d", gerr, len(g.Image))
+	}
 	// Every failed submit above never registered a parent: only k5 remains.
 	if n := len(mgr.List()); n != 1 {
 		t.Fatalf("failed submits left %d extra job(s) registered", n-1)
@@ -1579,9 +1593,8 @@ func TestSubmitGIFKeyframesStoresAnchors(t *testing.T) {
 	// Keyframes submit mirrors from_frames: each anchor resolves exactly once
 	// and persists as keyframe-%04d.png, with spec.GIF.Keyframes carrying the
 	// resolved set-relative files so a restart recomposes without re-resolving.
-	// Terminal state is Task 5's executor concern (until that composeGIF branch
-	// lands the child-free parent ends at the neither-frames-nor-children
-	// precedent) — waitFor accepts failed, and this test asserts persistence.
+	// The anchor echo from the harness's fake Rife composes the parent done:
+	// 2 anchors → 2 interpolated frames → a real decoded GIF.
 	m, _ := harnessWithFakeRife(t)
 	anchors := []FrameRef{
 		{B64: b64PNG(t, 4, 4, color.NRGBA{R: 255, A: 255})},
@@ -1599,13 +1612,19 @@ func TestSubmitGIFKeyframesStoresAnchors(t *testing.T) {
 			t.Fatalf("%s persisted at submit: %v", f, err)
 		}
 	}
-	waitFor(t, m, id, "done")
+	j := waitFor(t, m, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("keyframes parent must compose: %s %q", j.Status, j.Error)
+	}
+	raw, rerr := m.opts.Store.ReadSetFile(id, "kf.gif")
+	if rerr != nil {
+		t.Fatalf("kf.gif missing: %v", rerr)
+	}
+	if g, gerr := gif.DecodeAll(bytes.NewReader(raw)); gerr != nil || len(g.Image) != 2 {
+		t.Fatalf("kf.gif: %v frames=%d", gerr, len(g.Image))
+	}
 	// Rebuild the spec the way a restart does: the persisted ComposeSpec from
 	// history round-trips through JSON with the anchors resolved in place.
-	j, ok := m.Get(id)
-	if !ok {
-		t.Fatal("job not registered")
-	}
 	var spec composeSpec
 	if err := json.Unmarshal([]byte(j.ComposeSpec), &spec); err != nil {
 		t.Fatal(err)
@@ -1619,5 +1638,200 @@ func TestSubmitGIFKeyframesStoresAnchors(t *testing.T) {
 	}
 	if spec.GIF.Keyframes.Multiplier != 3 {
 		t.Fatalf("multiplier: %d", spec.GIF.Keyframes.Multiplier)
+	}
+}
+
+func TestComposeGIFKeyframesFakeSidecar(t *testing.T) {
+	// GOLDEN PATH — the spec's testing section requires the full
+	// keyframes→gif pipeline to run against an HTTP fake sidecar, so Ops.Rife
+	// here is lattice.Client.Rife talking to an httptest server (never a
+	// hand-rolled Go func): both the request body contract and the response
+	// decode go through the real client code path.
+	var gotMult int
+	var gotImgs int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Images     []string `json:"images"`
+			Multiplier int      `json:"multiplier"`
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			http.Error(w, "body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotMult = req.Multiplier
+		gotImgs = len(req.Images)
+		// Task 3 contract: (n-1)*mult+1 distinct 16x16 NRGBA PNGs, b64 in
+		// order under {"frames": [...]}.
+		n := (len(req.Images)-1)*req.Multiplier + 1
+		frames := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			img := image.NewNRGBA(image.Rect(0, 0, 16, 16))
+			c := color.NRGBA{R: uint8((i * 47) % 256), G: uint8(64 + (i*13)%128), B: 200, A: 255}
+			draw.Draw(img, img.Bounds(), &image.Uniform{C: c}, image.Point{}, draw.Src)
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, img); err != nil {
+				http.Error(w, "encode: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			frames = append(frames, base64.StdEncoding.EncodeToString(buf.Bytes()))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"frames": frames})
+	}))
+	defer srv.Close()
+	lat := lattice.New("")
+	lat.RifeURL = srv.URL
+	lat.HTTP = srv.Client()
+	o := composeTestOpts(t, t.TempDir(), &genCapture{})
+	o.Ops.Rife = lat.Rife
+	m := New(o)
+
+	id, err := m.SubmitGIF(GifRequest{
+		Name:    "kf",
+		Formats: []string{"gif", "webp"},
+		Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{
+			Anchors: []FrameRef{
+				{B64: b64PNG(t, 16, 16, color.NRGBA{R: 255, A: 255})},
+				{B64: b64PNG(t, 16, 16, color.NRGBA{B: 255, A: 255})},
+			},
+			Multiplier: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("keyframes parent must compose: %s %q", j.Status, j.Error)
+	}
+	if gotImgs != 2 || gotMult != 2 {
+		t.Fatalf("sidecar contract: images=%d multiplier=%d", gotImgs, gotMult)
+	}
+	// Anchor persistence + the composed deliverable: 2×mult 2 → 3 frames.
+	for _, f := range []string{"keyframe-0000.png", "keyframe-0001.png"} {
+		if _, err := m.opts.Store.ReadSetFile(id, f); err != nil {
+			t.Fatalf("set file %s: %v", f, err)
+		}
+	}
+	raw, err := m.opts.Store.ReadSetFile(id, "kf.gif")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gif.DecodeAll(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("kf.gif not a GIF: %v", err)
+	}
+	if len(g.Image) != 3 {
+		t.Fatalf("gif frames: %d, want 3", len(g.Image))
+	}
+	primary := ""
+	for _, f := range j.Files {
+		if f.Primary {
+			primary = f.Name
+		}
+	}
+	if primary != "kf.gif" {
+		t.Fatalf("primary deliverable: %+v", j.Files)
+	}
+	// WebP is an extra: its variant file exists iff the manifest recorded no
+	// skip reason (TestSubmitGIFWebPFormatRecorded's convention).
+	mraw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(mraw, &man); err != nil {
+		t.Fatal(err)
+	}
+	webp := false
+	for _, f := range man.GIF.Files {
+		if f == "kf.webp" {
+			webp = true
+		}
+	}
+	if webp != (man.GIF.WebP == "") {
+		t.Fatalf("webp file/status mismatch: %+v", man.GIF)
+	}
+}
+
+func TestComposeGIFKeyframesSidecarFailure(t *testing.T) {
+	// A failing sidecar fails the parent honestly. The nearest sidecar
+	// precedent — the Ops.Upscale error path around queue.go's dispatch —
+	// classifies no retryable sidecar classes: any op error is a flat
+	// finish(id, "failed", ...), so the compose_error finish applies here.
+	// Invariants: the error text carries the rife cause, the set holds no
+	// partial gif, and the manager ends in the normal failed state.
+	o := composeTestOpts(t, t.TempDir(), &genCapture{})
+	o.Ops.Rife = func(ctx context.Context, anchors [][]byte, multiplier int) ([][]byte, error) {
+		return nil, fmt.Errorf("rife sidecar: HTTP 500")
+	}
+	m := New(o)
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "kf-fail",
+		Source: GifSource{Type: "keyframes", Keyframes: &KeyframesSource{
+			Anchors: []FrameRef{
+				{B64: b64PNG(t, 4, 4, color.NRGBA{R: 255, A: 255})},
+				{B64: b64PNG(t, 4, 4, color.NRGBA{B: 255, A: 255})},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "failed")
+	if j.Status != "failed" || !strings.Contains(j.Error, "rife:") {
+		t.Fatalf("parent must fail with rife cause: %s %q", j.Status, j.Error)
+	}
+	// Anchor persistence survives; no deliverable is emitted.
+	for _, f := range []string{"keyframe-0000.png", "keyframe-0001.png"} {
+		if _, err := m.opts.Store.ReadSetFile(id, f); err != nil {
+			t.Fatalf("anchors persist on failure: %v", err)
+		}
+	}
+	if _, err := m.opts.Store.ReadSetFile(id, "kf-fail.gif"); err == nil {
+		t.Fatal("partial gif saved despite sidecar failure")
+	}
+	if _, err := m.opts.Store.ReadSetFile(id, "manifest.json"); err == nil {
+		t.Fatal("manifest saved despite sidecar failure")
+	}
+}
+
+func TestComposeGIFKeyframesUnwiredRifeFailsParent(t *testing.T) {
+	// spec.GIF.Keyframes only persists when Ops.Rife was non-nil at submit,
+	// but a restart can rehydrate that spec into a manager built without
+	// RIFE_URL. The executor must fail the parent honestly with the rife
+	// cause — never a nil-function panic inside the worker goroutine.
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := `{"kind":"gif","name":"kfr","gif":{"delay_ms":100,"loop":0,"formats":["gif"],` +
+		`"keyframes":{"files":["keyframe-0000.png","keyframe-0001.png"],"multiplier":3}}}`
+	if err := s.AppendHistory(storage.Job{
+		ID: "0123456789abcef0", SetID: "0123456789abcef0", Mode: "compose",
+		Prompt: "compose gif", Status: "queued", ComposeSpec: spec,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := composeTestOpts(t, dir, &genCapture{}) // Ops.Rife stays nil
+	opts.Store = g
+	m := New(opts)
+	if _, ok := m.Get("0123456789abcef0"); !ok {
+		t.Fatal("keyframes parent not restored")
+	}
+	j := waitFor(t, m, "0123456789abcef0", "failed")
+	if j.Status != "failed" || !strings.Contains(j.Error, "rife:") {
+		t.Fatalf("unwired rife parent: %s %q", j.Status, j.Error)
 	}
 }

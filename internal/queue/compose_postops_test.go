@@ -321,8 +321,9 @@ func TestComposeOutlineOnRembgElement(t *testing.T) {
 
 func TestComposeOutlineOpaqueIsNoOp(t *testing.T) {
 	o := composeTestOpts(t, t.TempDir(), nil)
-	// dual element: both renders fully opaque solid red → UnmixAlpha leaves
-	// an opaque deliverable → outline (auto) must be a no-op, not an error.
+	// single plain opaque render (Shape is inert for the element kind): the
+	// deliverable is fully opaque → outline (auto) on a fully-opaque NRGBA
+	// is a no-op, not an error.
 	o.Ops.Generate = solidGen(t)
 	m := New(o)
 	seed := int64(45)

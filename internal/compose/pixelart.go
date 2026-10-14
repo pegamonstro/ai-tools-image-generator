@@ -1,9 +1,12 @@
 package compose
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
+	"image/png"
 	"math"
 )
 
@@ -96,18 +99,18 @@ func detectCellAxis(edges []int) (int, error) {
 	if n < 8 {
 		return 0, ErrNotPixelGrid
 	}
-	max := 0
+	maxEdge := 0
 	for _, e := range edges {
-		if e > max {
-			max = e
+		if e > maxEdge {
+			maxEdge = e
 		}
 	}
-	if max <= 0 {
+	if maxEdge <= 0 {
 		return 0, ErrNotPixelGrid
 	}
 	significant := 0
 	for _, e := range edges {
-		if float64(e) >= 0.2*float64(max) {
+		if float64(e) >= 0.2*float64(maxEdge) {
 			significant++
 		}
 	}
@@ -141,4 +144,65 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+// DownscaleByCell shrinks src to floor(w/cell)×floor(h/cell) by sampling
+// each cell's center pixel; a partial trailing cell (bounds not a multiple
+// of cell) is dropped. RepairImage rejects non-multiples before this ever
+// sees one.
+func DownscaleByCell(src image.Image, cell int) *image.NRGBA {
+	b := src.Bounds()
+	w, h := b.Dx()/cell, b.Dy()/cell
+	out := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			out.SetNRGBA(x, y, nrgbaAt(src.At(b.Min.X+x*cell+cell/2, b.Min.Y+y*cell+cell/2)))
+		}
+	}
+	return out
+}
+
+// RepairImage quantizes src onto its dominant palette (at most colors
+// colors, the ONE palette implementation from remap.go) and downscales by
+// its pixel-art cell. cell 0 means auto-detect; explicit cells must be
+// inside 2..64. Transparency is preserved: pixels with alpha < 128 snap to
+// fully transparent, the 1-bit convention RemapImage shares with the GIF
+// encoder.
+func RepairImage(src image.Image, cell, colors int) (*image.NRGBA, error) {
+	if colors < 1 || colors > RepairMaxColors {
+		return nil, fmt.Errorf("compose: repair: colors %d out of range 1..%d", colors, RepairMaxColors)
+	}
+	switch {
+	case cell == 0:
+		detected, err := DetectGridCell(src)
+		if err != nil {
+			return nil, err
+		}
+		cell = detected
+	case cell < RepairMinCell || cell > RepairMaxCell:
+		return nil, fmt.Errorf("compose: repair: cell %d out of range %d..%d", cell, RepairMinCell, RepairMaxCell)
+	}
+	b := src.Bounds()
+	if b.Dx()%cell != 0 || b.Dy()%cell != 0 {
+		return nil, fmt.Errorf("compose: repair: %dx%d is not a multiple of cell %d", b.Dx(), b.Dy(), cell)
+	}
+	pal := SetPalette([]image.Image{src}, colors)
+	quantized := RemapImage(src, pal)
+	return DownscaleByCell(quantized, cell), nil
+}
+
+// RepairPNG is RepairImage over raw PNG bytes: "compose: repair: ..." errors.
+func RepairPNG(data []byte, cell, colors int) ([]byte, error) {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("compose: repair: not a PNG: %v", err)
+	}
+	out, err := RepairImage(img, cell, colors)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, out); err != nil {
+		return nil, fmt.Errorf("compose: repair: encode: %v", err)
+	}
+	return buf.Bytes(), nil
 }

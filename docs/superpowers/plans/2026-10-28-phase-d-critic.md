@@ -323,7 +323,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Test: `internal/lattice/vision_test.go`
 
 **Interfaces:**
-- Produces: `func (c *Client) ChatVision(ctx context.Context, model, system, userText, imageB64 string) (string, error)` — non-streaming OpenAI-shaped chat whose user message carries text + one `image_url` data-URL part. A pre-upgrade gateway's 400 is surfaced as an error naming the upgrade (the extension/`IMAGE_ROUTING` precedent — but text-side, so no direct-routing escape hatch).
+- Produces: `func (c *Client) ChatVision(ctx context.Context, model, system, userText, imageB64 string) (string, error)` — non-streaming OpenAI-shaped chat whose user message carries text + one `image_url` data-URL part. A pre-upgrade gateway's real signature is **HTTP 500 with `ollama returned status` in the body** (the parts body passes through to ollama, which 400s; the gateway's Execute collapses it to 500) — or a direct 400. Both are surfaced as an error naming the upgrade (corrected per the D1 final-review ruling; a 400-only check never fires against the live pre-upgrade gateway).
 
 - [ ] **Step 1: Failing test**
 
@@ -391,15 +391,27 @@ func TestChatVisionSendsContentParts(t *testing.T) {
 	}
 }
 
-func TestChatVisionNamesUpgradeOn400(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"message":"unknown field content"}}`))
-	}))
-	defer ts.Close()
-	_, err := New(ts.URL).ChatVision(context.Background(), "m", "s", "u", "QUJD")
-	if err == nil || !strings.Contains(err.Error(), "image content") {
-		t.Fatalf("want named upgrade error, got %v", err)
+func TestChatVisionNamesUpgradeOnPreUpgradeGateway(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		body string
+	}{
+		{"direct 400", http.StatusBadRequest, `{"error":{"message":"unknown field content"}}`},
+		{"collapsed 500 (the real pre-upgrade shape)", http.StatusInternalServerError, `{"error":"ollama returned status 400"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(c.code)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer ts.Close()
+			_, err := New(ts.URL).ChatVision(context.Background(), "m", "s", "u", "QUJD")
+			if err == nil || !strings.Contains(err.Error(), "image content") {
+				t.Fatalf("want named upgrade error, got %v", err)
+			}
+		})
 	}
 }
 ```
@@ -472,7 +484,15 @@ func (c *Client) ChatVision(ctx context.Context, model, system, userText, imageB
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if resp.StatusCode == http.StatusBadRequest {
+		// Pre-upgrade gateway: the parts body reaches ollama's native endpoint,
+		// ollama rejects it, and the gateway's Execute collapses upstream
+		// non-200s into "ollama returned status N" written as HTTP 500. The
+		// named-upgrade error must fire on that real signature (and on any
+		// directly-migrated 400) — never on the generic path.
+		upgrade := resp.StatusCode == http.StatusBadRequest ||
+			(resp.StatusCode == http.StatusInternalServerError &&
+				strings.Contains(string(msg), "ollama returned status"))
+		if upgrade {
 			return "", fmt.Errorf("lattice chat vision: gateway rejected the image content body (%s) — upgrade the lattice gateway to one that translates chat image content parts, or unset the critic's checklist ops that need the judge", strings.TrimSpace(string(msg)))
 		}
 		return "", fmt.Errorf("lattice chat vision: %s: %s", resp.Status, msg)

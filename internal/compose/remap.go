@@ -192,3 +192,15 @@ func huep(a, b float64) float64 {
 	}
 	return h
 }
+
+// LAB converts an sRGB color (8-bit components 0..255) to CIELAB (D65).
+// It is the exported wrapper over the internal rgbToLAB implementation.
+func LAB(r, g, b float64) (l, a, bb float64) {
+	return rgbToLAB(r, g, b)
+}
+
+// CIEDE2000 computes the CIEDE2000 color difference between two CIELAB
+// colors. It is the exported wrapper over the internal cie2000 implementation.
+func CIEDE2000(l1, a1, b1, l2, a2, b2 float64) float64 {
+	return cie2000(l1, a1, b1, l2, a2, b2)
+}

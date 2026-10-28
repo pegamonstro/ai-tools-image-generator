@@ -137,3 +137,30 @@ func TestMarshalPalette(t *testing.T) {
 		t.Fatalf("palette json = %s, want %s", raw, want)
 	}
 }
+
+// TestCIEDE2000ExportedAgrees ensures the exported LAB and CIEDE2000
+// wrappers produce identical results to the internal unexported functions.
+// Pure red (#ff0000) vs pure blue (#0000ff) is a stable reference pair:
+// internal cie2000 gives ~47.8; the exported path must match to 1e-9.
+func TestCIEDE2000ExportedAgrees(t *testing.T) {
+	// Pure red and pure blue in sRGB
+	r1, g1, b1 := 255.0, 0.0, 0.0
+	r2, g2, b2 := 0.0, 0.0, 255.0
+
+	// Internal path
+	l1, a1, bb1 := rgbToLAB(r1, g1, b1)
+	l2, a2, bb2 := rgbToLAB(r2, g2, b2)
+	internal := cie2000(l1, a1, bb1, l2, a2, bb2)
+
+	// Exported wrapper path
+	el1, ea1, ebb1 := LAB(r1, g1, b1)
+	el2, ea2, ebb2 := LAB(r2, g2, b2)
+	exported := CIEDE2000(el1, ea1, ebb1, el2, ea2, ebb2)
+
+	if math.Abs(internal-exported) > 1e-9 {
+		t.Fatalf("exported CIEDE2000 = %v, internal = %v, diff = %v (want ≤ 1e-9)", exported, internal, math.Abs(internal-exported))
+	}
+	if exported <= 20 {
+		t.Fatalf("pure red vs pure blue ΔE = %v, want > 20", exported)
+	}
+}

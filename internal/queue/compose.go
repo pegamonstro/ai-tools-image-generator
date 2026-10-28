@@ -1308,19 +1308,17 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 	if req.Dest != "" && !filepath.IsAbs(req.Dest) {
 		return "", &ValidationError{Code: "validation_error", Msg: "dest must be an absolute path"}
 	}
-	// Phase D: validate compile once before the source switch; availability
-	// mirrors the job-level gate (Tagger for tag_roundtrip). The compiled error
-	// is returned directly (not asset-named like asset-set).
-	if req.Validate != nil {
-		if _, cerr := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
-			return "", &ValidationError{Code: "validation_error", Msg: cerr.Error()}
-		}
-	}
 	spec := composeSpec{Kind: "gif", Name: name, Dest: req.Dest, GIF: &gifPayload{DelayMS: delay, Loop: req.Loop, Formats: formats, Validate: req.Validate}}
 	switch req.Source.Type {
 	case "keyframes":
 		if m.opts.Ops.Rife == nil {
 			return "", &ValidationError{Code: "validation_error", Msg: "keyframes requires the RIFE sidecar (RIFE_URL)"}
+		}
+		// Phase D: validate compile AFTER RIFE check so RIFE error wins precedence.
+		if req.Validate != nil {
+			if _, cerr := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
+				return "", &ValidationError{Code: "validation_error", Msg: cerr.Error()}
+			}
 		}
 		if req.Source.Keyframes == nil {
 			return "", &ValidationError{Code: "validation_error", Msg: "keyframes source requires anchors"}
@@ -1380,6 +1378,12 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 			names = append(names, fname)
 		}
 		spec.GIF.Frames = names
+		// Phase D: validate compile for from_frames (after frame count check).
+		if req.Validate != nil {
+			if _, cerr := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
+				return "", &ValidationError{Code: "validation_error", Msg: cerr.Error()}
+			}
+		}
 		return m.submitComposeParent(id, spec, nil)
 	case "from_spec":
 		base := req.Source.Request
@@ -1398,6 +1402,12 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 		if req.Source.Count < 2 || req.Source.Count > 64 {
 			return "", &ValidationError{Code: "validation_error", Msg: "gif frames must be 2..64"}
 		}
+		// Phase D: validate compile for from_spec (after base request validation).
+		if req.Validate != nil {
+			if _, cerr := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
+				return "", &ValidationError{Code: "validation_error", Msg: cerr.Error()}
+			}
+		}
 		frames := *base
 		if frames.Model == "" {
 			frames.Model = req.Model
@@ -1415,6 +1425,12 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 		}
 		if len(cs.Statics) > maxComposeStatics {
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("composite takes at most %d static layers", maxComposeStatics)}
+		}
+		// Phase D: validate compile for composite (after anim/statics validation).
+		if req.Validate != nil {
+			if _, cerr := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
+				return "", &ValidationError{Code: "validation_error", Msg: cerr.Error()}
+			}
 		}
 		id := newID()
 		names := make([]string, 0, len(cs.Anim))

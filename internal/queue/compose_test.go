@@ -2728,3 +2728,32 @@ func TestSubmitGIFKeyframesValidateRifeErrorOrder(t *testing.T) {
 		t.Fatalf("error = %q, want RIFE error to surface first", verr.Msg)
 	}
 }
+
+func TestSubmitGIFKeyframesValidateRifeErrorWinsDualFailure(t *testing.T) {
+	// Dual failure: keyframes with Rife nil AND validate with tag_roundtrip (no Tagger).
+	// The RIFE error must win (preserve existing RIFE validation_error order).
+	m := harnessWithoutRife(t)
+	anchors := []FrameRef{
+		{B64: b64PNG(t, 4, 4, color.NRGBA{R: 255, A: 255})},
+		{B64: b64PNG(t, 4, 4, color.NRGBA{B: 255, A: 255})},
+	}
+	_, err := m.SubmitGIF(GifRequest{
+		Name:     "kf",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "tag_roundtrip"}}},
+		Source:   GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: anchors}},
+	})
+	if err == nil {
+		t.Fatal("expected RIFE error")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	// RIFE error must surface, NOT the TAGGER_URL validate error
+	if verr.Code != "validation_error" || !strings.Contains(verr.Msg, "RIFE") {
+		t.Fatalf("error = %q, want RIFE error to win over validate error", verr.Msg)
+	}
+	if strings.Contains(verr.Msg, "TAGGER_URL") {
+		t.Fatalf("error should be RIFE error, not TAGGER_URL: %q", verr.Msg)
+	}
+}

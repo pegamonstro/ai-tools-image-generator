@@ -1,6 +1,9 @@
 package critic
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
@@ -9,6 +12,7 @@ import (
 
 	"img-gen/internal/compose"
 	"img-gen/internal/lattice"
+	"img-gen/internal/storage"
 )
 
 // PromptTags tokenizes a danbooru-style prompt: comma-split, trim spaces,
@@ -262,4 +266,304 @@ func absInt(x int) int {
 		return -x
 	}
 	return x
+}
+
+// Run executes the checklist in order against the given image.
+// All vlm_check criteria are batched into a single Judge call.
+// Returns a slice of CriticCheck results in the same order as the checklist.
+func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.CriticCheck {
+	if e.Judge == nil {
+		panic("critic: Env.Judge is nil")
+	}
+	if e.Tagger == nil {
+		panic("critic: Env.Tagger is nil")
+	}
+	if e.Vocab == nil {
+		panic("critic: Env.Vocab is nil")
+	}
+
+	var results []storage.CriticCheck
+
+	// First pass: collect vlm_check criteria and their indices
+	vlmCriteria := []string{}
+	vlmIndices := []int{}
+	for i, check := range cl.Checks {
+		if check.Op == "vlm_check" {
+			vlmCriteria = append(vlmCriteria, check.Spec)
+			vlmIndices = append(vlmIndices, i)
+		}
+	}
+
+	// Batch all vlm_check into one Judge call
+	vlmScores := make([]VLMScore, len(vlmCriteria))
+	vlmErr := error(nil)
+	if len(vlmCriteria) > 0 {
+		vlmScores, vlmErr = e.Judge(ctx, vlmCriteria, imageB64)
+	}
+
+	// Second pass: process all checks in order
+	for i, check := range cl.Checks {
+		var result storage.CriticCheck
+		result.Op = check.Op
+		result.Spec = check.Spec
+
+		switch check.Op {
+		case "vlm_check":
+			// Find the index in vlmCriteria
+			idx := -1
+			for j, vi := range vlmIndices {
+				if vi == i {
+					idx = j
+					break
+				}
+			}
+			if vlmErr != nil {
+				result.Status = "undetermined"
+				result.Reason = strings.TrimSpace(vlmErr.Error())
+			} else if idx >= 0 && idx < len(vlmScores) {
+				score := vlmScores[idx]
+				if score.Pass {
+					result.Status = "pass"
+					result.Reason = score.Reason
+				} else {
+					result.Status = "fail"
+					result.Reason = score.Reason
+					result.Suggestion = score.Fix
+				}
+			} else {
+				// Judge omitted this criterion
+				result.Status = "undetermined"
+				result.Reason = "judge omitted criterion"
+			}
+
+		case "tag_roundtrip":
+			// Fetch vocab first
+			vocabList, vocabErr := e.Vocab(ctx)
+			if vocabErr != nil {
+				result.Status = "error"
+				result.Reason = strings.TrimSpace(vocabErr.Error())
+				results = append(results, result)
+				continue
+			}
+			vocab := make(map[string]bool, len(vocabList))
+			for _, v := range vocabList {
+				vocab[v] = true
+			}
+
+			// Call tagger
+			tags, taggerErr := e.Tagger(ctx, imageB64)
+			if taggerErr != nil {
+				result.Status = "error"
+				result.Reason = strings.TrimSpace(taggerErr.Error())
+				results = append(results, result)
+				continue
+			}
+
+			missing, known := TagDrift(cl.Prompt, vocab, tags, TagFloor)
+			if !known {
+				// This shouldn't happen since we fetched vocab successfully
+				result.Status = "error"
+				result.Reason = "vocab unavailable"
+			} else if len(missing) == 0 {
+				if len(vocab) == 0 {
+					result.Status = "pass"
+					result.Reason = "no known tags to verify"
+				} else {
+					result.Status = "pass"
+					result.Reason = "no known tags missing"
+				}
+			} else {
+				result.Status = "fail"
+				result.Reason = "danbooru drift"
+				result.Suggestion = "strengthen: " + strings.Join(missing, ", ")
+			}
+
+		case "palette_conform":
+			if len(cl.Target) == 0 {
+				result.Status = "error"
+				result.Reason = "no target palette"
+				results = append(results, result)
+				continue
+			}
+
+			// Decode image
+			img, err := decodeBase64Image(imageB64)
+			if err != nil {
+				result.Status = "error"
+				result.Reason = err.Error()
+				results = append(results, result)
+				continue
+			}
+
+			ok, detail := PaletteContain(img, cl.Target, false)
+			if ok {
+				result.Status = "pass"
+				result.Reason = detail
+			} else {
+				result.Status = "fail"
+				result.Reason = detail
+				result.Suggestion = "palette drift"
+			}
+
+		case "tile_conform":
+			// Decode image
+			img, err := decodeBase64Image(imageB64)
+			if err != nil {
+				result.Status = "error"
+				result.Reason = err.Error()
+				results = append(results, result)
+				continue
+			}
+
+			ratio, ok := TileMetric(img)
+			maxRatio := check.MaxRatio
+			if maxRatio == 0 {
+				maxRatio = TileMaxRatio
+			}
+			if ok {
+				result.Status = "pass"
+				result.Reason = fmt.Sprintf("wrap-edge ratio %.2f", ratio)
+			} else {
+				result.Status = "fail"
+				result.Reason = fmt.Sprintf("wrap-edge ratio %.2f > %.2f", ratio, maxRatio)
+				result.Suggestion = "seam present at tile boundary"
+			}
+
+		default:
+			result.Status = "error"
+			result.Reason = "unknown check op: " + check.Op
+		}
+
+		results = append(results, result)
+	}
+
+	return results
+}
+
+// decodeBase64Image decodes a base64-encoded PNG image.
+func decodeBase64Image(b64 string) (image.Image, error) {
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64: %w", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode image: %w", err)
+	}
+	return img, nil
+}
+
+// Aggregate returns the overall verdict from a slice of CriticCheck results.
+// "failed" if any check failed, "indeterminate" if no pass/fail (all inert),
+// otherwise "pass".
+func Aggregate(rs []storage.CriticCheck) string {
+	hasPass := false
+	hasFail := false
+	for _, r := range rs {
+		switch r.Status {
+		case "pass":
+			hasPass = true
+		case "fail":
+			hasFail = true
+		}
+	}
+	if hasFail {
+		return "failed"
+	}
+	if !hasPass && !hasFail {
+		return "indeterminate"
+	}
+	return "pass"
+}
+
+// Score returns pass/(pass+fail) as a float64, 0 when both are zero.
+func Score(rs []storage.CriticCheck) float64 {
+	pass := 0
+	fail := 0
+	for _, r := range rs {
+		switch r.Status {
+		case "pass":
+			pass++
+		case "fail":
+			fail++
+		}
+	}
+	if pass+fail == 0 {
+		return 0
+	}
+	return float64(pass) / float64(pass+fail)
+}
+
+// Fails returns the count of checks with status "fail".
+func Fails(rs []storage.CriticCheck) int {
+	count := 0
+	for _, r := range rs {
+		if r.Status == "fail" {
+			count++
+		}
+	}
+	return count
+}
+
+// Relevant returns the count of checks with status "pass" or "fail".
+func Relevant(rs []storage.CriticCheck) int {
+	count := 0
+	for _, r := range rs {
+		if r.Status == "pass" || r.Status == "fail" {
+			count++
+		}
+	}
+	return count
+}
+
+// MutatedPrompt collects suggestions from FAILING checks only, in order,
+// deduplicates case-insensitively, skips suggestions already substrings of base,
+// joins with ", ", appends to base, and caps at MutationMaxChars (truncating
+// at the last comma boundary that fits). Returns base unchanged when nothing
+// survives.
+func MutatedPrompt(base string, rs []storage.CriticCheck) string {
+	var suggestions []string
+	seen := make(map[string]bool)
+
+	for _, r := range rs {
+		if r.Status != "fail" {
+			continue
+		}
+		sug := strings.TrimSpace(r.Suggestion)
+		if sug == "" {
+			continue
+		}
+		lower := strings.ToLower(sug)
+		if seen[lower] {
+			continue
+		}
+		// Skip if already a substring of base (case-insensitive)
+		if strings.Contains(strings.ToLower(base), lower) {
+			continue
+		}
+		seen[lower] = true
+		suggestions = append(suggestions, sug)
+	}
+
+	if len(suggestions) == 0 {
+		return base
+	}
+
+	joined := strings.Join(suggestions, ", ")
+	result := base + ", " + joined
+
+	// Cap at MutationMaxChars, truncating at last comma boundary
+	if len(result) <= MutationMaxChars {
+		return result
+	}
+
+	// Find the last comma boundary that fits
+	truncated := result[:MutationMaxChars]
+	lastComma := strings.LastIndex(truncated, ",")
+	if lastComma <= len(base) {
+		// No comma boundary after base that fits; return base unchanged
+		return base
+	}
+	// Truncate at the comma (include the comma)
+	return result[:lastComma]
 }

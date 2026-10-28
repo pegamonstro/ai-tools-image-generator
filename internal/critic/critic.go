@@ -5,10 +5,12 @@
 package critic
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	"img-gen/internal/compose"
+	"img-gen/internal/lattice"
 )
 
 // Threshold constants are pinned by the plan; recalibration is a recorded
@@ -55,10 +57,18 @@ type Checklist struct {
 	Budget int      `json:"budget"`
 	OnFail string   `json:"on_fail"` // "" | "deliver" | "fail"
 	Target []string `json:"target,omitempty"`
+	Prompt string   `json:"prompt,omitempty"` // source prompt for tag_roundtrip
 }
 
 // Availability reports which remote legs are wired (nil Ops/Env functions).
 type Availability struct{ Tagger bool }
+
+// Env provides the external dependencies for Run.
+type Env struct {
+	Judge  Judge
+	Tagger func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error)
+	Vocab  func(ctx context.Context) ([]string, error)
+}
 
 func CompileSpec(spec ValidateSpec, av Availability) (Checklist, error) {
 	if len(spec.Checks) == 0 || len(spec.Checks) > MaxChecks {

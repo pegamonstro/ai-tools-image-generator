@@ -39,7 +39,9 @@ func PromptTags(prompt string) []string {
 // TagDrift detects which required prompt tags are missing or below the
 // score floor in the tagger output.
 //   - vocab: the WD14 vocabulary (tag name -> true). If nil, returns
-//     known=false (upstream op error) and missing=nil — this is not drift.
+//     known=false (upstream op error: vocab fetch failed) and missing=nil
+//     — this is not drift. An available-but-empty vocab means nothing is
+//     required (vacuous pass); the fail-open guard is only for fetch failure.
 //   - tags: the TagScore slice from the tagger sidecar.
 //   - floor: minimum score for a tag to count as present (e.g., TagFloor 0.35).
 //
@@ -105,10 +107,13 @@ func PaletteContain(img image.Image, targetHexes []string, pixelFixed bool) (ok 
 			totalOpaque++
 			l, a, bb := compose.LAB(float64(n.R), float64(n.G), float64(n.B))
 			if pixelFixed {
-				// Exact match required
+				// Exact match required (with 1e-10 tolerance per component).
+				// 1e-10 is far below any perceivable/quantized difference;
+				// it only tolerates cross-pipeline float noise.
+				const labEps = 1e-10
 				found := false
 				for _, tl := range targetLABs {
-					if l == tl[0] && a == tl[1] && bb == tl[2] {
+					if math.Abs(l-tl[0]) <= labEps && math.Abs(a-tl[1]) <= labEps && math.Abs(bb-tl[2]) <= labEps {
 						found = true
 						break
 					}
@@ -149,10 +154,9 @@ func PaletteContain(img image.Image, targetHexes []string, pixelFixed bool) (ok 
 	return false, "coverage " + formatCoverage(coverage)
 }
 
-// formatCoverage formats a coverage fraction to 3 decimal places.
+// formatCoverage formats a coverage fraction to exactly 3 decimal places.
 func formatCoverage(cov float64) string {
-	s := fmt.Sprintf("%.3f", cov)
-	return strings.TrimRight(strings.TrimRight(s, "0"), ".")
+	return fmt.Sprintf("%.3f", cov)
 }
 
 // TileMetric computes the normalized wrap-edge error for a tileable image.

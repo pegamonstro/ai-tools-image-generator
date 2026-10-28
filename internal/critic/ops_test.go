@@ -128,6 +128,22 @@ func TestPaletteContain(t *testing.T) {
 		t.Fatalf("pixelFixed=true with off-palette pixel: ok=true, want false")
 	}
 
+	// pixelFixed epsilon: exact 8-bit match passes; 2/255 quantize-off fails
+	// Target: #ff0000 (255,0,0). Exact match passes.
+	imgEps1 := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	imgEps1.SetNRGBA(0, 0, color.NRGBA{255, 0, 0, 255})
+	ok, detail = PaletteContain(imgEps1, []string{"#ff0000"}, true)
+	if !ok {
+		t.Fatalf("epsilon: exact match ok=false, want true: %q", detail)
+	}
+	// Off by 2 in R channel (253 vs 255) -> LAB difference > 1e-10 -> fails
+	imgEps2 := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	imgEps2.SetNRGBA(0, 0, color.NRGBA{253, 0, 0, 255})
+	ok, detail = PaletteContain(imgEps2, []string{"#ff0000"}, true)
+	if ok {
+		t.Fatalf("epsilon: 2/255 off ok=true, want false: %q", detail)
+	}
+
 	// (b) pixelFixed=false: ≥98% within ΔE≤8
 	// Create a 100x100 green field
 	img2 := image.NewNRGBA(image.Rect(0, 0, 100, 100))
@@ -140,10 +156,9 @@ func TestPaletteContain(t *testing.T) {
 	if !ok {
 		t.Fatalf("green field: ok=false, detail=%q", detail)
 	}
-	// Should contain coverage fraction in detail
-	expectedPrefix := "coverage "
-	if len(detail) < len(expectedPrefix) || detail[:len(expectedPrefix)] != expectedPrefix {
-		t.Fatalf("detail = %q, want prefix %q", detail, expectedPrefix)
+	// Should contain coverage fraction in detail (exactly 3 decimals)
+	if detail != "coverage 1.000" {
+		t.Fatalf("detail = %q, want 'coverage 1.000'", detail)
 	}
 
 	// 5% yellow patch on a green field -> yellow not in palette (red, green, blue), huge ΔE -> fail

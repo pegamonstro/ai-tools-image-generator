@@ -8,7 +8,7 @@ import (
 
 func ip[T any](v T) *T { return &v }
 
-func mustCompute(t *testing.T, spec ValidateSpec, av Availability) Checklist {
+func mustCompile(t *testing.T, spec ValidateSpec, av Availability) Checklist {
 	t.Helper()
 	cl, err := CompileSpec(spec, av)
 	if err != nil {
@@ -17,16 +17,16 @@ func mustCompute(t *testing.T, spec ValidateSpec, av Availability) Checklist {
 	return cl
 }
 
-func TestComputeDefaultsAndClamps(t *testing.T) {
-	cl := mustCompute(t, ValidateSpec{Checks: []CheckSpec{{Op: "tag_roundtrip"}}}, Availability{Tagger: true})
+func TestCompileDefaultsAndClamps(t *testing.T) {
+	cl := mustCompile(t, ValidateSpec{Checks: []CheckSpec{{Op: "tag_roundtrip"}}}, Availability{Tagger: true})
 	if cl.Budget != BudgetDefault || cl.OnFail != "deliver" {
 		t.Fatalf("defaults: %+v", cl)
 	}
-	cl = mustCompute(t, ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(9), OnFail: "fail"}, Availability{})
+	cl = mustCompile(t, ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(9), OnFail: "fail"}, Availability{})
 	if cl.Budget != 3 || cl.OnFail != "fail" {
 		t.Fatalf("clamp: %+v", cl)
 	}
-	if cl := mustCompute(t, ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(0)}, Availability{}); cl.Budget != 0 {
+	if cl := mustCompile(t, ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(0)}, Availability{}); cl.Budget != 0 {
 		t.Fatalf("explicit zero must stay evaluate-only: %+v", cl)
 	}
 }
@@ -56,5 +56,25 @@ func TestCompileErrors(t *testing.T) {
 }
 
 func TestCompileTileArgAndVLMText(t *testing.T) {
-	// Placeholder to avoid empty file
+	// compile {tile_conform, arg {"max_ratio":1.1}} + {vlm_check, arg "subject matches"}
+	spec := ValidateSpec{
+		Checks: []CheckSpec{
+			{Op: "tile_conform", Arg: json.RawMessage(`{"max_ratio":1.1}`)},
+			{Op: "vlm_check", Arg: json.RawMessage(`"subject matches"`)},
+		},
+	}
+	av := Availability{} // Tagger not needed for these ops
+	cl, err := CompileSpec(spec, av)
+	if err != nil {
+		t.Fatalf("CompileSpec: %v", err)
+	}
+	if len(cl.Checks) != 2 {
+		t.Fatalf("expected 2 checks, got %d", len(cl.Checks))
+	}
+	if cl.Checks[0].MaxRatio != 1.1 {
+		t.Fatalf("expected MaxRatio 1.1 for tile_conform, got %f", cl.Checks[0].MaxRatio)
+	}
+	if cl.Checks[1].Spec != "subject matches" {
+		t.Fatalf("expected Spec 'subject matches' for vlm_check, got %q", cl.Checks[1].Spec)
+	}
 }

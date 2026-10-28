@@ -11,3 +11,6 @@ training/**/*.train.json
 training/**/*.train.*.json
 **/__pycache__/
 .claude/
+
+# superpowers SDD worktree scratch
+.worktrees/

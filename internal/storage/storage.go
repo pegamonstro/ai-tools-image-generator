@@ -62,6 +62,33 @@ type FileRef struct {
 	Primary bool   `json:"primary,omitempty"`
 }
 
+// --- critic (Phase D) bookkeeping ---
+// CriticCheck is one evaluated validation op; Status ∈ pass|fail|undetermined|error.
+type CriticCheck struct {
+	Op         string `json:"op"`
+	Spec       string `json:"spec,omitempty"`
+	Status     string `json:"status"`
+	Reason     string `json:"reason,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+// CriticAttempt is one render attempt of a validated job (attempt 1 first).
+// Image is the stored image id (16-hex) whose PNG lives at images/<id>.png —
+// attempts are separately-addressable so the chosen one becomes ImagePath.
+type CriticAttempt struct {
+	Image  string        `json:"image"`
+	Prompt string        `json:"prompt"`
+	Seed   *int64        `json:"seed,omitempty"`
+	Checks []CriticCheck `json:"checks,omitempty"`
+	Chosen bool          `json:"chosen,omitempty"`
+}
+
+// ValidateState is a job's validation summary.
+type ValidateState struct {
+	Verdict  string `json:"verdict"` // pass | best_of_n | failed | indeterminate
+	Attempts int    `json:"attempts"`
+}
+
 type Job struct {
 	ID             string            `json:"id"`
 	Genre          string            `json:"genre"`
@@ -104,6 +131,18 @@ type Job struct {
 	Files []FileRef `json:"files,omitempty"`
 	// ComposeSpec is the parent's request as JSON, so a restart can recompose.
 	ComposeSpec string `json:"compose_spec,omitempty"`
+	// --- critic (Phase D) bookkeeping ---
+	// CriticSpec is the compiled checklist JSON (critic.Checklist) so a
+	// restart re-runs validation idempotently; absent = the job never opted in.
+	CriticSpec string `json:"critic_spec,omitempty"`
+	// CriticPending is the 1-based attempt currently rendering or being
+	// validated (set before each dispatch); CriticNextPrompt is the prompt
+	// it renders. Cleared on terminal.
+	CriticPending    *int   `json:"critic_pending,omitempty"`
+	CriticNextPrompt string `json:"critic_next_prompt,omitempty"`
+	// Critic is the summary once the chain resolved; Attempts lists renders.
+	Critic   *ValidateState  `json:"validate,omitempty"`
+	Attempts []CriticAttempt `json:"attempts,omitempty"`
 }
 
 type Store struct {

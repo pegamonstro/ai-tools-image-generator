@@ -1033,11 +1033,12 @@ func (m *Manager) Cancel(id string) error {
 }
 
 // Delete removes a terminal job entirely: the in-memory entry (including its
-// log buffer) and every trace on disk — history lines and the stored PNG.
-// Non-terminal jobs are refused (cancel them first): a running job's own
-// completion would otherwise re-append the history line the delete just
-// removed. Disk work happens under m.mu, mirroring the append-under-lock of
-// finish, so a delete can never interleave with a status transition's persist.
+// log buffer) and every trace on disk — history lines, the stored PNG, and
+// every critic attempt image. Non-terminal jobs are refused (cancel them
+// first): a running job's own completion would otherwise re-append the history
+// line the delete just removed. Disk work happens under m.mu, mirroring the
+// append-under-lock of finish, so a delete can never interleave with a status
+// transition's persist.
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1055,6 +1056,15 @@ func (m *Manager) Delete(id string) error {
 	}
 	if err := m.opts.Store.RemoveImage(job.ID); err != nil {
 		return err
+	}
+	// Remove every critic attempt image (attempts are separately addressable
+	// stored images with their own 16-hex ids). RemoveImage already tolerates
+	// missing files, so this loop is idempotent and safe if an attempt's PNG
+	// was already removed or never created.
+	for _, a := range job.Attempts {
+		if a.Image != "" {
+			_ = m.opts.Store.RemoveImage(a.Image)
+		}
 	}
 	if job.Mode == "compose" && job.SetID != "" {
 		if err := m.opts.Store.RemoveSet(job.SetID); err != nil {

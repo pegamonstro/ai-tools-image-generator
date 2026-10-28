@@ -1538,3 +1538,79 @@ func TestRenderParamsKVConditioning(t *testing.T) {
 		t.Fatal("ip_adapter key must be omit-when-empty")
 	}
 }
+
+func TestDeleteRemovesAttemptImages(t *testing.T) {
+	dir := t.TempDir()
+	m := New(testOptsAt(t, dir))
+	// Create a job and complete it
+	id, err := m.Submit(SubmitRequest{Genre: "landscape", Fields: map[string]string{"setting": "a"}, Size: "512x512"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.ImagePath == "" {
+		t.Fatalf("done job missing image path: %+v", j)
+	}
+
+	// Manually add critic attempts with separate image IDs (simulating what
+	// the critic runner would do). We use the store directly to save attempt
+	// images and then append a history record with the critic fields.
+	attempt1ID := "1111111111111111"
+	attempt2ID := "2222222222222222"
+	if _, err := m.opts.Store.SaveImage(attempt1ID, []byte("ATTEMPT1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.opts.Store.SaveImage(attempt2ID, []byte("ATTEMPT2")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update the job record with critic attempts
+	m.mu.Lock()
+	job := m.jobs[id]
+	job.Attempts = []storage.CriticAttempt{
+		{Image: attempt1ID, Prompt: "first", Checks: []storage.CriticCheck{{Op: "wd14", Status: "pass"}}, Chosen: true},
+		{Image: attempt2ID, Prompt: "second", Checks: []storage.CriticCheck{{Op: "wd14", Status: "fail"}}},
+	}
+	job.Critic = &storage.ValidateState{Verdict: "pass", Attempts: 2}
+	job.CriticSpec = `{"checks":[{"op":"wd14"}]}`
+	updatedJob := *job
+	m.mu.Unlock()
+
+	// Persist the updated job
+	if err := m.opts.Store.AppendHistory(updatedJob); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify attempt images exist before delete
+	for _, aid := range []string{attempt1ID, attempt2ID} {
+		if _, err := os.Stat(filepath.Join(dir, "images", aid+".png")); err != nil {
+			t.Fatalf("attempt image %s missing before delete: %v", aid, err)
+		}
+	}
+
+	// Delete the job — this should remove the main image AND all attempt images
+	if err := m.Delete(id); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify main image is gone
+	if _, err := os.Stat(filepath.Join(dir, "images", id+".png")); !os.IsNotExist(err) {
+		t.Fatalf("main image survived delete: %v", err)
+	}
+
+	// Verify attempt images are also gone
+	for _, aid := range []string{attempt1ID, attempt2ID} {
+		if _, err := os.Stat(filepath.Join(dir, "images", aid+".png")); !os.IsNotExist(err) {
+			t.Fatalf("attempt image %s survived delete: %v", aid, err)
+		}
+	}
+
+	// Verify history is cleaned up
+	hist, err := m.opts.Store.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 0 {
+		t.Fatalf("persisted history survived: %+v", hist)
+	}
+}

@@ -471,3 +471,93 @@ func TestReadImageAndRemoveSet(t *testing.T) {
 		t.Fatal("set dir should be gone")
 	}
 }
+
+func TestCriticCheckRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	j := Job{
+		ID:               "0123456789abcdef",
+		Status:           "done",
+		CriticSpec:       `{"checks":[{"op":"wd14","spec":"general"}],"attempts":3}`,
+		CriticPending:    func() *int { i := 2; return &i }(),
+		CriticNextPrompt: "a cat in space",
+		Critic:           &ValidateState{Verdict: "pass", Attempts: 2},
+		Attempts: []CriticAttempt{
+			{Image: "1111111111111111", Prompt: "first", Seed: func() *int64 { v := int64(42); return &v }(), Checks: []CriticCheck{{Op: "wd14", Spec: "general", Status: "pass", Reason: "ok"}}, Chosen: true},
+			{Image: "2222222222222222", Prompt: "second", Checks: []CriticCheck{{Op: "wd14", Spec: "general", Status: "fail", Reason: "missing cat", Suggestion: "add cat"}}},
+		},
+	}
+	if err := s.AppendHistory(j); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 job, got %d", len(got))
+	}
+	gotJob := got[0]
+	if gotJob.CriticSpec != j.CriticSpec {
+		t.Fatalf("CriticSpec mismatch: %q vs %q", gotJob.CriticSpec, j.CriticSpec)
+	}
+	if gotJob.CriticPending == nil || *gotJob.CriticPending != *j.CriticPending {
+		t.Fatalf("CriticPending mismatch: %v vs %v", gotJob.CriticPending, j.CriticPending)
+	}
+	if gotJob.CriticNextPrompt != j.CriticNextPrompt {
+		t.Fatalf("CriticNextPrompt mismatch: %q vs %q", gotJob.CriticNextPrompt, j.CriticNextPrompt)
+	}
+	if gotJob.Critic == nil || gotJob.Critic.Verdict != j.Critic.Verdict || gotJob.Critic.Attempts != j.Critic.Attempts {
+		t.Fatalf("Critic mismatch: %+v vs %+v", gotJob.Critic, j.Critic)
+	}
+	if len(gotJob.Attempts) != 2 {
+		t.Fatalf("want 2 attempts, got %d", len(gotJob.Attempts))
+	}
+	if gotJob.Attempts[0].Image != "1111111111111111" || !gotJob.Attempts[0].Chosen {
+		t.Fatalf("attempt 0 mismatch: %+v", gotJob.Attempts[0])
+	}
+	if gotJob.Attempts[1].Image != "2222222222222222" || gotJob.Attempts[1].Chosen {
+		t.Fatalf("attempt 1 mismatch: %+v", gotJob.Attempts[1])
+	}
+	if gotJob.Attempts[0].Seed == nil || *gotJob.Attempts[0].Seed != 42 {
+		t.Fatalf("attempt 0 seed mismatch: %v", gotJob.Attempts[0].Seed)
+	}
+	if gotJob.Attempts[0].Checks[0].Status != "pass" || gotJob.Attempts[1].Checks[0].Status != "fail" {
+		t.Fatalf("checks mismatch: %+v", gotJob.Attempts)
+	}
+}
+
+func TestCriticOldRecordBackwardCompat(t *testing.T) {
+	s := newTestStore(t)
+	// Old record without critic fields (simulated by marshaling a Job with zero critic fields)
+	oldJSON := `{"id":"abcdef0123456789","genre":"landscape","prompt":"a view","size":"512x512","enhance":false,"status":"done","created_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(s.dir, "history.jsonl"), []byte(oldJSON+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadHistory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 job, got %d", len(got))
+	}
+	j := got[0]
+	if j.ID != "abcdef0123456789" || j.Prompt != "a view" {
+		t.Fatalf("basic fields lost: %+v", j)
+	}
+	// Critic fields should be zero values
+	if j.CriticSpec != "" {
+		t.Fatalf("CriticSpec should be empty, got %q", j.CriticSpec)
+	}
+	if j.CriticPending != nil {
+		t.Fatalf("CriticPending should be nil, got %v", j.CriticPending)
+	}
+	if j.CriticNextPrompt != "" {
+		t.Fatalf("CriticNextPrompt should be empty, got %q", j.CriticNextPrompt)
+	}
+	if j.Critic != nil {
+		t.Fatalf("Critic should be nil, got %+v", j.Critic)
+	}
+	if j.Attempts != nil {
+		t.Fatalf("Attempts should be nil, got %+v", j.Attempts)
+	}
+}

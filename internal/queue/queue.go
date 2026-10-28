@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -170,6 +171,10 @@ type imageInputs struct {
 	IPAdapter *storage.IPAdapterParams
 }
 
+// attemptRenderer is the closure seam used by both run() and the restart path
+// (Task 11) to render an attempt. It captures the dispatch machinery.
+type attemptRenderer func(ctx context.Context, prompt string, sp storage.SamplingParams) ([]byte, *int64, error)
+
 type Manager struct {
 	mu        sync.Mutex
 	jobs      map[string]*storage.Job
@@ -182,6 +187,20 @@ type Manager struct {
 	cancelled map[string]bool
 	childLeft map[string]int
 	opts      Options
+
+	// Test-only: captures render calls for verification
+	fakeCalls *[]fakeRenderCall
+}
+
+type fakeRenderCall struct {
+	Prompt string
+	Seed   *int64
+}
+
+type fakeRenderResult struct {
+	PNG  []byte
+	Seed *int64
+	Err  error
 }
 
 func New(opts Options) *Manager {
@@ -861,47 +880,23 @@ func (m *Manager) run(id string) {
 	m.cancels[id] = cancel
 	m.mu.Unlock()
 
-	m.setStatus(id, "generating", "")
-	start := time.Now()
 	spec := storage.ModelSpec{Model: job.Model, LatticeModel: job.ModelKey, Loras: job.Loras, Sidecar: job.Sidecar}
-	sp := storage.SamplingParams{Seed: job.Seed, Steps: job.Steps, Guidance: job.Guidance, NegativePrompt: job.NegativePrompt}
-
-	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)
-	cancel()
-	m.mu.Lock()
-	delete(m.cancels, id)
-	m.mu.Unlock()
-
-	if err != nil {
-		if m.isCancelled(id) {
-			m.log(id, "generation cancelled after %s", roundDur(time.Since(start)))
-			m.finish(id, "cancelled", "")
-			return
-		}
-		m.log(id, "generation failed after %s: %v", roundDur(time.Since(start)), err)
-		m.finish(id, "failed", err.Error())
+	seed, steps, guidance, negative := job.Seed, job.Steps, job.Guidance, job.NegativePrompt
+	if job.CriticSpec == "" {
+		// Pre-existing behavior, verbatim: one render, save, finish.
+		m.renderAndFinish(ctx, id, job, inputs, job.Prompt, spec,
+			storage.SamplingParams{Seed: seed, Steps: steps, Guidance: guidance, NegativePrompt: negative})
 		return
 	}
-	if seed != nil {
-		m.mu.Lock()
-		job.Seed = seed
-		m.mu.Unlock()
-		m.log(id, "seed=%d", *seed)
-	}
-	m.log(id, "lattice returned %d bytes in %s", len(png), roundDur(time.Since(start)))
-
-	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(*job, inputs)))
-	if err != nil {
-		m.log(id, "save failed: %v", err)
-		m.finish(id, "failed", err.Error())
+	var cl critic.Checklist
+	if err := json.Unmarshal([]byte(job.CriticSpec), &cl); err != nil {
+		m.finish(id, "failed", "critic: persisted checklist unparsable: "+err.Error())
 		return
 	}
-	m.mu.Lock()
-	job.ImagePath = rel
-	m.mu.Unlock()
-	m.log(id, "saved image to %s", rel)
-
-	m.finish(id, "done", "")
+	renderer := func(pctx context.Context, prompt string, sp storage.SamplingParams) ([]byte, *int64, error) {
+		return m.dispatch(pctx, id, job, inputs, prompt, spec, sp)
+	}
+	m.criticLoop(ctx, id, job, renderer, job.Prompt /* base */, cl, 1, nil)
 }
 
 // dispatch runs the mode-specific op in a goroutine so per-step progress can
@@ -1026,7 +1021,7 @@ func (m *Manager) Cancel(id string) error {
 		return ErrJobNotFound
 	}
 	switch status {
-	case "queued", "enhancing", "generating":
+	case "queued", "enhancing", "generating", "validating":
 	default:
 		return fmt.Errorf("job is %s", status)
 	}
@@ -1328,4 +1323,201 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// renderAndFinish is the pre-existing render tail, extracted verbatim so the
+// non-validated path is byte-identical to the old run().
+func (m *Manager) renderAndFinish(ctx context.Context, id string, job *storage.Job, inputs imageInputs, prompt string, spec storage.ModelSpec, sp storage.SamplingParams) {
+	m.setStatus(id, "generating", "")
+	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)
+	if err != nil {
+		if m.isCancelled(id) {
+			m.log(id, "generation cancelled: %v", err)
+			m.finish(id, "cancelled", "")
+			return
+		}
+		m.log(id, "generation failed: %v", err)
+		m.finish(id, "failed", err.Error())
+		return
+	}
+	if seed != nil {
+		m.mu.Lock()
+		job.Seed = seed
+		m.mu.Unlock()
+		m.log(id, "seed=%d", *seed)
+	}
+
+	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(*job, inputs)))
+	if err != nil {
+		m.log(id, "save failed: %v", err)
+		m.finish(id, "failed", err.Error())
+		return
+	}
+	m.mu.Lock()
+	job.ImagePath = rel
+	m.mu.Unlock()
+	m.log(id, "saved image to %s", rel)
+
+	m.finish(id, "done", "")
+}
+
+// persistCriticPending sets CriticPending and CriticNextPrompt under lock and appends history.
+func (m *Manager) persistCriticPending(job *storage.Job, attempt int, prompt string) {
+	m.mu.Lock()
+	job.CriticPending = &attempt
+	job.CriticNextPrompt = prompt
+	j := *job
+	m.mu.Unlock()
+	if err := m.opts.Store.AppendHistory(j); err != nil {
+		log.Printf("queue: persist critic pending for job %s: %v", job.ID, err)
+	}
+}
+
+// persistJob appends history under lock with the same log-on-error convention as captureGenID.
+func (m *Manager) persistJob(job storage.Job) {
+	m.mu.Lock()
+	j := job
+	m.mu.Unlock()
+	if err := m.opts.Store.AppendHistory(j); err != nil {
+		log.Printf("queue: persist job %s: %v", job.ID, err)
+	}
+}
+
+// runChecks executes the checklist against the given PNG bytes and returns the results.
+func (m *Manager) runChecks(cl critic.Checklist, png []byte) []storage.CriticCheck {
+	b64 := base64.StdEncoding.EncodeToString(png)
+	return critic.Run(context.Background(), cl, b64, m.opts.Critic)
+}
+
+// criticLoop implements the Phase D retry policy.
+func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
+	renderer attemptRenderer, base string, cl critic.Checklist, start int, recs []storage.CriticAttempt) {
+
+	onFail := cl.OnFail
+	if onFail == "" {
+		onFail = "deliver"
+	}
+	mutation := "" // set once, after attempt 1 fails
+	for attempt := start; ; attempt++ {
+		if m.isCancelled(id) {
+			m.finish(id, "cancelled", "")
+			return
+		}
+		prompt := base
+		if attempt >= 2 {
+			prompt = mutation
+		}
+		sp := storage.SamplingParams{Seed: job.Seed, Steps: job.Steps, Guidance: job.Guidance, NegativePrompt: job.NegativePrompt}
+		if attempt >= 3 && job.Seed != nil {
+			s := *job.Seed + int64(attempt-2)
+			sp.Seed = &s
+		}
+		m.persistCriticPending(job, attempt, prompt)
+		m.setStatus(id, "generating", "")
+		png, seed, err := renderer(ctx, prompt, sp)
+		if err != nil {
+			if m.isCancelled(id) {
+				m.finish(id, "cancelled", "")
+				return
+			}
+			m.log(id, "attempt %d render failed: %v", attempt, err)
+			m.finish(id, "failed", err.Error())
+			return
+		}
+		if m.isCancelled(id) {
+			m.finish(id, "cancelled", "")
+			return
+		}
+		if seed != nil {
+			m.mu.Lock()
+			job.Seed = seed
+			m.mu.Unlock()
+			m.log(id, "seed=%d", *seed)
+		}
+		attID := newID()
+		kv := renderParamsKV(*job, imageInputs{})
+		kv["critic_attempt"] = strconv.Itoa(attempt)
+		_, serr := m.opts.Store.SaveImage(attID, m.withRenderParams(png, kv))
+		if serr != nil {
+			m.finish(id, "failed", serr.Error())
+			return
+		}
+		m.setStatus(id, "validating", "")
+		checks := m.runChecks(cl, png)
+		rec := storage.CriticAttempt{Image: attID, Prompt: prompt, Seed: seed, Checks: checks}
+		recs = append(recs, rec)
+		m.mu.Lock()
+		job.Attempts = recs
+		job.CriticPending = nil
+		m.mu.Unlock()
+		m.persistJob(*job)
+		for _, c := range checks {
+			m.log(id, "check %s(%s): %s %s", c.Op, c.Spec, c.Status, c.Reason)
+		}
+		if fails := critic.Fails(checks); fails == 0 || attempt >= 1+cl.Budget {
+			m.finishCritic(id, job, recs, onFail)
+			return
+		}
+		if attempt == 1 {
+			mutation = critic.MutatedPrompt(base, checks)
+			if mutation != base {
+				m.log(id, "retry candidate prompt: %q", mutation)
+			}
+		}
+	}
+}
+
+// finishCritic resolves the attempt chain: best attempt by score (tie: lower
+// attempt index), verdict per the spec taxonomy, chosen PNG re-embedded with
+// critic_* tEXt chunks (best-effort), then the terminal transition.
+func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.CriticAttempt, onFail string) {
+	best := 0
+	bestScore := -1.0
+	for i, r := range recs {
+		if s := critic.Score(r.Checks); s > bestScore {
+			bestScore, best = s, i
+		}
+	}
+	recs[best].Chosen = true
+	ch := recs[best]
+	verdict := "pass"
+	switch {
+	case critic.Relevant(ch.Checks) == 0:
+		verdict = "indeterminate"
+	case critic.Fails(ch.Checks) > 0:
+		verdict = "best_of_n"
+	}
+	if onFail == "fail" && critic.Fails(ch.Checks) > 0 {
+		verdict = "failed"
+	}
+	attID := ch.Image
+	m.mu.Lock()
+	job.ImagePath = "images/" + attID + ".png"
+	job.Critic = &storage.ValidateState{Verdict: verdict, Attempts: len(recs)}
+	job.CriticPending = nil
+	j := *job
+	m.mu.Unlock()
+	m.persistJob(j)
+	// Verdict provenance on the chosen artifact (best-effort, A3 convention).
+	if data, err := m.opts.Store.ReadImage(attID); err == nil {
+		kv := map[string]string{"critic_verdict": verdict, "critic_attempt": strconv.Itoa(best + 1)}
+		for _, c := range ch.Checks {
+			kv["critic_"+c.Op] = c.Status
+		}
+		if nb, err := compose.EmbedTextPNG(data, kv); err == nil {
+			_, _ = m.opts.Store.SaveImage(attID, nb)
+		}
+	}
+	if verdict == "failed" {
+		var fails []string
+		for _, c := range ch.Checks {
+			if c.Status == "fail" {
+				fails = append(fails, c.Op+": "+c.Reason)
+			}
+		}
+		m.finish(id, "failed", "critic failed: "+strings.Join(fails, "; "))
+		return
+	}
+	m.log(id, "critic verdict %s after %d attempt(s), attempt %d chosen", verdict, len(recs), best+1)
+	m.finish(id, "done", "")
 }

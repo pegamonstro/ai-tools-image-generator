@@ -149,6 +149,9 @@ type Store struct {
 	dir string
 }
 
+// Dir returns the store's base directory (test helper).
+func (s *Store) Dir() string { return s.dir }
+
 // New creates the data directory and its images/ subdirectory.
 func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "images"), 0o755); err != nil {

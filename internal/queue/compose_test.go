@@ -59,6 +59,16 @@ func (c *genCapture) add(prompt, size string, seed *int64, img []byte) {
 // too — otherwise unset-dest tests would write into the real
 // ~/Downloads/img-gen fallback chain.
 func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
+	return composeTestOptsWithCritic(t, dir, cap, defaultCriticEnv())
+}
+
+// composeTestOptsWithoutCritic returns Options without a Critic env, for tests
+// that need to verify validation errors when Critic is not configured.
+func composeTestOptsWithoutCritic(t *testing.T, dir string, cap *genCapture) Options {
+	return composeTestOptsWithCritic(t, dir, cap, critic.Env{})
+}
+
+func composeTestOptsWithCritic(t *testing.T, dir string, cap *genCapture, c critic.Env) Options {
 	t.Helper()
 	s, err := storage.New(dir)
 	if err != nil {
@@ -79,7 +89,26 @@ func composeTestOpts(t *testing.T, dir string, cap *genCapture) Options {
 				return buf.Bytes(), sp.Seed, nil
 			},
 		},
-		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+		Chat:   func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+		Critic: c,
+	}
+}
+
+func defaultCriticEnv() critic.Env {
+	return critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			scores := make([]critic.VLMScore, len(criteria))
+			for i := range criteria {
+				scores[i] = critic.VLMScore{ID: i, Pass: true, Reason: "ok"}
+			}
+			return scores, nil
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "test", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"test"}, nil
+		},
 	}
 }
 
@@ -2569,7 +2598,7 @@ func TestSubmitAssetSetSheetMetaFormats(t *testing.T) {
 
 func TestSubmitAssetSetValidateErrorNamesAsset(t *testing.T) {
 	cap := &genCapture{}
-	m := New(composeTestOpts(t, t.TempDir(), cap))
+	m := New(composeTestOptsWithoutCritic(t, t.TempDir(), cap))
 	seed := int64(7)
 	_, err := m.SubmitAssetSet(AssetSetRequest{
 		Name: "star", Seed: &seed,

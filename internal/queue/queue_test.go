@@ -61,6 +61,21 @@ func testOptsAt(t *testing.T, dir string) Options {
 			},
 		},
 		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+		Critic: critic.Env{
+			Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+				scores := make([]critic.VLMScore, len(criteria))
+				for i := range criteria {
+					scores[i] = critic.VLMScore{ID: i, Pass: true, Reason: "ok"}
+				}
+				return scores, nil
+			},
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "test", Score: 0.9}}, nil
+			},
+			Vocab: func(ctx context.Context) ([]string, error) {
+				return []string{"test"}, nil
+			},
+		},
 	}
 }
 
@@ -1637,7 +1652,10 @@ func TestSubmitValidateGenerateUnknownOp(t *testing.T) {
 }
 
 func TestSubmitValidateGenerateTagRoundtripNoTagger(t *testing.T) {
-	m := New(testOpts(t))
+	// Use testOpts without Critic to test the "no tagger" case
+	opts := testOpts(t)
+	opts.Critic = critic.Env{} // No tagger
+	m := New(opts)
 	_, err := m.Submit(SubmitRequest{
 		Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
 		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "tag_roundtrip"}}},
@@ -1657,7 +1675,7 @@ func TestSubmitValidateGenerateTagRoundtripNoTagger(t *testing.T) {
 func TestSubmitValidateGenerateValidSpecRecordsCriticSpec(t *testing.T) {
 	m := New(testOpts(t))
 	// No Tagger/Judge wired → Availability{Tagger: false}
-	_, err := m.Submit(SubmitRequest{
+	id, err := m.Submit(SubmitRequest{
 		Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
 		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{
 			{Op: "vlm_check", Arg: json.RawMessage(`"test criterion"`)},
@@ -1667,18 +1685,10 @@ func TestSubmitValidateGenerateValidSpecRecordsCriticSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid spec rejected: %v", err)
 	}
+	// Wait for job to complete (it will run the critic loop with our mock Critic)
+	waitFor(t, m, id, "done")
 	// Find the job and assert CriticSpec is set
-	var jobID string
-	for _, j := range m.List() {
-		if j.Mode == "generate" {
-			jobID = j.ID
-			break
-		}
-	}
-	if jobID == "" {
-		t.Fatal("generate job not found")
-	}
-	j, ok := m.Get(jobID)
+	j, ok := m.Get(id)
 	if !ok {
 		t.Fatal("job not in memory")
 	}

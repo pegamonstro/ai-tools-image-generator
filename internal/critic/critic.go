@@ -15,6 +15,7 @@ import (
 // ruling with golden updates (Phase C detector precedent), never silent edits.
 const (
 	BudgetDefault    = 2
+	BudgetMax        = 3
 	MaxChecks        = 8
 	MaxVLMCriteria   = 4
 	TagFloor         = 0.35
@@ -61,25 +62,26 @@ type Availability struct{ Tagger bool }
 
 func CompileSpec(spec ValidateSpec, av Availability) (Checklist, error) {
 	if len(spec.Checks) == 0 || len(spec.Checks) > MaxChecks {
-		return Checklist{}, fmt.Errorf("validate checks takes 1..%d entries", MaxChecks)
+		return Checklist{}, fmt.Errorf("validate checks take at most %d check entries", MaxChecks)
 	}
 	vlm := 0
 	cl := Checklist{OnFail: spec.OnFail}
-	if cl.OnFail == "" {
-		cl.OnFail = "deliver"
-	}
 	if spec.Budget == nil {
 		cl.Budget = BudgetDefault
 	} else {
 		cl.Budget = *spec.Budget
 		if cl.Budget < 0 {
 			cl.Budget = 0
-		} else if cl.Budget > 3 {
-			cl.Budget = 3
+		} else if cl.Budget > BudgetMax {
+			cl.Budget = BudgetMax
 		}
 	}
+	// Normalize empty OnFail to "deliver"
+	if cl.OnFail == "" {
+		cl.OnFail = "deliver"
+	}
 	switch cl.OnFail {
-	case "", "deliver", "fail":
+	case "deliver", "fail":
 	default:
 		return Checklist{}, fmt.Errorf("on_fail must be \"deliver\" or \"fail\" (got %q)", cl.OnFail)
 	}

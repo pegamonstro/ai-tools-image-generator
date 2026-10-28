@@ -113,6 +113,9 @@ func CompileSpec(spec ValidateSpec, av Availability) (Checklist, error) {
 				return Checklist{}, fmt.Errorf("tag_roundtrip requires the WD14 tagger sidecar (TAGGER_URL)")
 			}
 		case "palette_conform":
+			if len(spec.Palette) == 0 {
+				return Checklist{}, fmt.Errorf("palette_conform requires a palette")
+			}
 		case "tile_conform":
 			if len(cs.Arg) > 0 {
 				var arg struct {

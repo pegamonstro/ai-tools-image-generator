@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"img-gen/internal/compose"
+	"img-gen/internal/critic"
 	"img-gen/internal/genres"
 	"img-gen/internal/models"
 	"img-gen/internal/presets"
@@ -27,14 +29,16 @@ import (
 // main.go keep byte-identical behavior; all contract changes land here.
 
 type v1Deps struct {
-	mgr       *queue.Manager
-	genreCat  *genres.Catalog
-	modelCat  *models.Catalog
-	presetCat *presets.Catalog
-	store     *storage.Store
-	dataDir   string
-	exportDir string
-	idem      *idemStore
+	mgr           *queue.Manager
+	genreCat      *genres.Catalog
+	modelCat      *models.Catalog
+	presetCat     *presets.Catalog
+	store         *storage.Store
+	dataDir       string
+	exportDir     string
+	idem          *idemStore
+	critic        critic.Env
+	criticTimeout time.Duration
 }
 
 func registerV1(mux *http.ServeMux, d *v1Deps) {
@@ -162,6 +166,14 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 		w.Header().Set("Content-Type", "image/png")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(out)
+	})
+
+	mux.HandleFunc("/api/v1/validate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeV1Err(w, http.StatusMethodNotAllowed, "validation_error", "method not allowed", "")
+			return
+		}
+		d.handleV1Validate(w, r)
 	})
 
 	mux.HandleFunc("/api/v1/images/", func(w http.ResponseWriter, r *http.Request) {
@@ -451,6 +463,61 @@ type repairRequest struct {
 	Cell   int    `json:"cell,omitempty"`
 	Colors int    `json:"colors,omitempty"`
 }
+
+type validateRequest struct {
+	Image   string             `json:"image"`
+	Checks  []critic.CheckSpec `json:"checks"`
+	Palette []string           `json:"palette,omitempty"`
+	Budget  *int               `json:"budget,omitempty"`
+}
+
+// handleV1Validate evaluates a checklist against an image synchronously.
+func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
+	var req validateRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<20)).Decode(&req); err != nil {
+		writeV1Err(w, http.StatusBadRequest, "validation_error", "bad body: "+err.Error(), "")
+		return
+	}
+	if req.Image == "" {
+		writeV1Err(w, http.StatusBadRequest, "validation_error", "image is required", "")
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(req.Image)
+	if err != nil {
+		writeV1Err(w, http.StatusBadRequest, "validation_error", "image is not valid base64", "")
+		return
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		writeV1Err(w, http.StatusBadRequest, "validation_error", "image is not a PNG", "")
+		return
+	}
+	if cfg.Width > compose.RepairMaxDim || cfg.Height > compose.RepairMaxDim {
+		writeV1Err(w, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("image is %dx%d; validate supports up to %dx%d", cfg.Width, cfg.Height, compose.RepairMaxDim, compose.RepairMaxDim), "")
+		return
+	}
+	av := critic.Availability{Tagger: d.critic.Tagger != nil}
+	cl, err := critic.CompileSpec(critic.ValidateSpec{
+		Checks:  req.Checks,
+		Palette: req.Palette,
+		Budget:  req.Budget,
+	}, av)
+	if err != nil {
+		writeV1Err(w, http.StatusBadRequest, "validation_error", err.Error(), "")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), d.criticTimeout)
+	defer cancel()
+	checks := critic.Run(ctx, cl, req.Image, d.critic)
+	writeJSON(w, map[string]any{
+		"verdict": critic.Aggregate(checks),
+		"checks":  checks,
+	})
+}
+
+// ip is a test helper to take the address of a value (for optional Budget pointer).
+func ip[T any](v T) *T { return &v }
 
 // handleV1AssetSet submits an asset set. wait_seconds > 0 blocks on the
 // parent job; otherwise the caller gets the ids and polls. The set id equals

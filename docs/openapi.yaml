@@ -417,6 +417,72 @@ components:
           maximum: 64
           default: 32
           description: Number of dominant palette colors to quantize onto.
+    ValidateRequest:
+      type: object
+      required: [image, checks]
+      properties:
+        image:
+          type: string
+          format: byte
+          description: base64-encoded PNG of the image to validate (up to 1024x1024).
+        checks:
+          type: array
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/CriticCheckSpec"
+          description: Checklist entries (1-8). Each entry specifies an op and optional arg.
+        palette:
+          type: array
+          items:
+            type: string
+            pattern: '^#[0-9a-fA-F]{6}$'
+          description: Target palette for palette_conform (hex colors, e.g. ["#ff0000", "#00ff00"]). Required when checks include palette_conform.
+        budget:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: Evaluation budget (0 = evaluate-only, 1..3 = mutate-then-resample attempts). Omitted = default 2.
+    CriticCheckSpec:
+      type: object
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum: [vlm_check, tag_roundtrip, palette_conform, tile_conform]
+          description: Check operation.
+        arg:
+          type: object
+          description: Per-op argument (vlm_check: JSON string criterion; tile_conform: optional {"max_ratio": 1.0..2.0}).
+    ValidateResponse:
+      type: object
+      required: [verdict, checks]
+      properties:
+        verdict:
+          type: string
+          enum: [pass, failed, indeterminate]
+          description: Aggregate verdict — failed if any check failed, indeterminate if all inert, otherwise pass.
+        checks:
+          type: array
+          items:
+            type: object
+            required: [op, status]
+            properties:
+              op:
+                type: string
+                enum: [vlm_check, tag_roundtrip, palette_conform, tile_conform]
+              spec:
+                type: string
+                description: Criterion for vlm_check; omitted for other ops.
+              status:
+                type: string
+                enum: [pass, fail, undetermined, error]
+                description: Check result — pass/fail are definitive; undetermined = judge omitted or errored; error = op error (vocab fetch, tagger, image decode).
+              reason:
+                type: string
+                description: Human-readable reason.
+              suggestion:
+                type: string
+                description: Suggested fix when status is fail (e.g., missing tags, palette drift, seam).
     GifRequest:
       type: object
       required: [name, source]
@@ -824,6 +890,34 @@ paths:
                 format: binary
         "400":
           description: Validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/validate:
+    post:
+      summary: Validate an image against a checklist (sync)
+      description: >-
+        Evaluates a checklist of checks (vlm_check, tag_roundtrip,
+        palette_conform, tile_conform) against a single image. Synchronous;
+        up to 1024x1024 input. Returns an aggregate verdict and per-check
+        results. tag_roundtrip requires the WD14 tagger sidecar (TAGGER_URL).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateRequest"
+      responses:
+        "200":
+          description: Validation result with verdict and per-check details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateResponse"
+        "400":
+          description: Validation failure (bad base64, non-PNG, oversize dims, unknown op, missing tagger, missing palette).
           content:
             application/json:
               schema:

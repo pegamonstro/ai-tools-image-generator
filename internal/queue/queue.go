@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"img-gen/internal/compose"
+	"img-gen/internal/critic"
 	"img-gen/internal/genres"
 	"img-gen/internal/lattice"
 	"img-gen/internal/models"
@@ -66,6 +67,9 @@ type SubmitRequest struct {
 	// ComposeParent is set by the compose submission path; submitOne copies it
 	// onto the job so the child can re-enqueue its parent at terminal state.
 	ComposeParent string `json:"compose_parent,omitempty"`
+
+	// Validate is the optional critic checklist for generate/asset jobs.
+	Validate *critic.ValidateSpec `json:"validate,omitempty"`
 }
 
 // ValidationError is a submit-time rejection carrying the v1 error-envelope
@@ -146,6 +150,11 @@ type Options struct {
 	// (Model "" = the sidecar's own default) and ignores DefaultModel.
 	ImagesViaLattice bool
 	DefaultModel     string
+
+	// Critic provides the external dependencies for the critic runtime (Judge,
+	// Tagger, Vocab). Only Tagger availability is checked at submit time for
+	// tag_roundtrip validation.
+	Critic critic.Env
 }
 
 type imageInputs struct {
@@ -610,6 +619,25 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		return "", &ValidationError{Code: "validation_error", Msg: "engine unsupported for control: control and ip_adapter apply to SDXL-sidecar models only"}
 	}
 
+	// Phase D: validate is an opt-in checklist on jobs that render images.
+	var criticSpecJSON string
+	if req.Validate != nil {
+		if mode != "generate" && mode != "asset" {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("validate is supported on generate and asset jobs, not %q", mode)}
+		}
+		cl, err := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil})
+		if err != nil {
+			return "", &ValidationError{Code: "validation_error", Msg: err.Error()}
+		}
+		// Marshal the compiled checklist for persistence on the job (Task 10 will
+		// re-use it at build time; we compile once here for submit-time validation).
+		clBytes, err := json.Marshal(cl)
+		if err != nil {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("critic spec marshal: %v", err)}
+		}
+		criticSpecJSON = string(clBytes)
+	}
+
 	id := newID()
 	job := &storage.Job{
 		ID:             id,
@@ -633,6 +661,7 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		ComposeParent:  req.ComposeParent,
 		Status:         "queued",
 		CreatedAt:      time.Now(),
+		CriticSpec:     criticSpecJSON,
 	}
 	m.mu.Lock()
 	m.jobs[id] = job

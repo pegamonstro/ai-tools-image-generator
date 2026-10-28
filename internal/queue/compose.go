@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"img-gen/internal/compose"
+	"img-gen/internal/critic"
 	"img-gen/internal/storage"
 )
 
@@ -71,23 +72,24 @@ func (t *TransparentSpec) UnmarshalJSON(b []byte) error {
 }
 
 type assetSpec struct {
-	Kind         string          `json:"kind"`
-	Name         string          `json:"name"`
-	Prompt       string          `json:"prompt"`
-	Size         string          `json:"size"`
-	Frames       int             `json:"frames,omitempty"`
-	Columns      int             `json:"columns,omitempty"`
-	Transparent  TransparentSpec `json:"transparent,omitempty"` // "" | "dual" | "rembg"
-	FrameMargins int             `json:"frame_margins,omitempty"`
-	BarFill      string          `json:"bar_fill,omitempty"`
-	FillStates   []int           `json:"fill_states,omitempty"`
-	Shape        string          `json:"shape,omitempty"`    // npc: "variants" | "walk4"
-	Variants     []string        `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
-	Views        []string        `json:"views,omitempty"`    // sheet: 2..8 view names
-	MetaFormats  []string        `json:"meta_formats,omitempty"`
-	PixelFix     bool            `json:"pixel_fix,omitempty"` // pixel-art repair post-op (opt-in)
-	Outline      *OutlineSpec    `json:"outline,omitempty"`   // element + frame only
-	Children     int             `json:"children"`            // generation jobs this asset owns, in order
+	Kind         string               `json:"kind"`
+	Name         string               `json:"name"`
+	Prompt       string               `json:"prompt"`
+	Size         string               `json:"size"`
+	Frames       int                  `json:"frames,omitempty"`
+	Columns      int                  `json:"columns,omitempty"`
+	Transparent  TransparentSpec      `json:"transparent,omitempty"` // "" | "dual" | "rembg"
+	FrameMargins int                  `json:"frame_margins,omitempty"`
+	BarFill      string               `json:"bar_fill,omitempty"`
+	FillStates   []int                `json:"fill_states,omitempty"`
+	Shape        string               `json:"shape,omitempty"`    // npc: "variants" | "walk4"
+	Variants     []string             `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
+	Views        []string             `json:"views,omitempty"`    // sheet: 2..8 view names
+	MetaFormats  []string             `json:"meta_formats,omitempty"`
+	PixelFix     bool                 `json:"pixel_fix,omitempty"` // pixel-art repair post-op (opt-in)
+	Outline      *OutlineSpec         `json:"outline,omitempty"`   // element + frame only
+	Children     int                  `json:"children"`            // generation jobs this asset owns, in order
+	Validate     *critic.ValidateSpec `json:"validate,omitempty"`  // per-asset critic checklist (persisted for recompose)
 }
 
 // compositeLayerSpec is one persisted static layer: its set file (saved at
@@ -104,6 +106,7 @@ type gifPayload struct {
 	DelayMS   int                  `json:"delay_ms"`
 	Loop      int                  `json:"loop"`
 	Formats   []string             `json:"formats"`
+	Validate  *critic.ValidateSpec `json:"validate,omitempty"` // critic checklist (persisted for recompose)
 }
 
 // --- parent registration --------------------------------------------------
@@ -395,23 +398,24 @@ type OutlineSpec struct {
 }
 
 type AssetSpecIn struct {
-	Kind         string          `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
-	Name         string          `json:"name"`
-	Prompt       string          `json:"prompt"`
-	Negative     string          `json:"negative,omitempty"`
-	Size         string          `json:"size"`                    // WxH, multiples of 16
-	Frames       int             `json:"frames,omitempty"`        // atlas: 2..64
-	Columns      int             `json:"columns,omitempty"`       // atlas: 0 = single row
-	Transparent  TransparentSpec `json:"transparent,omitempty"`   // true = dual pass (legacy spell); "dual"; "rembg" = u2netp sidecar
-	FrameMargins int             `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
-	BarFill      string          `json:"bar_fill,omitempty"`      // bar: fill art prompt
-	FillStates   []int           `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
-	Shape        string          `json:"shape,omitempty"`         // npc: "variants" | "walk4"
-	Variants     []string        `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
-	Views        []string        `json:"views,omitempty"`         // sheet: 2..8 view names
-	MetaFormats  []string        `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
-	PixelFix     bool            `json:"pixel_fix,omitempty"`     // pixel-art repair post-op (opt-in)
-	Outline      *OutlineSpec    `json:"outline,omitempty"`       // element + frame only
+	Kind         string               `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
+	Name         string               `json:"name"`
+	Prompt       string               `json:"prompt"`
+	Negative     string               `json:"negative,omitempty"`
+	Size         string               `json:"size"`                    // WxH, multiples of 16
+	Frames       int                  `json:"frames,omitempty"`        // atlas: 2..64
+	Columns      int                  `json:"columns,omitempty"`       // atlas: 0 = single row
+	Transparent  TransparentSpec      `json:"transparent,omitempty"`   // true = dual pass (legacy spell); "dual"; "rembg" = u2netp sidecar
+	FrameMargins int                  `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
+	BarFill      string               `json:"bar_fill,omitempty"`      // bar: fill art prompt
+	FillStates   []int                `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
+	Shape        string               `json:"shape,omitempty"`         // npc: "variants" | "walk4"
+	Variants     []string             `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
+	Views        []string             `json:"views,omitempty"`         // sheet: 2..8 view names
+	MetaFormats  []string             `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
+	PixelFix     bool                 `json:"pixel_fix,omitempty"`     // pixel-art repair post-op (opt-in)
+	Outline      *OutlineSpec         `json:"outline,omitempty"`       // element + frame only
+	Validate     *critic.ValidateSpec `json:"validate,omitempty"`      // per-asset critic checklist
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -636,11 +640,21 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			}
 		}
 		as.Outline = a.Outline
+		// Phase D: per-asset validate reuses the job-level gate; the compiled
+		// error names the asset like every other per-asset validation.
+		if a.Validate != nil {
+			if _, cerr := critic.CompileSpec(*a.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: %v", an, cerr)}
+			}
+		}
+		// Persist the validate spec on the asset for recompose (Task 10/12).
+		as.Validate = a.Validate
 		// The request-level model seeds every child of the set; children built
 		// with an empty model then inherit the queue's lattice default
 		// (submitOne) or stay engine-default on direct routing.
 		for i := range built {
 			built[i].Model = req.Model
+			built[i].Validate = a.Validate
 		}
 		as.Children = len(built)
 		total += as.Children
@@ -1153,13 +1167,14 @@ const (
 // composite (statics blitted over every frame of an animation), keyframes
 // (interpolate between 2..16 anchors on the RIFE sidecar — RIFE_URL).
 type GifRequest struct {
-	Name    string    `json:"name"`
-	Dest    string    `json:"dest,omitempty"`
-	DelayMS int       `json:"delay_ms,omitempty"` // 10..5000; 0 = default 100
-	Loop    int       `json:"loop,omitempty"`     // >= 0; 0 = infinite loop
-	Formats []string  `json:"formats,omitempty"`  // subset of {gif,webp}; default ["gif"]
-	Model   string    `json:"model,omitempty"`    // catalog key or raw value; fills from_spec frames whose request omits a model ("" = queue default / engine default)
-	Source  GifSource `json:"source"`
+	Name     string               `json:"name"`
+	Dest     string               `json:"dest,omitempty"`
+	DelayMS  int                  `json:"delay_ms,omitempty"` // 10..5000; 0 = default 100
+	Loop     int                  `json:"loop,omitempty"`     // >= 0; 0 = infinite loop
+	Formats  []string             `json:"formats,omitempty"`  // subset of {gif,webp}; default ["gif"]
+	Model    string               `json:"model,omitempty"`    // catalog key or raw value; fills from_spec frames whose request omits a model ("" = queue default / engine default)
+	Source   GifSource            `json:"source"`
+	Validate *critic.ValidateSpec `json:"validate,omitempty"` // critic checklist (compile once at submit)
 }
 
 type GifSource struct {
@@ -1293,7 +1308,15 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 	if req.Dest != "" && !filepath.IsAbs(req.Dest) {
 		return "", &ValidationError{Code: "validation_error", Msg: "dest must be an absolute path"}
 	}
-	spec := composeSpec{Kind: "gif", Name: name, Dest: req.Dest, GIF: &gifPayload{DelayMS: delay, Loop: req.Loop, Formats: formats}}
+	// Phase D: validate compile once before the source switch; availability
+	// mirrors the job-level gate (Tagger for tag_roundtrip). The compiled error
+	// is returned directly (not asset-named like asset-set).
+	if req.Validate != nil {
+		if _, cerr := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
+			return "", &ValidationError{Code: "validation_error", Msg: cerr.Error()}
+		}
+	}
+	spec := composeSpec{Kind: "gif", Name: name, Dest: req.Dest, GIF: &gifPayload{DelayMS: delay, Loop: req.Loop, Formats: formats, Validate: req.Validate}}
 	switch req.Source.Type {
 	case "keyframes":
 		if m.opts.Ops.Rife == nil {
@@ -1379,6 +1402,8 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 		if frames.Model == "" {
 			frames.Model = req.Model
 		}
+		// Phase D: thread validate to child SubmitRequests.
+		frames.Validate = req.Validate
 		return m.submitComposeParent(newID(), spec, specFrames(frames, req.Source.Count))
 	case "composite":
 		cs := req.Source.Composite

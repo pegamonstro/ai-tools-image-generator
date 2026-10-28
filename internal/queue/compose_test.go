@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"img-gen/internal/compose"
+	"img-gen/internal/critic"
 	"img-gen/internal/lattice"
 	"img-gen/internal/models"
 	"img-gen/internal/prompting"
@@ -2560,5 +2562,169 @@ func TestSubmitAssetSetSheetMetaFormats(t *testing.T) {
 		if _, err := m.opts.Store.ReadSetFile(id, f); err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
+	}
+}
+
+// --- validate field submit gating (Phase D) ---
+
+func TestSubmitAssetSetValidateErrorNamesAsset(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(7)
+	_, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "star", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "logo", Prompt: "logo", Size: "32x32",
+			Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "tag_roundtrip"}}}}},
+	})
+	if err == nil {
+		t.Fatal("expected error for tag_roundtrip without tagger")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	if verr.Code != "validation_error" || !strings.Contains(verr.Msg, `asset "logo"`) || !strings.Contains(verr.Msg, "TAGGER_URL") {
+		t.Fatalf("error = %q, want asset name and TAGGER_URL", verr.Msg)
+	}
+}
+
+func TestSubmitAssetSetValidatePersistsOnAssetSpec(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(7)
+	id, err := m.SubmitAssetSet(AssetSetRequest{
+		Name: "star", Seed: &seed,
+		Assets: []AssetSpecIn{{Kind: "element", Name: "logo", Prompt: "logo", Size: "32x32",
+			Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"test"`)}}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	// Check that the persisted composeSpec carries Validate on the asset
+	var spec composeSpec
+	raw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(raw, &man); err != nil {
+		t.Fatal(err)
+	}
+	// The validate spec should be persisted in the job's ComposeSpec
+	j, _ := m.Get(id)
+	if err := json.Unmarshal([]byte(j.ComposeSpec), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Assets) != 1 || spec.Assets[0].Validate == nil {
+		t.Fatal("asset spec missing Validate field")
+	}
+	if len(spec.Assets[0].Validate.Checks) != 1 || spec.Assets[0].Validate.Checks[0].Op != "vlm_check" {
+		t.Fatalf("asset Validate not persisted correctly: %+v", spec.Assets[0].Validate)
+	}
+}
+
+func TestSubmitGIFFromSpecValidateThreadsToChildren(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	seed := int64(30)
+	id, err := m.SubmitGIF(GifRequest{
+		Name:     "pulse",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"gif test"`)}}},
+		Source: GifSource{
+			Type: "from_spec",
+			Request: &SubmitRequest{
+				Mode: "asset", Prompt: "pulse orb", Size: "32x32", Seed: &seed,
+			},
+			Count: 4,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	// Check children carry Validate
+	p, _ := m.Get(id)
+	if len(p.Children) != 4 {
+		t.Fatalf("want 4 children, got %d", len(p.Children))
+	}
+	for _, cid := range p.Children {
+		c, ok := m.Get(cid)
+		if !ok {
+			t.Fatalf("child %s not found", cid)
+		}
+		if c.CriticSpec == "" {
+			t.Fatalf("child %s missing CriticSpec", cid)
+		}
+		var cl critic.Checklist
+		if err := json.Unmarshal([]byte(c.CriticSpec), &cl); err != nil {
+			t.Fatalf("child %s CriticSpec not valid: %v", cid, err)
+		}
+		if len(cl.Checks) != 1 || cl.Checks[0].Op != "vlm_check" || cl.Checks[0].Spec != "gif test" {
+			t.Fatalf("child %s CriticSpec mismatch: %+v", cid, cl)
+		}
+	}
+}
+
+func TestSubmitGIFFromFramesValidatePersistsOnParent(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	// Create two source jobs
+	j1, err := m.Submit(SubmitRequest{Mode: "asset", Prompt: "f1", Size: "32x32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j2, err := m.Submit(SubmitRequest{Mode: "asset", Prompt: "f2", Size: "32x32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, j1, "done")
+	waitFor(t, m, j2, "done")
+	id, err := m.SubmitGIF(GifRequest{
+		Name:     "spin",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"frames test"`)}}},
+		Source:   GifSource{Type: "from_frames", Frames: []FrameRef{{Job: j1}, {Job: j2}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, m, id, "done")
+	// Check parent spec carries Validate
+	var spec composeSpec
+	j, _ := m.Get(id)
+	if err := json.Unmarshal([]byte(j.ComposeSpec), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.GIF == nil || spec.GIF.Validate == nil {
+		t.Fatal("gif payload missing Validate field")
+	}
+	if len(spec.GIF.Validate.Checks) != 1 || spec.GIF.Validate.Checks[0].Op != "vlm_check" || string(spec.GIF.Validate.Checks[0].Arg) != `"frames test"` {
+		t.Fatalf("gif Validate not persisted: %+v", spec.GIF.Validate)
+	}
+}
+
+func TestSubmitGIFKeyframesValidateRifeErrorOrder(t *testing.T) {
+	// Keyframes with Rife nil: the RIFE error must surface (validate compile runs too but
+	// RIFE check is independent and comes first in submit path)
+	m := harnessWithoutRife(t)
+	anchors := []FrameRef{
+		{B64: b64PNG(t, 4, 4, color.NRGBA{R: 255, A: 255})},
+		{B64: b64PNG(t, 4, 4, color.NRGBA{B: 255, A: 255})},
+	}
+	_, err := m.SubmitGIF(GifRequest{
+		Name:     "kf",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"test"`)}}},
+		Source:   GifSource{Type: "keyframes", Keyframes: &KeyframesSource{Anchors: anchors}},
+	})
+	if err == nil {
+		t.Fatal("expected RIFE error")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	// The RIFE error must be the one that surfaces (not the validate compile error)
+	if verr.Code != "validation_error" || !strings.Contains(verr.Msg, "RIFE") {
+		t.Fatalf("error = %q, want RIFE error to surface first", verr.Msg)
 	}
 }

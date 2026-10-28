@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"img-gen/internal/critic"
 	"img-gen/internal/genres"
 	"img-gen/internal/lattice"
 	"img-gen/internal/models"
@@ -1612,5 +1613,180 @@ func TestDeleteRemovesAttemptImages(t *testing.T) {
 	}
 	if len(hist) != 0 {
 		t.Fatalf("persisted history survived: %+v", hist)
+	}
+}
+
+// --- validate field submit gating (Phase D) ---
+
+func TestSubmitValidateGenerateUnknownOp(t *testing.T) {
+	m := New(testOpts(t))
+	_, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "nope"}}},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown check op")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	if verr.Code != "validation_error" || !strings.Contains(verr.Msg, "unknown check op") || !strings.Contains(verr.Msg, "nope") {
+		t.Fatalf("error = %q, want validation_error naming the op", verr.Msg)
+	}
+}
+
+func TestSubmitValidateGenerateTagRoundtripNoTagger(t *testing.T) {
+	m := New(testOpts(t))
+	_, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "tag_roundtrip"}}},
+	})
+	if err == nil {
+		t.Fatal("expected error for tag_roundtrip without tagger")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	if verr.Code != "validation_error" || !strings.Contains(verr.Msg, "TAGGER_URL") {
+		t.Fatalf("error = %q, want TAGGER_URL message", verr.Msg)
+	}
+}
+
+func TestSubmitValidateGenerateValidSpecRecordsCriticSpec(t *testing.T) {
+	m := New(testOpts(t))
+	// No Tagger/Judge wired → Availability{Tagger: false}
+	_, err := m.Submit(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{
+			{Op: "vlm_check", Arg: json.RawMessage(`"test criterion"`)},
+			{Op: "tile_conform"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("valid spec rejected: %v", err)
+	}
+	// Find the job and assert CriticSpec is set
+	var jobID string
+	for _, j := range m.List() {
+		if j.Mode == "generate" {
+			jobID = j.ID
+			break
+		}
+	}
+	if jobID == "" {
+		t.Fatal("generate job not found")
+	}
+	j, ok := m.Get(jobID)
+	if !ok {
+		t.Fatal("job not in memory")
+	}
+	if j.CriticSpec == "" {
+		t.Fatal("CriticSpec not set on job")
+	}
+	// Round-trip: the stored JSON must decode back into a valid Checklist
+	var cl critic.Checklist
+	if err := json.Unmarshal([]byte(j.CriticSpec), &cl); err != nil {
+		t.Fatalf("CriticSpec not valid Checklist JSON: %v", err)
+	}
+	if len(cl.Checks) != 2 {
+		t.Fatalf("want 2 checks, got %d", len(cl.Checks))
+	}
+	if cl.Checks[0].Op != "vlm_check" || cl.Checks[0].Spec != "test criterion" {
+		t.Fatalf("first check = %+v", cl.Checks[0])
+	}
+	if cl.Checks[1].Op != "tile_conform" {
+		t.Fatalf("second check = %+v", cl.Checks[1])
+	}
+	if cl.Budget != critic.BudgetDefault {
+		t.Fatalf("budget = %d, want %d", cl.Budget, critic.BudgetDefault)
+	}
+	if cl.OnFail != "deliver" {
+		t.Fatalf("on_fail = %q, want deliver", cl.OnFail)
+	}
+}
+
+func TestSubmitValidateEditModeRejected(t *testing.T) {
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	m := New(opts)
+	_, err := m.Submit(SubmitRequest{
+		Mode: "edit", Prompt: "x", Image: "aW1n", Size: "512x512",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"x"`)}}},
+	})
+	if err == nil {
+		t.Fatal("expected error for validate on edit mode")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	wantMsg := `validate is supported on generate and asset jobs, not "edit"`
+	if verr.Code != "validation_error" || verr.Msg != wantMsg {
+		t.Fatalf("error = %q, want %q", verr.Msg, wantMsg)
+	}
+}
+
+func TestSubmitValidateInpaintModeRejected(t *testing.T) {
+	opts := testOpts(t)
+	opts.Ops = editOps()
+	m := New(opts)
+	_, err := m.Submit(SubmitRequest{
+		Mode: "inpaint", Prompt: "x", Image: "aW1n", Mask: "bWFzaw==", Size: "512x512",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"x"`)}}},
+	})
+	if err == nil {
+		t.Fatal("expected error for validate on inpaint mode")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("want ValidationError, got %v", err)
+	}
+	wantMsg := `validate is supported on generate and asset jobs, not "inpaint"`
+	if verr.Code != "validation_error" || verr.Msg != wantMsg {
+		t.Fatalf("error = %q, want %q", verr.Msg, wantMsg)
+	}
+}
+
+func TestSubmitValidateBatchWorks(t *testing.T) {
+	m := New(testOpts(t))
+	ids, err := m.SubmitBatch(SubmitRequest{
+		Genre: "landscape", Fields: map[string]string{"setting": "x"}, Size: "512x512",
+		Batch:    2,
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"x"`)}}},
+	})
+	if err != nil {
+		t.Fatalf("batch with validate rejected: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("want 2 batch ids, got %d", len(ids))
+	}
+	for _, id := range ids {
+		j, ok := m.Get(id)
+		if !ok {
+			t.Fatalf("child job %s missing", id)
+		}
+		if j.CriticSpec == "" {
+			t.Fatalf("child job %s missing CriticSpec", id)
+		}
+	}
+}
+
+func TestSubmitValidateAssetModeAllowed(t *testing.T) {
+	m := New(testOpts(t))
+	id, err := m.Submit(SubmitRequest{
+		Mode: "asset", Prompt: "test", Size: "256x256",
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"x"`)}}},
+	})
+	if err != nil {
+		t.Fatalf("asset mode with validate rejected: %v", err)
+	}
+	j, ok := m.Get(id)
+	if !ok {
+		t.Fatal("asset job not found")
+	}
+	if j.CriticSpec == "" {
+		t.Fatal("asset job missing CriticSpec")
 	}
 }

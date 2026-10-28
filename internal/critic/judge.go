@@ -60,7 +60,7 @@ func ChatJudge(c *lattice.Client, model string) Judge {
 	}
 }
 
-// IsNil returns true if the Judge is nil (reflect-free nil check).
-func (j Judge) IsNil() bool {
+// isNil returns true if the Judge is nil (reflect-free nil check).
+func (j Judge) isNil() bool {
 	return j == nil
 }

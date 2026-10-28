@@ -113,7 +113,9 @@ func TestChatJudgeIncompleteReply(t *testing.T) {
 }
 
 func TestChatJudgeEmptyCriteria(t *testing.T) {
+	var callCount int64
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&callCount, 1)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []any{map[string]any{"message": map[string]any{"content": `[]`}}},
 		})
@@ -130,12 +132,15 @@ func TestChatJudgeEmptyCriteria(t *testing.T) {
 	if len(scores) != 0 {
 		t.Errorf("expected empty scores for empty criteria, got %d", len(scores))
 	}
+	if atomic.LoadInt64(&callCount) != 0 {
+		t.Errorf("expected 0 calls for empty criteria, got %d", callCount)
+	}
 }
 
 func TestChatJudgeNilCheck(t *testing.T) {
 	var j Judge
-	if !j.IsNil() {
-		t.Error("nil Judge should return true for IsNil()")
+	if !j.isNil() {
+		t.Error("nil Judge should return true for isNil()")
 	}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -145,7 +150,7 @@ func TestChatJudgeNilCheck(t *testing.T) {
 	defer ts.Close()
 	c := lattice.New(ts.URL)
 	j = ChatJudge(c, "judge:7b")
-	if j.IsNil() {
-		t.Error("non-nil Judge should return false for IsNil()")
+	if j.isNil() {
+		t.Error("non-nil Judge should return false for isNil()")
 	}
 }

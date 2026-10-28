@@ -27,6 +27,7 @@ type Client struct {
 	RifeURL      string // optional Practical-RIFE sidecar for POST /interpolate keyframes interpolation
 	RembgURL     string // optional rembg u2netp sidecar for POST /segment background removal
 	SDXLImageURL string // optional stable-diffusion.cpp sidecar; spec.Sidecar "sdxl" routes here
+	TaggerURL    string // optional WD14 tagger sidecar for POST /tag and GET /meta
 	HTTP         *http.Client
 	// ImagesViaLattice routes Generate/Edit through the frontend's OpenAI
 	// Images routes (all inference through the lattice) instead of direct

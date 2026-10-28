@@ -350,6 +350,15 @@ func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.Cr
 				vocab[v] = true
 			}
 
+			// Compute required set: prompt tokens that are in vocab
+			requiredTags := PromptTags(cl.Prompt)
+			requiredCount := 0
+			for _, t := range requiredTags {
+				if vocab[t] {
+					requiredCount++
+				}
+			}
+
 			// Call tagger
 			tags, taggerErr := e.Tagger(ctx, imageB64)
 			if taggerErr != nil {
@@ -359,13 +368,10 @@ func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.Cr
 				continue
 			}
 
-			missing, known := TagDrift(cl.Prompt, vocab, tags, TagFloor)
-			if !known {
-				// This shouldn't happen since we fetched vocab successfully
-				result.Status = "error"
-				result.Reason = "vocab unavailable"
-			} else if len(missing) == 0 {
-				if len(vocab) == 0 {
+			missing, _ := TagDrift(cl.Prompt, vocab, tags, TagFloor)
+			// known is always true here since vocab fetch succeeded
+			if len(missing) == 0 {
+				if requiredCount == 0 {
 					result.Status = "pass"
 					result.Reason = "no known tags to verify"
 				} else {
@@ -550,7 +556,12 @@ func MutatedPrompt(base string, rs []storage.CriticCheck) string {
 	}
 
 	joined := strings.Join(suggestions, ", ")
-	result := base + ", " + joined
+	var result string
+	if base == "" {
+		result = joined
+	} else {
+		result = base + ", " + joined
+	}
 
 	// Cap at MutationMaxChars, truncating at last comma boundary
 	if len(result) <= MutationMaxChars {
@@ -560,10 +571,10 @@ func MutatedPrompt(base string, rs []storage.CriticCheck) string {
 	// Find the last comma boundary that fits
 	truncated := result[:MutationMaxChars]
 	lastComma := strings.LastIndex(truncated, ",")
-	if lastComma <= len(base) {
-		// No comma boundary after base that fits; return base unchanged
+	if lastComma < 0 {
+		// No comma boundary fits; return base unchanged
 		return base
 	}
 	// Truncate at the comma (include the comma)
-	return result[:lastComma]
+	return result[:lastComma+1]
 }

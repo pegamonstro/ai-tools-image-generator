@@ -310,6 +310,77 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	// --- Case 7b: tag_roundtrip empty vocab -> "no known tags to verify" ---
+	t.Run("TagEmptyVocab", func(t *testing.T) {
+		e := Env{
+			Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]VLMScore, error) {
+				return []VLMScore{{ID: 0, Pass: true, Reason: "ok"}}, nil
+			},
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+			},
+			Vocab: func(ctx context.Context) ([]string, error) {
+				return []string{}, nil // empty vocab
+			},
+		}
+
+		clEmptyVocab := Checklist{
+			Checks: []Check{
+				{Op: "vlm_check", Spec: "ok"},
+				{Op: "tag_roundtrip"},
+			},
+			Prompt: "1girl, red gloves", // prompt has tags but vocab is empty
+		}
+
+		rs := Run(ctx, clEmptyVocab, base64RedImage(), e)
+
+		if len(rs) < 2 {
+			t.Fatalf("got %d results, want 2", len(rs))
+		}
+		if rs[1].Op != "tag_roundtrip" || rs[1].Status != "pass" {
+			t.Errorf("check 1 (tag empty vocab): got %+v", rs[1])
+		}
+		if rs[1].Reason != "no known tags to verify" {
+			t.Errorf("tag empty vocab reason: got %q, want %q", rs[1].Reason, "no known tags to verify")
+		}
+	})
+
+	// --- Case 7c: tag_roundtrip non-empty vocab but prompt tokens unknown -> "no known tags to verify" ---
+	t.Run("TagPromptUnknownTokens", func(t *testing.T) {
+		e := Env{
+			Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]VLMScore, error) {
+				return []VLMScore{{ID: 0, Pass: true, Reason: "ok"}}, nil
+			},
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+			},
+			Vocab: func(ctx context.Context) ([]string, error) {
+				return []string{"1girl", "red_gloves", "long_hair"}, nil
+			},
+		}
+
+		// Prompt uses tags NOT in vocab
+		clUnknownTokens := Checklist{
+			Checks: []Check{
+				{Op: "vlm_check", Spec: "ok"},
+				{Op: "tag_roundtrip"},
+			},
+			Prompt: "unknown_tag, another_unknown",
+		}
+
+		rs := Run(ctx, clUnknownTokens, base64RedImage(), e)
+
+		if len(rs) < 2 {
+			t.Fatalf("got %d results, want 2", len(rs))
+		}
+		if rs[1].Op != "tag_roundtrip" || rs[1].Status != "pass" {
+			t.Errorf("check 1 (tag unknown tokens): got %+v", rs[1])
+		}
+		if rs[1].Reason != "no known tags to verify" {
+			t.Errorf("tag unknown tokens reason: got %q, want %q", rs[1].Reason, "no known tags to verify")
+		}
+	})
+
 	// --- Case 8: palette_conform no target -> error ---
 	t.Run("PaletteNoTarget", func(t *testing.T) {
 		clNoTarget := Checklist{
@@ -691,6 +762,39 @@ func TestMutatedPrompt(t *testing.T) {
 		got := MutatedPrompt(base, rs)
 		if !strings.Contains(got, "strengthen: whiskers, tail") {
 			t.Errorf("got %q, want to contain strengthen suggestion", got)
+		}
+	})
+
+	t.Run("empty base returns suggestions without leading comma", func(t *testing.T) {
+		rs := []storage.CriticCheck{
+			{Status: "fail", Suggestion: "add cat"},
+			{Status: "fail", Suggestion: "add dog"},
+		}
+		got := MutatedPrompt("", rs)
+		want := "add cat, add dog"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		if strings.HasPrefix(got, ", ") {
+			t.Errorf("got %q should not have leading comma", got)
+		}
+	})
+
+	t.Run("truncation exactly at MutationMaxChars boundary", func(t *testing.T) {
+		// Build base + suggestions that exactly equals MutationMaxChars
+		// Base is "base" (4 chars), need 1196 more to reach 1200
+		// "a, " is 3 chars, 1196/3 ≈ 398
+		longBase := "base" + strings.Repeat("a, ", 398) // 4 + 1194 = 1198
+		rs := []storage.CriticCheck{
+			{Status: "fail", Suggestion: "end"}, // 3 chars + 2 for ", " = 5, total = 1203 > 1200
+		}
+		got := MutatedPrompt(longBase, rs)
+		if len(got) > MutationMaxChars {
+			t.Errorf("length %d exceeds MutationMaxChars %d", len(got), MutationMaxChars)
+		}
+		// Should be truncated at comma boundary
+		if got != longBase && !strings.HasSuffix(got, ",") {
+			t.Errorf("got %q should end at comma boundary or be base unchanged", got)
 		}
 	})
 }

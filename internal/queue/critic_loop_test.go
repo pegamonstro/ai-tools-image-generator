@@ -146,25 +146,6 @@ func collectEvents(t *testing.T, m *Manager, id string) []Event {
 	return events
 }
 
-// makeChecklist creates a checklist with a single vlm_check that passes or fails.
-func makeChecklist(pass bool) critic.Checklist {
-	spec := "test criterion"
-	return critic.Checklist{
-		Checks: []critic.Check{{Op: "vlm_check", Spec: spec}},
-		Budget: critic.BudgetDefault,
-		OnFail: "deliver",
-	}
-}
-
-// makeChecklistWithBudget creates a checklist with specified budget and on_fail.
-func makeChecklistWithBudget(budget int, onFail string) critic.Checklist {
-	return critic.Checklist{
-		Checks: []critic.Check{{Op: "vlm_check", Spec: "test criterion"}},
-		Budget: budget,
-		OnFail: onFail,
-	}
-}
-
 // makeFailingChecklist creates a checklist that will fail on first attempt.
 func makeFailingChecklist() critic.Checklist {
 	return critic.Checklist{
@@ -321,8 +302,7 @@ func TestCriticLoopPassFirstAttempt(t *testing.T) {
 
 func TestCriticLoopFailThenMutateThenPass(t *testing.T) {
 	// Budget 2 allows 1+2 = 3 attempts
-	cl := makeFailingChecklist() // Budget=2, OnFail=deliver
-	_ = cl                       // used for documentation
+	_ = makeFailingChecklist() // Budget=2, OnFail=deliver
 
 	// Script: 3 renders - attempt 1 fails (judge returns fail), attempt 2 fails, attempt 3 passes
 	script := []fakeRenderResult{
@@ -430,8 +410,7 @@ func TestCriticLoopFailThenMutateThenPass(t *testing.T) {
 }
 
 func TestCriticLoopBudgetZeroFailOnFailDeliver(t *testing.T) {
-	cl := makeZeroBudgetChecklist(false) // Budget=0, OnFail=deliver
-	_ = cl                               // used for documentation
+	_ = makeZeroBudgetChecklist(false) // Budget=0, OnFail=deliver
 
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
@@ -474,8 +453,7 @@ func TestCriticLoopBudgetZeroFailOnFailDeliver(t *testing.T) {
 }
 
 func TestCriticLoopBudgetZeroFailOnFailFail(t *testing.T) {
-	cl := makeOnFailFailChecklist() // Budget=0, OnFail=fail
-	_ = cl                          // used for documentation
+	_ = makeOnFailFailChecklist() // Budget=0, OnFail=fail
 
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
@@ -558,8 +536,7 @@ func TestCriticLoopAllIndeterminate(t *testing.T) {
 }
 
 func TestCriticLoopCancelMidValidating(t *testing.T) {
-	cl := makeFailingChecklist() // Budget=2
-	_ = cl                       // used for documentation
+	_ = makeFailingChecklist() // Budget=2
 
 	// Use a channel to block the Judge during validation
 	judgeBlock := make(chan struct{})
@@ -633,8 +610,7 @@ func TestCriticLoopCancelMidValidating(t *testing.T) {
 }
 
 func TestCriticLoopSSEValidatingEvents(t *testing.T) {
-	cl := makeFailingChecklist() // Budget=2
-	_ = cl                       // used for documentation
+	_ = makeFailingChecklist() // Budget=2
 
 	script := []fakeRenderResult{
 		{PNG: tinyPNG(), Seed: int64Ptr(100)},
@@ -800,6 +776,7 @@ func TestCriticLoopChosenPNGHasCriticTextChunks(t *testing.T) {
 
 func TestCriticLoopMutationDerivation(t *testing.T) {
 	// Test that attempt 2 prompt = base + failing check's suggestion (deduped)
+	// Checklist with two vlm_check specs that will both fail initially
 	_ = critic.Checklist{
 		Checks: []critic.Check{
 			{Op: "vlm_check", Spec: "must have cat"},
@@ -1005,6 +982,132 @@ func TestCriticLoopBestOfTieBreak(t *testing.T) {
 	}
 	if len(getCalls()) != 3 {
 		t.Fatalf("renderer called %d times, want 3", len(getCalls()))
+	}
+}
+
+func TestCriticLoopCancelsEmptyAfterValidatedDone(t *testing.T) {
+	// After a validated chain resolves to done, m.cancels should have no entry for the job.
+	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
+
+	m, _ := makeTestJob(t, script)
+	m.opts.Critic = criticEnvForTest(true)
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:    "landscape",
+		Fields:   map[string]string{"setting": "a valley"},
+		Size:     "512x512",
+		Seed:     int64Ptr(42),
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"test criterion"`)}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitForCriticDone(t, m, id)
+
+	// Check that m.cancels has no entry for this job
+	m.mu.Lock()
+	_, hasCancel := m.cancels[id]
+	m.mu.Unlock()
+	if hasCancel {
+		t.Fatal("m.cancels should be empty for job after validated chain resolves to done")
+	}
+}
+
+func TestCriticLoopCancelsEmptyAfterRenderError(t *testing.T) {
+	// After a render-error failure, m.cancels should have no entry for the job.
+	script := []fakeRenderResult{{PNG: nil, Seed: nil, Err: errors.New("render failed")}}
+
+	m, _ := makeTestJob(t, script)
+	m.opts.Critic = criticEnvForTest(true)
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:    "landscape",
+		Fields:   map[string]string{"setting": "a valley"},
+		Size:     "512x512",
+		Seed:     int64Ptr(42),
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"test criterion"`)}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitForCriticDone(t, m, id)
+
+	// Check that m.cancels has no entry for this job
+	m.mu.Lock()
+	_, hasCancel := m.cancels[id]
+	m.mu.Unlock()
+	if hasCancel {
+		t.Fatal("m.cancels should be empty for job after render-error failure")
+	}
+}
+
+func TestCriticLoopCancelDuringFinalChecks(t *testing.T) {
+	// Budget 1 = 1+1 = 2 attempts max.
+	// Attempt 1 fails. Attempt 2 renders, then Judge/checks BLOCK on a channel.
+	// Cancel() while status is "validating" on the final attempt.
+	// Unblock -> assert job status "cancelled" (NOT done/best_of_n).
+	script := []fakeRenderResult{
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+	}
+
+	m, _ := makeTestJob(t, script)
+
+	judgeBlock := make(chan struct{})
+	judgeUnblocked := make(chan struct{})
+
+	m.opts.Critic = critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			// First call (attempt 1) returns fail
+			// Second call (attempt 2) blocks
+			close(judgeUnblocked)
+			select {
+			case <-judgeBlock:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return []critic.VLMScore{{ID: 0, Pass: false, Reason: "no cat", Fix: "add cat"}}, nil
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"1girl", "cat"}, nil
+		},
+	}
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:  "landscape",
+		Fields: map[string]string{"setting": "a valley"},
+		Size:   "512x512",
+		Seed:   int64Ptr(100),
+		Validate: &critic.ValidateSpec{
+			Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"must have cat"`)}},
+			Budget: intPtr(1),
+			OnFail: "deliver",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for first attempt to complete and second attempt to start validating
+	<-judgeUnblocked
+
+	// Now we're in the validating phase of the final attempt - cancel
+	if err := m.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unblock the judge so it can clean up
+	close(judgeBlock)
+
+	j := waitForCriticDone(t, m, id)
+
+	if j.Status != "cancelled" {
+		t.Fatalf("status = %q, want cancelled (not done/best_of_n)", j.Status)
 	}
 }
 

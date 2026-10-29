@@ -877,6 +877,13 @@ func (m *Manager) run(id string) {
 	}
 	var cl critic.Checklist
 	if err := json.Unmarshal([]byte(job.CriticSpec), &cl); err != nil {
+		// Cancel ctx + delete cancels entry for the unparsable-spec exit.
+		m.mu.Lock()
+		if cfn, ok := m.cancels[id]; ok {
+			cfn()
+			delete(m.cancels, id)
+		}
+		m.mu.Unlock()
 		m.finish(id, "failed", "critic: persisted checklist unparsable: "+err.Error())
 		return
 	}
@@ -1415,7 +1422,7 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 				return
 			}
 			m.log(id, "attempt %d render failed: %v", attempt, err)
-			m.cancelAndFinish(id, "failed", "")
+			m.cancelAndFinish(id, "failed", err.Error())
 			return
 		}
 		if m.isCancelled(id) {
@@ -1433,7 +1440,7 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 		kv["critic_attempt"] = strconv.Itoa(attempt)
 		_, serr := m.opts.Store.SaveImage(attID, m.withRenderParams(png, kv))
 		if serr != nil {
-			m.cancelAndFinish(id, "failed", "")
+			m.cancelAndFinish(id, "failed", serr.Error())
 			return
 		}
 		m.setStatus(id, "validating", "")
@@ -1454,7 +1461,7 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 			return
 		}
 		if fails := critic.Fails(checks); fails == 0 || attempt >= 1+cl.Budget {
-			m.finishCritic(ctx, id, job, recs, onFail)
+			m.finishCritic(id, job, recs, onFail)
 			return
 		}
 		if attempt == 1 {
@@ -1467,20 +1474,25 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 }
 
 // cancelAndFinish cancels the job's context, removes it from cancels, and finishes.
+// cfn() is called outside the lock to match Cancel() convention.
 func (m *Manager) cancelAndFinish(id, status, errMsg string) {
+	var cfn context.CancelFunc
 	m.mu.Lock()
-	if cfn, ok := m.cancels[id]; ok {
-		cfn()
+	if c, ok := m.cancels[id]; ok {
+		cfn = c
 		delete(m.cancels, id)
 	}
 	m.mu.Unlock()
+	if cfn != nil {
+		cfn()
+	}
 	m.finish(id, status, errMsg)
 }
 
 // finishCritic resolves the attempt chain: best attempt by score (tie: lower
 // attempt index), verdict per the spec taxonomy, chosen PNG re-embedded with
 // critic_* tEXt chunks (best-effort), then the terminal transition.
-func (m *Manager) finishCritic(ctx context.Context, id string, job *storage.Job, recs []storage.CriticAttempt, onFail string) {
+func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.CriticAttempt, onFail string) {
 	best := 0
 	bestScore := -1.0
 	for i, r := range recs {

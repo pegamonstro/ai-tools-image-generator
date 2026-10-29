@@ -1102,6 +1102,375 @@ func TestCriticLoopCancelDuringFinalChecks(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// Task 11: Restart recovery of validated jobs — RED tests
+// ============================================================================
+
+// TestCriticRestoreKillDuringChecks verifies that a job killed while checks
+// are running (persisted Attempts >= CriticPending) restarts WITHOUT calling
+// the sidecar's Result — checks re-run idempotently from the stored attempt
+// bytes, and the chain finalizes.
+func TestCriticRestoreKillDuringChecks(t *testing.T) {
+	// Pre-persist a job that completed attempt 1 (rendered + checks run)
+	// but died before the chain could finalize. CriticPending=1, Attempts=[1].
+	// Since the render completed, it MUST have a GenID (captured during render).
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempt1ID := "1111111111111111"
+	attempt1PNG := tinyPNG()
+	if _, err := s.SaveImage(attempt1ID, attempt1PNG); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := critic.Checklist{
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+		Budget: 2,
+		OnFail: "deliver",
+	}
+	clBytes, _ := json.Marshal(cl)
+
+	job := storage.Job{
+		ID:               "restore-checks",
+		Genre:            "landscape",
+		Mode:             "generate",
+		Prompt:           "A landscape: a valley.",
+		Size:             "512x512",
+		Seed:             int64Ptr(42),
+		Status:           "validating",
+		CreatedAt:        time.Now().Add(-time.Minute),
+		GenID:            "gen42", // Render completed, so GenID was captured
+		CriticSpec:       string(clBytes),
+		CriticPending:    intPtr(1),
+		CriticNextPrompt: "A landscape: a valley., add cat",
+		Attempts: []storage.CriticAttempt{
+			{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
+		},
+	}
+	if err := s.AppendHistory(job); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake Ops: Result must NOT be called (we track this)
+	resultCalled := false
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+		resultCalled = true
+		return nil, lattice.ErrResultNotFound
+	}
+	// Critic env: checks FAIL on re-run (idempotent with stored failed checks)
+	opts.Critic = criticEnvForTest(false)
+
+	m := New(opts)
+
+	// Wait for terminal state
+	j := waitForCriticDone(t, m, "restore-checks")
+
+	// Assert: Result was never called (no sidecar re-attach)
+	if resultCalled {
+		t.Fatal("Result must NOT be called when kill-during-checks recovers")
+	}
+
+	// Assert: job finalizes with verdict from stored checks
+	if j.Status != "done" {
+		t.Fatalf("status = %q, want done", j.Status)
+	}
+	if j.Critic == nil {
+		t.Fatal("Critic summary missing")
+	}
+	if j.Critic.Verdict != "best_of_n" {
+		t.Fatalf("verdict = %q, want best_of_n (stored attempt failed)", j.Critic.Verdict)
+	}
+	if j.Critic.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (no new attempt rendered)", j.Critic.Attempts)
+	}
+	// The chosen image should be attempt 1's image
+	chosenID := strings.TrimSuffix(strings.TrimPrefix(j.ImagePath, "images/"), ".png")
+	if chosenID != attempt1ID {
+		t.Fatalf("chosen image = %q, want %q (stored attempt)", chosenID, attempt1ID)
+	}
+
+	// Assert: CriticPending and CriticNextPrompt cleared
+	if j.CriticPending != nil {
+		t.Fatal("CriticPending must be cleared on terminal")
+	}
+	if j.CriticNextPrompt != "" {
+		t.Fatal("CriticNextPrompt must be cleared on terminal")
+	}
+}
+
+// TestCriticRestoreKillDuringRenderAttempt2 verifies that a job killed
+// during attempt-2 render (GenID learned) restarts by calling the sidecar's
+// Result to recover the PNG, records it as the pending attempt with
+// CriticNextPrompt as its prompt, runs its checks, and finalizes WITHOUT
+// attempt 3 (no-retry limitation). The double-image landmine is gone:
+// exactly ONE attempt image id recorded; the job's own id is NOT used as
+// an attempt image.
+func TestCriticRestoreKillDuringRenderAttempt2(t *testing.T) {
+	// Pre-persist a job that completed attempt 1, started attempt 2 (GenID captured),
+	// but died during the render. CriticPending=2, Attempts=[1], GenID=set.
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempt1ID := "1111111111111111"
+	attempt1PNG := tinyPNG()
+	if _, err := s.SaveImage(attempt1ID, attempt1PNG); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := critic.Checklist{
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+		Budget: 2,
+		OnFail: "deliver",
+	}
+	clBytes, _ := json.Marshal(cl)
+
+	job := storage.Job{
+		ID:               "restore-render2",
+		Genre:            "landscape",
+		Mode:             "generate",
+		Prompt:           "A landscape: a valley.",
+		Size:             "512x512",
+		Seed:             int64Ptr(42),
+		Status:           "generating",
+		CreatedAt:        time.Now().Add(-time.Minute),
+		GenID:            "gen42", // GenID was captured before death
+		CriticSpec:       string(clBytes),
+		CriticPending:    intPtr(2),
+		CriticNextPrompt: "A landscape: a valley., add cat",
+		Attempts: []storage.CriticAttempt{
+			{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
+		},
+	}
+	if err := s.AppendHistory(job); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake Ops: Result returns the recovered PNG for attempt 2
+	recoveredPNG := tinyPNG()
+	resultCallCount := 0
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+		resultCallCount++
+		if mode != "generate" || genID != "gen42" {
+			t.Errorf("Result(mode=%s genID=%s)", mode, genID)
+		}
+		return recoveredPNG, nil
+	}
+	// Critic env: checks PASS on the recovered attempt
+	opts.Critic = criticEnvForTest(true)
+
+	m := New(opts)
+
+	// Wait for terminal state
+	j := waitForCriticDone(t, m, "restore-render2")
+
+	// Assert: Result was called exactly once (sidecar re-attach)
+	if resultCallCount != 1 {
+		t.Fatalf("Result called %d times, want 1", resultCallCount)
+	}
+
+	// Assert: job finalizes (no attempt 3 — no-retry limitation)
+	if j.Status != "done" {
+		t.Fatalf("status = %q, want done", j.Status)
+	}
+	if j.Critic == nil {
+		t.Fatal("Critic summary missing")
+	}
+	if j.Critic.Verdict != "pass" {
+		t.Fatalf("verdict = %q, want pass (recovered attempt passed)", j.Critic.Verdict)
+	}
+	if j.Critic.Attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (no attempt 3)", j.Critic.Attempts)
+	}
+
+	// Assert: exactly 2 distinct attempt images (attempt 1 + recovered attempt 2)
+	// The job's own id must NOT be used as an attempt image (double-image landmine)
+	attemptIDs := make(map[string]bool)
+	for _, a := range j.Attempts {
+		attemptIDs[a.Image] = true
+		if a.Image == j.ID {
+			t.Fatal("job ID must not appear as an attempt image (double-image landmine)")
+		}
+	}
+	if len(attemptIDs) != 2 {
+		t.Fatalf("expected 2 distinct attempt images, got %d: %v", len(attemptIDs), attemptIDs)
+	}
+
+	// Assert: attempt 2 has the correct prompt (CriticNextPrompt) and seed
+	if len(j.Attempts) < 2 {
+		t.Fatal("missing attempt 2")
+	}
+	if j.Attempts[1].Prompt != "A landscape: a valley., add cat" {
+		t.Fatalf("attempt 2 prompt = %q, want CriticNextPrompt", j.Attempts[1].Prompt)
+	}
+	if j.Attempts[1].Seed == nil || *j.Attempts[1].Seed != 42 {
+		t.Fatalf("attempt 2 seed = %v, want 42", j.Attempts[1].Seed)
+	}
+
+	// Assert: CriticPending and CriticNextPrompt cleared
+	if j.CriticPending != nil {
+		t.Fatal("CriticPending must be cleared on terminal")
+	}
+	if j.CriticNextPrompt != "" {
+		t.Fatal("CriticNextPrompt must be cleared on terminal")
+	}
+}
+
+// TestCriticRestoreNoGenIDHonestFail verifies that a job killed mid-chain
+// with NO GenID (never learned sidecar gen id) fails honestly with the
+// unchanged restart message.
+func TestCriticRestoreNoGenIDHonestFail(t *testing.T) {
+	// Pre-persist a job that completed attempt 1 but never captured GenID
+	// (died before first progress poll surfaced it). CriticPending=2, no GenID.
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempt1ID := "1111111111111111"
+	attempt1PNG := tinyPNG()
+	if _, err := s.SaveImage(attempt1ID, attempt1PNG); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := critic.Checklist{
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+		Budget: 2,
+		OnFail: "deliver",
+	}
+	clBytes, _ := json.Marshal(cl)
+
+	job := storage.Job{
+		ID:               "restore-nogen",
+		Genre:            "landscape",
+		Mode:             "generate",
+		Prompt:           "A landscape: a valley.",
+		Size:             "512x512",
+		Seed:             int64Ptr(42),
+		Status:           "generating",
+		CreatedAt:        time.Now().Add(-time.Minute),
+		GenID:            "", // NO GenID — never learned it
+		CriticSpec:       string(clBytes),
+		CriticPending:    intPtr(2),
+		CriticNextPrompt: "A landscape: a valley., add cat",
+		Attempts: []storage.CriticAttempt{
+			{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
+		},
+	}
+	if err := s.AppendHistory(job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := testOptsAt(t, dir)
+	// Result should never be called (no GenID to recover)
+	resultCalled := false
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+		resultCalled = true
+		return nil, lattice.ErrResultNotFound
+	}
+	opts.Critic = criticEnvForTest(true)
+
+	m := New(opts)
+
+	// Wait for terminal state
+	j := waitForCriticDone(t, m, "restore-nogen")
+
+	// Assert: Result was never called
+	if resultCalled {
+		t.Fatal("Result must NOT be called when no GenID exists")
+	}
+
+	// Assert: honest failure with unchanged message
+	if j.Status != "failed" {
+		t.Fatalf("status = %q, want failed", j.Status)
+	}
+	if !strings.Contains(j.Error, "interrupted by a service restart") {
+		t.Fatalf("error = %q, want the restart message", j.Error)
+	}
+	if !strings.Contains(j.Error, "submit the job again") {
+		t.Fatalf("error = %q, want resubmission hint", j.Error)
+	}
+
+	// Assert: CriticPending and CriticNextPrompt cleared even on failure
+	if j.CriticPending != nil {
+		t.Fatal("CriticPending must be cleared on terminal failure")
+	}
+	if j.CriticNextPrompt != "" {
+		t.Fatal("CriticNextPrompt must be cleared on terminal failure")
+	}
+}
+
+// TestCriticRestoreClearsPendingOnAllTerminals verifies that after any
+// restart recovery path (success or failure), CriticPending and
+// CriticNextPrompt are always cleared — no ghost pending state.
+func TestCriticRestoreClearsPendingOnAllTerminals(t *testing.T) {
+	// Test the kill-during-checks path (already covered by TestCriticRestoreKillDuringChecks)
+	// and add a dedicated check that the fields are cleared in ALL cases.
+	// We reuse the kill-during-checks setup.
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempt1ID := "1111111111111111"
+	if _, err := s.SaveImage(attempt1ID, tinyPNG()); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := critic.Checklist{
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+		Budget: 2,
+		OnFail: "deliver",
+	}
+	clBytes, _ := json.Marshal(cl)
+
+	job := storage.Job{
+		ID:               "restore-clear",
+		Genre:            "landscape",
+		Mode:             "generate",
+		Prompt:           "A landscape: a valley.",
+		Size:             "512x512",
+		Seed:             int64Ptr(42),
+		Status:           "validating",
+		CreatedAt:        time.Now().Add(-time.Minute),
+		CriticSpec:       string(clBytes),
+		CriticPending:    intPtr(1),
+		CriticNextPrompt: "A landscape: a valley., add cat",
+		Attempts: []storage.CriticAttempt{
+			{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
+		},
+	}
+	if err := s.AppendHistory(job); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+		return nil, lattice.ErrResultNotFound
+	}
+	opts.Critic = criticEnvForTest(true)
+
+	m := New(opts)
+	j := waitForCriticDone(t, m, "restore-clear")
+
+	// The critical assertion: both fields MUST be cleared on terminal
+	if j.CriticPending != nil {
+		t.Fatal("CriticPending must be nil on terminal")
+	}
+	if j.CriticNextPrompt != "" {
+		t.Fatal("CriticNextPrompt must be empty on terminal")
+	}
+}
+
 // Helper functions
 func int64Ptr(v int64) *int64 { return &v }
 func intPtr(v int) *int       { return &v }

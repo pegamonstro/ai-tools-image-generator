@@ -227,6 +227,9 @@ func (m *Manager) restore() {
 				j.Step = 0
 				j.Total = 0
 				j.FinishedAt = &now
+				// Clear critic pending fields on honest failure.
+				j.CriticPending = nil
+				j.CriticNextPrompt = ""
 				if err := m.opts.Store.AppendHistory(j); err != nil {
 					log.Printf("queue: persist corrected status of interrupted job %s: %v", j.ID, err)
 				}
@@ -291,6 +294,15 @@ const attachFailMsg = "interrupted by a service restart before completion; submi
 // regeneration; a 404 means "still running" (sidecar reports our gen id) or
 // "lost" (idle — one immediate retry covers the sidecar's write-then-respond
 // race); transport errors are retried within the unreachable window.
+//
+// Phase D: when the pending attempt's image is already stored (the
+// process died while running checks), the chain resumes from validation —
+// no sidecar re-attach is needed. Otherwise the recovered render (below,
+// saveRecovered) IS that attempt. Either way the chain then FINALIZES
+// from the attempts recorded so far: further retries are skipped honestly
+// (the attach goroutine holds no re-render inputs), a documented Phase D
+// limitation. Kill-during-checks recovers the verdict; kill-during-render
+// recovers via the sidecar result first.
 func (m *Manager) attach(id string) {
 	m.mu.Lock()
 	job := m.jobs[id]
@@ -299,6 +311,21 @@ func (m *Manager) attach(id string) {
 		return
 	}
 	mode, genID, sidecar := job.Mode, job.GenID, job.Sidecar
+
+	// Phase D: kill-during-checks path — if we have persisted attempts
+	// >= CriticPending, the pending attempt's image is already stored.
+	// Resume by re-running checks idempotently on the stored attempt bytes.
+	if job.CriticSpec != "" && job.CriticPending != nil {
+		pending := *job.CriticPending
+		if len(job.Attempts) >= pending && pending > 0 {
+			// The pending attempt (1-based) is at index pending-1.
+			// Re-run its checks and finalize — no sidecar attach needed.
+			m.mu.Unlock()
+			m.resumeCriticChecks(id, job, pending)
+			return
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[id] = cancel
 	m.mu.Unlock()
@@ -361,6 +388,56 @@ func (m *Manager) attach(id string) {
 	}
 }
 
+// resumeCriticChecks handles the kill-during-checks recovery path.
+// The pending attempt's image is already stored; re-run its checks
+// idempotently and finalize the chain (no further retries post-restart).
+func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int) {
+	ctx := context.Background()
+	// Unmarshal the checklist from CriticSpec.
+	var cl critic.Checklist
+	if err := json.Unmarshal([]byte(job.CriticSpec), &cl); err != nil {
+		m.log(id, "resume: failed to unmarshal critic spec: %v", err)
+		m.finish(id, "failed", "critic: persisted checklist unparsable: "+err.Error())
+		return
+	}
+
+	// The pending attempt is at index pending-1 (1-based -> 0-based).
+	attempt := job.Attempts[pending-1]
+	m.log(id, "restart recovery: resuming checks for attempt %d (image %s)", pending, attempt.Image)
+
+	// Read the stored attempt PNG.
+	png, err := m.opts.Store.ReadImage(attempt.Image)
+	if err != nil {
+		m.log(id, "resume: failed to read attempt image %s: %v", attempt.Image, err)
+		m.finish(id, "failed", err.Error())
+		return
+	}
+
+	// Run checks idempotently on the stored bytes.
+	checks := m.runChecks(ctx, cl, png)
+	m.log(id, "resume: re-ran checks for attempt %d", pending)
+	for _, c := range checks {
+		m.log(id, "check %s(%s): %s %s", c.Op, c.Spec, c.Status, c.Reason)
+	}
+
+	// Update the attempt with fresh check results.
+	recs := make([]storage.CriticAttempt, len(job.Attempts))
+	copy(recs, job.Attempts)
+	recs[pending-1] = storage.CriticAttempt{
+		Image:  attempt.Image,
+		Prompt: attempt.Prompt,
+		Seed:   attempt.Seed,
+		Checks: checks,
+	}
+
+	// Finalize via finishCritic (no further retries).
+	onFail := cl.OnFail
+	if onFail == "" {
+		onFail = "deliver"
+	}
+	m.finishCritic(id, job, recs, onFail)
+}
+
 // withRenderParams best-effort embeds generation params as tEXt chunks.
 // Embed failures never fail a render — the PNG is delivered unmodified.
 func (m *Manager) withRenderParams(pngBytes []byte, kv map[string]string) []byte {
@@ -412,6 +489,11 @@ func renderParamsKV(job storage.Job, inputs imageInputs) map[string]string {
 
 // saveRecovered stores the re-attached image and marks the job done, or fails
 // the job if the save itself fails.
+//
+// Phase D: when the job has CriticSpec and CriticPending set, the recovered
+// render completes the pending attempt — record it as a new attempt image
+// (not under the job id!), run its checks, and finalize via finishCritic
+// without further retries (the attach goroutine holds no re-render inputs).
 func (m *Manager) saveRecovered(id string, png []byte) {
 	// The re-attached job's record holds the original request params; embed
 	// them alongside the recovered bytes (best-effort, A3).
@@ -421,6 +503,65 @@ func (m *Manager) saveRecovered(id string, png []byte) {
 		j = *job
 	}
 	m.mu.Unlock()
+
+	// Phase D: critic pending handling — the recovered render IS the pending attempt.
+	if j.CriticSpec != "" && j.CriticPending != nil {
+		pending := *j.CriticPending
+
+		// Unmarshal the checklist.
+		var cl critic.Checklist
+		if err := json.Unmarshal([]byte(j.CriticSpec), &cl); err != nil {
+			m.log(id, "saveRecovered: failed to unmarshal critic spec: %v", err)
+			m.finish(id, "failed", "critic: persisted checklist unparsable: "+err.Error())
+			return
+		}
+
+		// Save the recovered PNG as a NEW attempt image (not the job id!).
+		attID := newID()
+		kv := renderParamsKV(j, imageInputs{})
+		kv["critic_attempt"] = strconv.Itoa(pending)
+		rel, err := m.opts.Store.SaveImage(attID, m.withRenderParams(png, kv))
+		if err != nil {
+			m.log(id, "saving the recovered attempt image failed: %v", err)
+			m.finish(id, "failed", err.Error())
+			return
+		}
+		m.log(id, "recovered attempt %d image from sidecar: %s (%d bytes)", pending, rel, len(png))
+
+		// Run checks on the recovered PNG.
+		ctx := context.Background()
+		checks := m.runChecks(ctx, cl, png)
+
+		// Get the actual job from the map and update it with the new attempt,
+		// then finalize via finishCritic (no further retries post-restart).
+		m.mu.Lock()
+		job := m.jobs[id]
+		if job == nil {
+			m.mu.Unlock()
+			m.finish(id, "failed", "job disappeared during recovery")
+			return
+		}
+		// Build the updated attempts list: copy existing + new recovered attempt.
+		recs := make([]storage.CriticAttempt, len(job.Attempts))
+		copy(recs, job.Attempts)
+		recs = append(recs, storage.CriticAttempt{
+			Image:  attID,
+			Prompt: job.CriticNextPrompt,
+			Seed:   job.Seed,
+			Checks: checks,
+		})
+		job.Attempts = recs
+		m.mu.Unlock()
+
+		onFail := cl.OnFail
+		if onFail == "" {
+			onFail = "deliver"
+		}
+		m.finishCritic(id, job, recs, onFail)
+		return
+	}
+
+	// Existing path for non-critic jobs.
 	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(j, imageInputs{})))
 	if err != nil {
 		m.log(id, "saving the recovered image failed: %v", err)
@@ -428,8 +569,8 @@ func (m *Manager) saveRecovered(id string, png []byte) {
 		return
 	}
 	m.mu.Lock()
-	if j := m.jobs[id]; j != nil {
-		j.ImagePath = rel
+	if job := m.jobs[id]; job != nil {
+		job.ImagePath = rel
 	}
 	m.mu.Unlock()
 	m.log(id, "recovered image from the sidecar after restart: %s (%d bytes)", rel, len(png))
@@ -1516,6 +1657,7 @@ func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.Criti
 	job.ImagePath = "images/" + attID + ".png"
 	job.Critic = &storage.ValidateState{Verdict: verdict, Attempts: len(recs)}
 	job.CriticPending = nil
+	job.CriticNextPrompt = ""
 	recs[best].Chosen = true
 	j := *job
 	m.mu.Unlock()

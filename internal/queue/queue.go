@@ -312,20 +312,8 @@ func (m *Manager) attach(id string) {
 	}
 	mode, genID, sidecar := job.Mode, job.GenID, job.Sidecar
 
-	// Phase D: kill-during-checks path — if we have persisted attempts
-	// >= CriticPending, the pending attempt's image is already stored.
-	// Resume by re-running checks idempotently on the stored attempt bytes.
-	if job.CriticSpec != "" && job.CriticPending != nil {
-		pending := *job.CriticPending
-		if len(job.Attempts) >= pending && pending > 0 {
-			// The pending attempt (1-based) is at index pending-1.
-			// Re-run its checks and finalize — no sidecar attach needed.
-			m.mu.Unlock()
-			m.resumeCriticChecks(id, job, pending)
-			return
-		}
-	}
-
+	// Register cancel context early so BOTH recovery paths (kill-during-checks
+	// and kill-during-render) participate in the job's cancellation lifecycle.
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancels[id] = cancel
 	m.mu.Unlock()
@@ -335,6 +323,19 @@ func (m *Manager) attach(id string) {
 		delete(m.cancels, id)
 		m.mu.Unlock()
 	}()
+
+	// Phase D: kill-during-checks path — if we have persisted attempts
+	// >= CriticPending, the pending attempt's image is already stored.
+	// Resume by re-running checks idempotently on the stored attempt bytes.
+	if job.CriticSpec != "" && job.CriticPending != nil {
+		pending := *job.CriticPending
+		if len(job.Attempts) >= pending && pending > 0 {
+			// The pending attempt (1-based) is at index pending-1.
+			// Re-run its checks and finalize — no sidecar attach needed.
+			m.resumeCriticChecks(id, job, pending, ctx)
+			return
+		}
+	}
 
 	m.log(id, "restart recovery: watching sidecar result %s", genID)
 	deadline := time.Now().Add(attachMaxWait)
@@ -358,7 +359,7 @@ func (m *Manager) attach(id string) {
 		png, err := m.opts.Ops.Result(ctx, mode, genID, sidecar)
 		switch {
 		case err == nil:
-			m.saveRecovered(id, png)
+			m.saveRecovered(id, png, ctx)
 			return
 		case errors.Is(err, lattice.ErrResultNotFound):
 			running, serr := m.opts.Ops.Status(context.Background(), mode, sidecar)
@@ -372,7 +373,7 @@ func (m *Manager) attach(id string) {
 			// the sidecar's write-then-respond race, then the result is lost.
 			png, retryErr := m.opts.Ops.Result(context.Background(), mode, genID, sidecar)
 			if retryErr == nil {
-				m.saveRecovered(id, png)
+				m.saveRecovered(id, png, ctx)
 				return
 			}
 			m.log(id, "restart recovery gave up: sidecar no longer holds result %s", genID)
@@ -391,8 +392,7 @@ func (m *Manager) attach(id string) {
 // resumeCriticChecks handles the kill-during-checks recovery path.
 // The pending attempt's image is already stored; re-run its checks
 // idempotently and finalize the chain (no further retries post-restart).
-func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int) {
-	ctx := context.Background()
+func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int, ctx context.Context) {
 	// Unmarshal the checklist from CriticSpec.
 	var cl critic.Checklist
 	if err := json.Unmarshal([]byte(job.CriticSpec), &cl); err != nil {
@@ -413,7 +413,8 @@ func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int) {
 		return
 	}
 
-	// Run checks idempotently on the stored bytes.
+	// Run checks idempotently on the stored bytes (use the attach goroutine's ctx
+	// so cancellation aborts the check call).
 	checks := m.runChecks(ctx, cl, png)
 	m.log(id, "resume: re-ran checks for attempt %d", pending)
 	for _, c := range checks {
@@ -428,6 +429,20 @@ func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int) {
 		Prompt: attempt.Prompt,
 		Seed:   attempt.Seed,
 		Checks: checks,
+	}
+
+	// Publish recs to the job (mirror saveRecovered's pattern) so the persisted
+	// terminal record has the re-run checks and Chosen flag.
+	m.mu.Lock()
+	if j := m.jobs[id]; j != nil {
+		j.Attempts = recs
+	}
+	m.mu.Unlock()
+
+	// Check for cancellation before finalizing.
+	if m.isCancelled(id) {
+		m.cancelAndFinish(id, "cancelled", "")
+		return
 	}
 
 	// Finalize via finishCritic (no further retries).
@@ -494,7 +509,7 @@ func renderParamsKV(job storage.Job, inputs imageInputs) map[string]string {
 // render completes the pending attempt — record it as a new attempt image
 // (not under the job id!), run its checks, and finalize via finishCritic
 // without further retries (the attach goroutine holds no re-render inputs).
-func (m *Manager) saveRecovered(id string, png []byte) {
+func (m *Manager) saveRecovered(id string, png []byte, ctx context.Context) {
 	// The re-attached job's record holds the original request params; embed
 	// them alongside the recovered bytes (best-effort, A3).
 	m.mu.Lock()
@@ -528,8 +543,8 @@ func (m *Manager) saveRecovered(id string, png []byte) {
 		}
 		m.log(id, "recovered attempt %d image from sidecar: %s (%d bytes)", pending, rel, len(png))
 
-		// Run checks on the recovered PNG.
-		ctx := context.Background()
+		// Run checks on the recovered PNG (use the attach goroutine's ctx so
+		// cancellation aborts the check call).
 		checks := m.runChecks(ctx, cl, png)
 
 		// Get the actual job from the map and update it with the new attempt,
@@ -552,6 +567,12 @@ func (m *Manager) saveRecovered(id string, png []byte) {
 		})
 		job.Attempts = recs
 		m.mu.Unlock()
+
+		// Check for cancellation before finalizing.
+		if m.isCancelled(id) {
+			m.cancelAndFinish(id, "cancelled", "")
+			return
+		}
 
 		onFail := cl.OnFail
 		if onFail == "" {
@@ -1622,6 +1643,12 @@ func (m *Manager) cancelAndFinish(id, status, errMsg string) {
 	if c, ok := m.cancels[id]; ok {
 		cfn = c
 		delete(m.cancels, id)
+	}
+	// Clear critic pending fields so cancelled/failed chain terminals don't
+	// persist ghost pending state.
+	if job := m.jobs[id]; job != nil {
+		job.CriticPending = nil
+		job.CriticNextPrompt = ""
 	}
 	m.mu.Unlock()
 	if cfn != nil {

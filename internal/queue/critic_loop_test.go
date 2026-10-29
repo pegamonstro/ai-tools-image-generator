@@ -1471,6 +1471,181 @@ func TestCriticRestoreClearsPendingOnAllTerminals(t *testing.T) {
 	}
 }
 
+// TestCriticRestoreCancelDuringChecks verifies that Cancel() landing while
+// the recovery's checks are blocked results in the job ending "cancelled"
+// (not "done").
+func TestCriticRestoreCancelDuringChecks(t *testing.T) {
+	// Pre-persist a job that completed attempt 1 but died during checks.
+	// CriticPending=1, Attempts=[1], GenID=set.
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempt1ID := "1111111111111111"
+	if _, err := s.SaveImage(attempt1ID, tinyPNG()); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := critic.Checklist{
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+		Budget: 2,
+		OnFail: "deliver",
+	}
+	clBytes, _ := json.Marshal(cl)
+
+	job := storage.Job{
+		ID:               "restore-cancel-checks",
+		Genre:            "landscape",
+		Mode:             "generate",
+		Prompt:           "A landscape: a valley.",
+		Size:             "512x512",
+		Seed:             int64Ptr(42),
+		Status:           "validating",
+		CreatedAt:        time.Now().Add(-time.Minute),
+		GenID:            "gen42",
+		CriticSpec:       string(clBytes),
+		CriticPending:    intPtr(1),
+		CriticNextPrompt: "A landscape: a valley., add cat",
+		Attempts: []storage.CriticAttempt{
+			{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
+		},
+	}
+	if err := s.AppendHistory(job); err != nil {
+		t.Fatal(err)
+	}
+
+	// Block the judge during validation so we can cancel while checks run.
+	judgeBlock := make(chan struct{})
+	judgeUnblocked := make(chan struct{})
+
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+		return nil, lattice.ErrResultNotFound
+	}
+	opts.Critic = critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			close(judgeUnblocked) // signal we've entered validation
+			select {
+			case <-judgeBlock:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return []critic.VLMScore{{ID: 0, Pass: true, Reason: "ok"}}, nil
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"1girl", "cat"}, nil
+		},
+	}
+
+	m := New(opts)
+
+	// Wait for validation to start (Judge is called)
+	<-judgeUnblocked
+
+	// Now we're in the validating phase - cancel
+	if err := m.Cancel("restore-cancel-checks"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unblock the judge so it can clean up
+	close(judgeBlock)
+
+	j := waitForCriticDone(t, m, "restore-cancel-checks")
+
+	// Assert: job ends cancelled (NOT done)
+	if j.Status != "cancelled" {
+		t.Fatalf("status = %q, want cancelled", j.Status)
+	}
+
+	// Assert: CriticPending and CriticNextPrompt cleared even on cancellation
+	if j.CriticPending != nil {
+		t.Fatal("CriticPending must be cleared on cancelled terminal")
+	}
+	if j.CriticNextPrompt != "" {
+		t.Fatal("CriticNextPrompt must be cleared on cancelled terminal")
+	}
+}
+
+// TestCancelAndFinishClearsCriticPending verifies that cancelAndFinish
+// clears CriticPending and CriticNextPrompt so cancelled/failed chain
+// terminals don't persist ghost pending state.
+func TestCancelAndFinishClearsCriticPending(t *testing.T) {
+	// Use a live critic chain that we cancel mid-way.
+	script := []fakeRenderResult{
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+		{PNG: tinyPNG(), Seed: int64Ptr(101)},
+	}
+
+	m, _ := makeTestJob(t, script)
+
+	judgeBlock := make(chan struct{})
+	judgeUnblocked := make(chan struct{})
+
+	m.opts.Critic = critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			close(judgeUnblocked) // signal we've entered validation
+			select {
+			case <-judgeBlock:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return []critic.VLMScore{{ID: 0, Pass: false, Reason: "no cat", Fix: "add cat"}}, nil
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"1girl", "cat"}, nil
+		},
+	}
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:  "landscape",
+		Fields: map[string]string{"setting": "a valley"},
+		Size:   "512x512",
+		Seed:   int64Ptr(100),
+		Validate: &critic.ValidateSpec{
+			Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"must have cat"`)}},
+			Budget: intPtr(2),
+			OnFail: "deliver",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for first attempt to complete and second attempt to start validating
+	<-judgeUnblocked
+
+	// Cancel while in validating phase
+	if err := m.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unblock the judge so it can clean up
+	close(judgeBlock)
+
+	j := waitForCriticDone(t, m, id)
+
+	if j.Status != "cancelled" {
+		t.Fatalf("status = %q, want cancelled", j.Status)
+	}
+
+	// Assert: CriticPending and CriticNextPrompt cleared on cancellation
+	if j.CriticPending != nil {
+		t.Fatal("CriticPending must be cleared on cancelled terminal")
+	}
+	if j.CriticNextPrompt != "" {
+		t.Fatal("CriticNextPrompt must be cleared on cancelled terminal")
+	}
+}
+
 // Helper functions
 func int64Ptr(v int64) *int64 { return &v }
 func intPtr(v int) *int       { return &v }

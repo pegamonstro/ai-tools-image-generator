@@ -776,15 +776,6 @@ func TestCriticLoopChosenPNGHasCriticTextChunks(t *testing.T) {
 
 func TestCriticLoopMutationDerivation(t *testing.T) {
 	// Test that attempt 2 prompt = base + failing check's suggestion (deduped)
-	// Checklist with two vlm_check specs that will both fail initially
-	_ = critic.Checklist{
-		Checks: []critic.Check{
-			{Op: "vlm_check", Spec: "must have cat"},
-			{Op: "vlm_check", Spec: "must have dog"},
-		},
-		Budget: 2,
-		OnFail: "deliver",
-	}
 
 	// First attempt fails both, second passes first but fails second, third passes
 	callCount := 0

@@ -1773,10 +1773,9 @@ func TestSubmitValidateBatchWorks(t *testing.T) {
 		t.Fatalf("want 2 batch ids, got %d", len(ids))
 	}
 	for _, id := range ids {
-		j, ok := m.Get(id)
-		if !ok {
-			t.Fatalf("child job %s missing", id)
-		}
+		// Wait for each child job to complete so background workers finish
+		// before temp dir cleanup.
+		j := waitFor(t, m, id, "done")
 		if j.CriticSpec == "" {
 			t.Fatalf("child job %s missing CriticSpec", id)
 		}
@@ -1792,10 +1791,9 @@ func TestSubmitValidateAssetModeAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("asset mode with validate rejected: %v", err)
 	}
-	j, ok := m.Get(id)
-	if !ok {
-		t.Fatal("asset job not found")
-	}
+	// Wait for the job to complete so the background worker finishes
+	// its critic loop before the temp dir is cleaned up.
+	j := waitFor(t, m, id, "done")
 	if j.CriticSpec == "" {
 		t.Fatal("asset job missing CriticSpec")
 	}

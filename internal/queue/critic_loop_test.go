@@ -1109,97 +1109,227 @@ func TestCriticLoopCancelDuringFinalChecks(t *testing.T) {
 // TestCriticRestoreKillDuringChecks verifies that a job killed while checks
 // are running (persisted Attempts >= CriticPending) restarts WITHOUT calling
 // the sidecar's Result — checks re-run idempotently from the stored attempt
-// bytes, and the chain finalizes.
+// bytes, and the chain finalizes. This test covers BOTH publication directions:
+// (a) re-run PASS differs from stored FAIL → verdict "pass", published Attempts
+//
+//	reflect re-run pass; (b) re-run FAIL matches stored FAIL → verdict
+//	"best_of_n". On the pre-fix tree (no job.Attempts publication) case (a)
+//	would FAIL because the terminal record would keep the stale stored fail.
 func TestCriticRestoreKillDuringChecks(t *testing.T) {
-	// Pre-persist a job that completed attempt 1 (rendered + checks run)
-	// but died before the chain could finalize. CriticPending=1, Attempts=[1].
-	// Since the render completed, it MUST have a GenID (captured during render).
-	dir := t.TempDir()
-	s, err := storage.New(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Subtest A: re-run PASS differs from stored FAIL → verdict "pass",
+	// published Attempts reflect re-run pass, Chosen flag set on re-run record.
+	t.Run("re-run pass differs from stored fail", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := storage.New(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	attempt1ID := "1111111111111111"
-	attempt1PNG := tinyPNG()
-	if _, err := s.SaveImage(attempt1ID, attempt1PNG); err != nil {
-		t.Fatal(err)
-	}
+		attempt1ID := "1111111111111111"
+		if _, err := s.SaveImage(attempt1ID, tinyPNG()); err != nil {
+			t.Fatal(err)
+		}
 
-	cl := critic.Checklist{
-		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
-		Budget: 2,
-		OnFail: "deliver",
-	}
-	clBytes, _ := json.Marshal(cl)
+		cl := critic.Checklist{
+			Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+			Budget: 2,
+			OnFail: "deliver",
+		}
+		clBytes, _ := json.Marshal(cl)
 
-	job := storage.Job{
-		ID:               "restore-checks",
-		Genre:            "landscape",
-		Mode:             "generate",
-		Prompt:           "A landscape: a valley.",
-		Size:             "512x512",
-		Seed:             int64Ptr(42),
-		Status:           "validating",
-		CreatedAt:        time.Now().Add(-time.Minute),
-		GenID:            "gen42", // Render completed, so GenID was captured
-		CriticSpec:       string(clBytes),
-		CriticPending:    intPtr(1),
-		CriticNextPrompt: "A landscape: a valley., add cat",
-		Attempts: []storage.CriticAttempt{
-			{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
-		},
-	}
-	if err := s.AppendHistory(job); err != nil {
-		t.Fatal(err)
-	}
+		job := storage.Job{
+			ID:               "restore-checks-pass",
+			Genre:            "landscape",
+			Mode:             "generate",
+			Prompt:           "A landscape: a valley.",
+			Size:             "512x512",
+			Seed:             int64Ptr(42),
+			Status:           "validating",
+			CreatedAt:        time.Now().Add(-time.Minute),
+			GenID:            "gen42", // Render completed, so GenID was captured
+			CriticSpec:       string(clBytes),
+			CriticPending:    intPtr(1),
+			CriticNextPrompt: "A landscape: a valley., add cat",
+			Attempts: []storage.CriticAttempt{
+				{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
+			},
+		}
+		if err := s.AppendHistory(job); err != nil {
+			t.Fatal(err)
+		}
 
-	// Fake Ops: Result must NOT be called (we track this)
-	resultCalled := false
-	opts := testOptsAt(t, dir)
-	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
-		resultCalled = true
-		return nil, lattice.ErrResultNotFound
-	}
-	// Critic env: checks FAIL on re-run (idempotent with stored failed checks)
-	opts.Critic = criticEnvForTest(false)
+		// Fake Ops: Result must NOT be called
+		resultCalled := false
+		opts := testOptsAt(t, dir)
+		opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+			resultCalled = true
+			return nil, lattice.ErrResultNotFound
+		}
 
-	m := New(opts)
+		// Critic env: FIRST Run call (re-run in resumeCriticChecks) returns PASS.
+		// The stored check was already run before the restart (persisted in job.Attempts).
+		runCount := 0
+		opts.Critic = critic.Env{
+			Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+				runCount++
+				// This is the re-run in resumeCriticChecks - return PASS
+				return []critic.VLMScore{{ID: 0, Pass: true, Reason: "cat detected"}}, nil
+			},
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+			},
+			Vocab: func(ctx context.Context) ([]string, error) {
+				return []string{"1girl", "cat"}, nil
+			},
+		}
 
-	// Wait for terminal state
-	j := waitForCriticDone(t, m, "restore-checks")
+		m := New(opts)
+		j := waitForCriticDone(t, m, "restore-checks-pass")
 
-	// Assert: Result was never called (no sidecar re-attach)
-	if resultCalled {
-		t.Fatal("Result must NOT be called when kill-during-checks recovers")
-	}
+		// Result must NOT be called (no sidecar re-attach)
+		if resultCalled {
+			t.Fatal("Result must NOT be called when kill-during-checks recovers")
+		}
 
-	// Assert: job finalizes with verdict from stored checks
-	if j.Status != "done" {
-		t.Fatalf("status = %q, want done", j.Status)
-	}
-	if j.Critic == nil {
-		t.Fatal("Critic summary missing")
-	}
-	if j.Critic.Verdict != "best_of_n" {
-		t.Fatalf("verdict = %q, want best_of_n (stored attempt failed)", j.Critic.Verdict)
-	}
-	if j.Critic.Attempts != 1 {
-		t.Fatalf("attempts = %d, want 1 (no new attempt rendered)", j.Critic.Attempts)
-	}
-	// The chosen image should be attempt 1's image
-	chosenID := strings.TrimSuffix(strings.TrimPrefix(j.ImagePath, "images/"), ".png")
-	if chosenID != attempt1ID {
-		t.Fatalf("chosen image = %q, want %q (stored attempt)", chosenID, attempt1ID)
-	}
+		// Final verdict should be "pass" (re-run passed)
+		if j.Status != "done" {
+			t.Fatalf("status = %q, want done", j.Status)
+		}
+		if j.Critic == nil {
+			t.Fatal("Critic summary missing")
+		}
+		if j.Critic.Verdict != "pass" {
+			t.Fatalf("verdict = %q, want pass (re-run passed)", j.Critic.Verdict)
+		}
+		if j.Critic.Attempts != 1 {
+			t.Fatalf("attempts = %d, want 1", j.Critic.Attempts)
+		}
 
-	// Assert: CriticPending and CriticNextPrompt cleared
-	if j.CriticPending != nil {
-		t.Fatal("CriticPending must be cleared on terminal")
-	}
-	if j.CriticNextPrompt != "" {
-		t.Fatal("CriticNextPrompt must be cleared on terminal")
-	}
+		// The chosen image should be attempt 1's image
+		chosenID := strings.TrimSuffix(strings.TrimPrefix(j.ImagePath, "images/"), ".png")
+		if chosenID != attempt1ID {
+			t.Fatalf("chosen image = %q, want %q", chosenID, attempt1ID)
+		}
+
+		// CRITICAL: Published Attempts must reflect the RE-RUN (pass), not the stale stored fail.
+		// The re-run updated the same attempt (index 0) with new checks.
+		if len(j.Attempts) != 1 {
+			t.Fatalf("attempts len = %d, want 1", len(j.Attempts))
+		}
+		if len(j.Attempts[0].Checks) != 1 {
+			t.Fatalf("attempt[0].Checks len = %d, want 1", len(j.Attempts[0].Checks))
+		}
+		if j.Attempts[0].Checks[0].Status != "pass" {
+			t.Fatalf("published attempt check status = %q, want pass (re-run result)", j.Attempts[0].Checks[0].Status)
+		}
+		if !j.Attempts[0].Chosen {
+			t.Fatal("re-run attempt must be marked Chosen")
+		}
+
+		// CriticPending and CriticNextPrompt cleared
+		if j.CriticPending != nil {
+			t.Fatal("CriticPending must be cleared on terminal")
+		}
+		if j.CriticNextPrompt != "" {
+			t.Fatal("CriticNextPrompt must be cleared on terminal")
+		}
+	})
+
+	// Subtest B: re-run FAIL matches stored FAIL → verdict "best_of_n"
+	// (original behavior, keeps the stale fail but publication still happens)
+	t.Run("re-run fail matches stored fail", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := storage.New(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		attempt1ID := "2222222222222222"
+		if _, err := s.SaveImage(attempt1ID, tinyPNG()); err != nil {
+			t.Fatal(err)
+		}
+
+		cl := critic.Checklist{
+			Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+			Budget: 2,
+			OnFail: "deliver",
+		}
+		clBytes, _ := json.Marshal(cl)
+
+		job := storage.Job{
+			ID:               "restore-checks-fail",
+			Genre:            "landscape",
+			Mode:             "generate",
+			Prompt:           "A landscape: a valley.",
+			Size:             "512x512",
+			Seed:             int64Ptr(42),
+			Status:           "validating",
+			CreatedAt:        time.Now().Add(-time.Minute),
+			GenID:            "gen42",
+			CriticSpec:       string(clBytes),
+			CriticPending:    intPtr(1),
+			CriticNextPrompt: "A landscape: a valley., add cat",
+			Attempts: []storage.CriticAttempt{
+				{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42), Checks: []storage.CriticCheck{{Op: "vlm_check", Spec: "must have cat", Status: "fail", Reason: "no cat"}}},
+			},
+		}
+		if err := s.AppendHistory(job); err != nil {
+			t.Fatal(err)
+		}
+
+		resultCalled := false
+		opts := testOptsAt(t, dir)
+		opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+			resultCalled = true
+			return nil, lattice.ErrResultNotFound
+		}
+
+		// Critic env: always FAIL (idempotent with stored)
+		opts.Critic = criticEnvForTest(false)
+
+		m := New(opts)
+		j := waitForCriticDone(t, m, "restore-checks-fail")
+
+		if resultCalled {
+			t.Fatal("Result must NOT be called when kill-during-checks recovers")
+		}
+
+		if j.Status != "done" {
+			t.Fatalf("status = %q, want done", j.Status)
+		}
+		if j.Critic == nil {
+			t.Fatal("Critic summary missing")
+		}
+		if j.Critic.Verdict != "best_of_n" {
+			t.Fatalf("verdict = %q, want best_of_n (re-run also failed)", j.Critic.Verdict)
+		}
+		if j.Critic.Attempts != 1 {
+			t.Fatalf("attempts = %d, want 1", j.Critic.Attempts)
+		}
+
+		chosenID := strings.TrimSuffix(strings.TrimPrefix(j.ImagePath, "images/"), ".png")
+		if chosenID != attempt1ID {
+			t.Fatalf("chosen image = %q, want %q", chosenID, attempt1ID)
+		}
+
+		// Published Attempts reflect the re-run (still fail)
+		if len(j.Attempts) != 1 {
+			t.Fatalf("attempts len = %d, want 1", len(j.Attempts))
+		}
+		if j.Attempts[0].Checks[0].Status != "fail" {
+			t.Fatalf("published attempt check status = %q, want fail (re-run result)", j.Attempts[0].Checks[0].Status)
+		}
+		if !j.Attempts[0].Chosen {
+			t.Fatal("re-run attempt must be marked Chosen")
+		}
+
+		if j.CriticPending != nil {
+			t.Fatal("CriticPending must be cleared on terminal")
+		}
+		if j.CriticNextPrompt != "" {
+			t.Fatal("CriticNextPrompt must be cleared on terminal")
+		}
+	})
 }
 
 // TestCriticRestoreKillDuringRenderAttempt2 verifies that a job killed

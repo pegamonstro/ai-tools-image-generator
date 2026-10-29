@@ -187,20 +187,6 @@ type Manager struct {
 	cancelled map[string]bool
 	childLeft map[string]int
 	opts      Options
-
-	// Test-only: captures render calls for verification
-	fakeCalls *[]fakeRenderCall
-}
-
-type fakeRenderCall struct {
-	Prompt string
-	Seed   *int64
-}
-
-type fakeRenderResult struct {
-	PNG  []byte
-	Seed *int64
-	Err  error
 }
 
 func New(opts Options) *Manager {
@@ -884,8 +870,9 @@ func (m *Manager) run(id string) {
 	seed, steps, guidance, negative := job.Seed, job.Steps, job.Guidance, job.NegativePrompt
 	if job.CriticSpec == "" {
 		// Pre-existing behavior, verbatim: one render, save, finish.
+		// renderAndFinish takes ownership of ctx/cancel/cancels cleanup.
 		m.renderAndFinish(ctx, id, job, inputs, job.Prompt, spec,
-			storage.SamplingParams{Seed: seed, Steps: steps, Guidance: guidance, NegativePrompt: negative})
+			storage.SamplingParams{Seed: seed, Steps: steps, Guidance: guidance, NegativePrompt: negative}, cancel)
 		return
 	}
 	var cl critic.Checklist
@@ -1327,16 +1314,22 @@ func contains(xs []string, x string) bool {
 
 // renderAndFinish is the pre-existing render tail, extracted verbatim so the
 // non-validated path is byte-identical to the old run().
-func (m *Manager) renderAndFinish(ctx context.Context, id string, job *storage.Job, inputs imageInputs, prompt string, spec storage.ModelSpec, sp storage.SamplingParams) {
+func (m *Manager) renderAndFinish(ctx context.Context, id string, job *storage.Job, inputs imageInputs, prompt string, spec storage.ModelSpec, sp storage.SamplingParams, cancel context.CancelFunc) {
 	m.setStatus(id, "generating", "")
+	start := time.Now()
 	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)
+	cancel()
+	m.mu.Lock()
+	delete(m.cancels, id)
+	m.mu.Unlock()
+
 	if err != nil {
 		if m.isCancelled(id) {
-			m.log(id, "generation cancelled: %v", err)
+			m.log(id, "generation cancelled after %s", roundDur(time.Since(start)))
 			m.finish(id, "cancelled", "")
 			return
 		}
-		m.log(id, "generation failed: %v", err)
+		m.log(id, "generation failed after %s: %v", roundDur(time.Since(start)), err)
 		m.finish(id, "failed", err.Error())
 		return
 	}
@@ -1346,6 +1339,7 @@ func (m *Manager) renderAndFinish(ctx context.Context, id string, job *storage.J
 		m.mu.Unlock()
 		m.log(id, "seed=%d", *seed)
 	}
+	m.log(id, "lattice returned %d bytes in %s", len(png), roundDur(time.Since(start)))
 
 	rel, err := m.opts.Store.SaveImage(id, m.withRenderParams(png, renderParamsKV(*job, inputs)))
 	if err != nil {
@@ -1384,9 +1378,9 @@ func (m *Manager) persistJob(job storage.Job) {
 }
 
 // runChecks executes the checklist against the given PNG bytes and returns the results.
-func (m *Manager) runChecks(cl critic.Checklist, png []byte) []storage.CriticCheck {
+func (m *Manager) runChecks(ctx context.Context, cl critic.Checklist, png []byte) []storage.CriticCheck {
 	b64 := base64.StdEncoding.EncodeToString(png)
-	return critic.Run(context.Background(), cl, b64, m.opts.Critic)
+	return critic.Run(ctx, cl, b64, m.opts.Critic)
 }
 
 // criticLoop implements the Phase D retry policy.
@@ -1400,7 +1394,7 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 	mutation := "" // set once, after attempt 1 fails
 	for attempt := start; ; attempt++ {
 		if m.isCancelled(id) {
-			m.finish(id, "cancelled", "")
+			m.cancelAndFinish(id, "cancelled", "")
 			return
 		}
 		prompt := base
@@ -1417,15 +1411,15 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 		png, seed, err := renderer(ctx, prompt, sp)
 		if err != nil {
 			if m.isCancelled(id) {
-				m.finish(id, "cancelled", "")
+				m.cancelAndFinish(id, "cancelled", "")
 				return
 			}
 			m.log(id, "attempt %d render failed: %v", attempt, err)
-			m.finish(id, "failed", err.Error())
+			m.cancelAndFinish(id, "failed", "")
 			return
 		}
 		if m.isCancelled(id) {
-			m.finish(id, "cancelled", "")
+			m.cancelAndFinish(id, "cancelled", "")
 			return
 		}
 		if seed != nil {
@@ -1439,11 +1433,12 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 		kv["critic_attempt"] = strconv.Itoa(attempt)
 		_, serr := m.opts.Store.SaveImage(attID, m.withRenderParams(png, kv))
 		if serr != nil {
-			m.finish(id, "failed", serr.Error())
+			m.cancelAndFinish(id, "failed", "")
 			return
 		}
 		m.setStatus(id, "validating", "")
-		checks := m.runChecks(cl, png)
+		// Use the job's context so cancellation aborts the check call.
+		checks := m.runChecks(ctx, cl, png)
 		rec := storage.CriticAttempt{Image: attID, Prompt: prompt, Seed: seed, Checks: checks}
 		recs = append(recs, rec)
 		m.mu.Lock()
@@ -1454,8 +1449,12 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 		for _, c := range checks {
 			m.log(id, "check %s(%s): %s %s", c.Op, c.Spec, c.Status, c.Reason)
 		}
+		if m.isCancelled(id) {
+			m.cancelAndFinish(id, "cancelled", "")
+			return
+		}
 		if fails := critic.Fails(checks); fails == 0 || attempt >= 1+cl.Budget {
-			m.finishCritic(id, job, recs, onFail)
+			m.finishCritic(ctx, id, job, recs, onFail)
 			return
 		}
 		if attempt == 1 {
@@ -1467,10 +1466,21 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 	}
 }
 
+// cancelAndFinish cancels the job's context, removes it from cancels, and finishes.
+func (m *Manager) cancelAndFinish(id, status, errMsg string) {
+	m.mu.Lock()
+	if cfn, ok := m.cancels[id]; ok {
+		cfn()
+		delete(m.cancels, id)
+	}
+	m.mu.Unlock()
+	m.finish(id, status, errMsg)
+}
+
 // finishCritic resolves the attempt chain: best attempt by score (tie: lower
 // attempt index), verdict per the spec taxonomy, chosen PNG re-embedded with
 // critic_* tEXt chunks (best-effort), then the terminal transition.
-func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.CriticAttempt, onFail string) {
+func (m *Manager) finishCritic(ctx context.Context, id string, job *storage.Job, recs []storage.CriticAttempt, onFail string) {
 	best := 0
 	bestScore := -1.0
 	for i, r := range recs {
@@ -1478,7 +1488,6 @@ func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.Criti
 			bestScore, best = s, i
 		}
 	}
-	recs[best].Chosen = true
 	ch := recs[best]
 	verdict := "pass"
 	switch {
@@ -1495,6 +1504,7 @@ func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.Criti
 	job.ImagePath = "images/" + attID + ".png"
 	job.Critic = &storage.ValidateState{Verdict: verdict, Attempts: len(recs)}
 	job.CriticPending = nil
+	recs[best].Chosen = true
 	j := *job
 	m.mu.Unlock()
 	m.persistJob(j)
@@ -1515,9 +1525,9 @@ func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.Criti
 				fails = append(fails, c.Op+": "+c.Reason)
 			}
 		}
-		m.finish(id, "failed", "critic failed: "+strings.Join(fails, "; "))
+		m.cancelAndFinish(id, "failed", "critic failed: "+strings.Join(fails, "; "))
 		return
 	}
 	m.log(id, "critic verdict %s after %d attempt(s), attempt %d chosen", verdict, len(recs), best+1)
-	m.finish(id, "done", "")
+	m.cancelAndFinish(id, "done", "")
 }

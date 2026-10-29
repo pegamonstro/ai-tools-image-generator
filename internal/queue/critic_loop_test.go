@@ -23,6 +23,19 @@ import (
 	"img-gen/internal/storage"
 )
 
+// fakeRenderCall captures a render call for test verification.
+type fakeRenderCall struct {
+	Prompt string
+	Seed   *int64
+}
+
+// fakeRenderResult defines a scripted render result for tests.
+type fakeRenderResult struct {
+	PNG  []byte
+	Seed *int64
+	Err  error
+}
+
 // tinyPNG returns a minimal valid PNG (1x1 red pixel) as bytes.
 func tinyPNG() []byte {
 	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
@@ -41,7 +54,8 @@ func tinyPNGBase64() string {
 
 // makeTestJob creates a test Manager with a fake renderer that captures
 // (prompt, seed) per call and returns scripted results.
-func makeTestJob(t *testing.T, script []fakeRenderResult) *Manager {
+// Returns the Manager and a function to retrieve captured calls.
+func makeTestJob(t *testing.T, script []fakeRenderResult) (*Manager, func() []fakeRenderCall) {
 	t.Helper()
 	idx := 0
 	var mu sync.Mutex
@@ -89,8 +103,17 @@ func makeTestJob(t *testing.T, script []fakeRenderResult) *Manager {
 	}
 
 	m := New(opts)
-	m.fakeCalls = &calls
-	return m
+	getCalls := func() []fakeRenderCall {
+		mu.Lock()
+		defer mu.Unlock()
+		// Return a copy to avoid races
+		copy := make([]fakeRenderCall, len(calls))
+		for i, c := range calls {
+			copy[i] = c
+		}
+		return copy
+	}
+	return m, getCalls
 }
 
 // waitForCriticDone waits for a job to reach a terminal state (done, failed, cancelled).
@@ -126,13 +149,6 @@ func collectEvents(t *testing.T, m *Manager, id string) []Event {
 // makeChecklist creates a checklist with a single vlm_check that passes or fails.
 func makeChecklist(pass bool) critic.Checklist {
 	spec := "test criterion"
-	if pass {
-		return critic.Checklist{
-			Checks: []critic.Check{{Op: "vlm_check", Spec: spec}},
-			Budget: critic.BudgetDefault,
-			OnFail: "deliver",
-		}
-	}
 	return critic.Checklist{
 		Checks: []critic.Check{{Op: "vlm_check", Spec: spec}},
 		Budget: critic.BudgetDefault,
@@ -224,13 +240,10 @@ func criticEnvForIndeterminate() critic.Env {
 }
 
 func TestCriticLoopPassFirstAttempt(t *testing.T) {
-	cl := makeChecklist(true)
-	_ = cl // used for documentation
-
 	// Script: first (and only) render returns a valid PNG
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
-	m := makeTestJob(t, script)
+	m, getCalls := makeTestJob(t, script)
 	// Inject critic env
 	m.opts.Critic = criticEnvForTest(true)
 
@@ -275,14 +288,15 @@ func TestCriticLoopPassFirstAttempt(t *testing.T) {
 	}
 
 	// Verify exactly one renderer call
-	if len(*m.fakeCalls) != 1 {
-		t.Fatalf("renderer called %d times, want 1", len(*m.fakeCalls))
+	calls := getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("renderer called %d times, want 1", len(calls))
 	}
-	if (*m.fakeCalls)[0].Prompt != "A landscape: a valley." {
-		t.Fatalf("prompt = %q, want base prompt", (*m.fakeCalls)[0].Prompt)
+	if calls[0].Prompt != "A landscape: a valley." {
+		t.Fatalf("prompt = %q, want base prompt", calls[0].Prompt)
 	}
-	if (*m.fakeCalls)[0].Seed == nil || *(*m.fakeCalls)[0].Seed != 42 {
-		t.Fatalf("seed = %v, want 42", (*m.fakeCalls)[0].Seed)
+	if calls[0].Seed == nil || *calls[0].Seed != 42 {
+		t.Fatalf("seed = %v, want 42", calls[0].Seed)
 	}
 
 	// Verify tEXt chunks on chosen PNG
@@ -317,7 +331,7 @@ func TestCriticLoopFailThenMutateThenPass(t *testing.T) {
 		{PNG: tinyPNG(), Seed: int64Ptr(101)}, // attempt 3 (seed+1)
 	}
 
-	m := makeTestJob(t, script)
+	m, getCalls := makeTestJob(t, script)
 	// Custom env: first two calls fail, third passes
 	callCount := 0
 	m.opts.Critic = critic.Env{
@@ -368,32 +382,32 @@ func TestCriticLoopFailThenMutateThenPass(t *testing.T) {
 	}
 
 	// Verify exactly 3 renderer calls
-	if len(*m.fakeCalls) != 3 {
-		t.Fatalf("renderer called %d times, want 3", len(*m.fakeCalls))
+	if len(getCalls()) != 3 {
+		t.Fatalf("renderer called %d times, want 3", len(getCalls()))
 	}
 
 	// Verify prompts: [base, mutation, mutation]
 	basePrompt := "A landscape: a valley."
 	expectedMutation := basePrompt + ", add cat" // deduped from "add cat"
-	if (*m.fakeCalls)[0].Prompt != basePrompt {
-		t.Fatalf("attempt 1 prompt = %q, want %q", (*m.fakeCalls)[0].Prompt, basePrompt)
+	if (getCalls())[0].Prompt != basePrompt {
+		t.Fatalf("attempt 1 prompt = %q, want %q", (getCalls())[0].Prompt, basePrompt)
 	}
-	if (*m.fakeCalls)[1].Prompt != expectedMutation {
-		t.Fatalf("attempt 2 prompt = %q, want %q", (*m.fakeCalls)[1].Prompt, expectedMutation)
+	if (getCalls())[1].Prompt != expectedMutation {
+		t.Fatalf("attempt 2 prompt = %q, want %q", (getCalls())[1].Prompt, expectedMutation)
 	}
-	if (*m.fakeCalls)[2].Prompt != expectedMutation {
-		t.Fatalf("attempt 3 prompt = %q, want %q", (*m.fakeCalls)[2].Prompt, expectedMutation)
+	if (getCalls())[2].Prompt != expectedMutation {
+		t.Fatalf("attempt 3 prompt = %q, want %q", (getCalls())[2].Prompt, expectedMutation)
 	}
 
 	// Verify seeds: [100, 100, 101]
-	if (*m.fakeCalls)[0].Seed == nil || *(*m.fakeCalls)[0].Seed != 100 {
-		t.Fatalf("attempt 1 seed = %v, want 100", (*m.fakeCalls)[0].Seed)
+	if (getCalls())[0].Seed == nil || *(getCalls())[0].Seed != 100 {
+		t.Fatalf("attempt 1 seed = %v, want 100", (getCalls())[0].Seed)
 	}
-	if (*m.fakeCalls)[1].Seed == nil || *(*m.fakeCalls)[1].Seed != 100 {
-		t.Fatalf("attempt 2 seed = %v, want 100 (same seed)", (*m.fakeCalls)[1].Seed)
+	if (getCalls())[1].Seed == nil || *(getCalls())[1].Seed != 100 {
+		t.Fatalf("attempt 2 seed = %v, want 100 (same seed)", (getCalls())[1].Seed)
 	}
-	if (*m.fakeCalls)[2].Seed == nil || *(*m.fakeCalls)[2].Seed != 101 {
-		t.Fatalf("attempt 3 seed = %v, want 101 (seed+1)", (*m.fakeCalls)[2].Seed)
+	if (getCalls())[2].Seed == nil || *(getCalls())[2].Seed != 101 {
+		t.Fatalf("attempt 3 seed = %v, want 101 (seed+1)", (getCalls())[2].Seed)
 	}
 
 	// Verify chosen attempt is the last one (attempt 3)
@@ -421,7 +435,7 @@ func TestCriticLoopBudgetZeroFailOnFailDeliver(t *testing.T) {
 
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
-	m := makeTestJob(t, script)
+	m, getCalls := makeTestJob(t, script)
 	m.opts.Critic = criticEnvForTest(false) // always fail
 
 	id, err := m.Submit(SubmitRequest{
@@ -454,8 +468,8 @@ func TestCriticLoopBudgetZeroFailOnFailDeliver(t *testing.T) {
 	if j.Critic.Attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", j.Critic.Attempts)
 	}
-	if len(*m.fakeCalls) != 1 {
-		t.Fatalf("renderer called %d times, want 1", len(*m.fakeCalls))
+	if len(getCalls()) != 1 {
+		t.Fatalf("renderer called %d times, want 1", len(getCalls()))
 	}
 }
 
@@ -465,7 +479,7 @@ func TestCriticLoopBudgetZeroFailOnFailFail(t *testing.T) {
 
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
-	m := makeTestJob(t, script)
+	m, getCalls := makeTestJob(t, script)
 	m.opts.Critic = criticEnvForTest(false) // always fail
 
 	id, err := m.Submit(SubmitRequest{
@@ -498,18 +512,15 @@ func TestCriticLoopBudgetZeroFailOnFailFail(t *testing.T) {
 	if !strings.Contains(j.Error, "critic failed:") {
 		t.Fatalf("error = %q, want to contain 'critic failed:'", j.Error)
 	}
-	if len(*m.fakeCalls) != 1 {
-		t.Fatalf("renderer called %d times, want 1", len(*m.fakeCalls))
+	if len(getCalls()) != 1 {
+		t.Fatalf("renderer called %d times, want 1", len(getCalls()))
 	}
 }
 
 func TestCriticLoopAllIndeterminate(t *testing.T) {
-	cl := makeIndeterminateChecklist()
-	_ = cl // used for documentation
-
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
-	m := makeTestJob(t, script)
+	m, getCalls := makeTestJob(t, script)
 	m.opts.Critic = criticEnvForIndeterminate()
 
 	id, err := m.Submit(SubmitRequest{
@@ -541,8 +552,8 @@ func TestCriticLoopAllIndeterminate(t *testing.T) {
 	if j.Critic.Attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", j.Critic.Attempts)
 	}
-	if len(*m.fakeCalls) != 1 {
-		t.Fatalf("renderer called %d times, want 1", len(*m.fakeCalls))
+	if len(getCalls()) != 1 {
+		t.Fatalf("renderer called %d times, want 1", len(getCalls()))
 	}
 }
 
@@ -560,7 +571,7 @@ func TestCriticLoopCancelMidValidating(t *testing.T) {
 		{PNG: tinyPNG(), Seed: int64Ptr(101)},
 	}
 
-	m := makeTestJob(t, script)
+	m, _ := makeTestJob(t, script)
 	callCount := 0
 	m.opts.Critic = critic.Env{
 		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
@@ -631,7 +642,7 @@ func TestCriticLoopSSEValidatingEvents(t *testing.T) {
 		{PNG: tinyPNG(), Seed: int64Ptr(101)},
 	}
 
-	m := makeTestJob(t, script)
+	m, _ := makeTestJob(t, script)
 	callCount := 0
 	m.opts.Critic = critic.Env{
 		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
@@ -686,16 +697,13 @@ func TestCriticLoopSSEValidatingEvents(t *testing.T) {
 }
 
 func TestCriticLoopAttemptImagesPersisted(t *testing.T) {
-	cl := makeFailingChecklist()
-	_ = cl // used for documentation
-
 	script := []fakeRenderResult{
 		{PNG: tinyPNG(), Seed: int64Ptr(100)},
 		{PNG: tinyPNG(), Seed: int64Ptr(100)},
 		{PNG: tinyPNG(), Seed: int64Ptr(101)},
 	}
 
-	m := makeTestJob(t, script)
+	m, _ := makeTestJob(t, script)
 	callCount := 0
 	m.opts.Critic = critic.Env{
 		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
@@ -751,12 +759,9 @@ func TestCriticLoopAttemptImagesPersisted(t *testing.T) {
 }
 
 func TestCriticLoopChosenPNGHasCriticTextChunks(t *testing.T) {
-	cl := makeChecklist(true)
-	_ = cl // used for documentation
-
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
-	m := makeTestJob(t, script)
+	m, _ := makeTestJob(t, script)
 	m.opts.Critic = criticEnvForTest(true)
 
 	id, err := m.Submit(SubmitRequest{
@@ -795,7 +800,7 @@ func TestCriticLoopChosenPNGHasCriticTextChunks(t *testing.T) {
 
 func TestCriticLoopMutationDerivation(t *testing.T) {
 	// Test that attempt 2 prompt = base + failing check's suggestion (deduped)
-	cl := critic.Checklist{
+	_ = critic.Checklist{
 		Checks: []critic.Check{
 			{Op: "vlm_check", Spec: "must have cat"},
 			{Op: "vlm_check", Spec: "must have dog"},
@@ -803,11 +808,10 @@ func TestCriticLoopMutationDerivation(t *testing.T) {
 		Budget: 2,
 		OnFail: "deliver",
 	}
-	_ = cl // used for documentation
 
 	// First attempt fails both, second passes first but fails second, third passes
 	callCount := 0
-	m := makeTestJob(t, []fakeRenderResult{
+	m, getCalls := makeTestJob(t, []fakeRenderResult{
 		{PNG: tinyPNG(), Seed: int64Ptr(100)},
 		{PNG: tinyPNG(), Seed: int64Ptr(100)},
 		{PNG: tinyPNG(), Seed: int64Ptr(101)},
@@ -866,17 +870,141 @@ func TestCriticLoopMutationDerivation(t *testing.T) {
 	basePrompt := "A landscape: a valley."
 	expectedMutation1 := basePrompt + ", add cat, add dog"
 
-	if len(*m.fakeCalls) != 3 {
-		t.Fatalf("renderer called %d times, want 3", len(*m.fakeCalls))
+	if len(getCalls()) != 3 {
+		t.Fatalf("renderer called %d times, want 3", len(getCalls()))
 	}
-	if (*m.fakeCalls)[0].Prompt != basePrompt {
-		t.Fatalf("attempt 1 prompt = %q, want %q", (*m.fakeCalls)[0].Prompt, basePrompt)
+	if (getCalls())[0].Prompt != basePrompt {
+		t.Fatalf("attempt 1 prompt = %q, want %q", (getCalls())[0].Prompt, basePrompt)
 	}
-	if (*m.fakeCalls)[1].Prompt != expectedMutation1 {
-		t.Fatalf("attempt 2 prompt = %q, want %q", (*m.fakeCalls)[1].Prompt, expectedMutation1)
+	if (getCalls())[1].Prompt != expectedMutation1 {
+		t.Fatalf("attempt 2 prompt = %q, want %q", (getCalls())[1].Prompt, expectedMutation1)
 	}
-	if (*m.fakeCalls)[2].Prompt != expectedMutation1 {
-		t.Fatalf("attempt 3 prompt = %q, want %q", (*m.fakeCalls)[2].Prompt, expectedMutation1)
+	if (getCalls())[2].Prompt != expectedMutation1 {
+		t.Fatalf("attempt 3 prompt = %q, want %q", (getCalls())[2].Prompt, expectedMutation1)
+	}
+}
+
+func TestCriticLoopBudgetTwoAllFail(t *testing.T) {
+	// Budget 2 = 1+2 = 3 attempts max. All 3 fail → verdict "best_of_n" (on_fail=deliver)
+	script := []fakeRenderResult{
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+		{PNG: tinyPNG(), Seed: int64Ptr(101)},
+	}
+
+	m, getCalls := makeTestJob(t, script)
+	callCount := 0
+	m.opts.Critic = critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			callCount++
+			return []critic.VLMScore{{ID: 0, Pass: false, Reason: "no cat", Fix: "add cat"}}, nil
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"1girl", "cat"}, nil
+		},
+	}
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:  "landscape",
+		Fields: map[string]string{"setting": "a valley"},
+		Size:   "512x512",
+		Seed:   int64Ptr(100),
+		Validate: &critic.ValidateSpec{
+			Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"must have cat"`)}},
+			Budget: intPtr(2),
+			OnFail: "deliver",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	j := waitForCriticDone(t, m, id)
+
+	if j.Status != "done" {
+		t.Fatalf("status = %q, want done", j.Status)
+	}
+	if j.Critic == nil {
+		t.Fatal("Critic summary missing")
+	}
+	if j.Critic.Verdict != "best_of_n" {
+		t.Fatalf("verdict = %q, want best_of_n", j.Critic.Verdict)
+	}
+	if j.Critic.Attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", j.Critic.Attempts)
+	}
+	if len(getCalls()) != 3 {
+		t.Fatalf("renderer called %d times, want 3", len(getCalls()))
+	}
+}
+
+func TestCriticLoopBestOfTieBreak(t *testing.T) {
+	// 3 attempts with equal failing scores → chosen = attempt 1 (lowest index)
+	script := []fakeRenderResult{
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+		{PNG: tinyPNG(), Seed: int64Ptr(100)},
+		{PNG: tinyPNG(), Seed: int64Ptr(101)},
+	}
+
+	m, getCalls := makeTestJob(t, script)
+	callCount := 0
+	m.opts.Critic = critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			callCount++
+			// All attempts fail with same score (0 pass, 1 fail = 0.0 score)
+			return []critic.VLMScore{{ID: 0, Pass: false, Reason: "no cat", Fix: "add cat"}}, nil
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"1girl", "cat"}, nil
+		},
+	}
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:  "landscape",
+		Fields: map[string]string{"setting": "a valley"},
+		Size:   "512x512",
+		Seed:   int64Ptr(100),
+		Validate: &critic.ValidateSpec{
+			Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"must have cat"`)}},
+			Budget: intPtr(2),
+			OnFail: "deliver",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	j := waitForCriticDone(t, m, id)
+
+	if j.Status != "done" {
+		t.Fatalf("status = %q, want done", j.Status)
+	}
+	if j.Critic == nil {
+		t.Fatal("Critic summary missing")
+	}
+	if j.Critic.Verdict != "best_of_n" {
+		t.Fatalf("verdict = %q, want best_of_n", j.Critic.Verdict)
+	}
+	if j.Critic.Attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", j.Critic.Attempts)
+	}
+
+	// Verify attempt 1 (index 0) is chosen (lowest index tie-break)
+	chosenID := strings.TrimSuffix(strings.TrimPrefix(j.ImagePath, "images/"), ".png")
+	if j.Attempts[0].Chosen != true {
+		t.Fatal("attempt 1 should be chosen (lowest index tie-break)")
+	}
+	if j.Attempts[0].Image != chosenID {
+		t.Fatal("chosen image should be attempt 1's image")
+	}
+	if len(getCalls()) != 3 {
+		t.Fatalf("renderer called %d times, want 3", len(getCalls()))
 	}
 }
 

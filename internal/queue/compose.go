@@ -1705,7 +1705,12 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 			if i < len(gp.Prompts) {
 				framePrompt = gp.Prompts[i]
 			}
-			checks := critic.Run(context.Background(), *cl, base64.StdEncoding.EncodeToString(data), framePrompt, m.opts.Critic)
+			// The check ctx carries the queue-side CriticTimeout per frame (a
+			// hung judge delays one frame, not the whole loop); deadline-
+			// exceeded legs degrade to inert statuses inside critic.Run.
+			checkCtx, checkCancel := m.criticCheckCtx(context.Background())
+			checks := critic.Run(checkCtx, *cl, base64.StdEncoding.EncodeToString(data), framePrompt, m.opts.Critic)
+			checkCancel()
 			man.GIF.FrameChecks = append(man.GIF.FrameChecks, manifestFrameChecks{File: name, Checks: checks})
 			// on_fail=fail: the first failing check fails the parent naming
 			// the frame and the op; the deliver default records and assembles.

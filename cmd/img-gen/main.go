@@ -201,6 +201,7 @@ func newHandler(cfg config) (http.Handler, error) {
 		Chat:          chatFn,
 		EnhanceSystem: cfg.EnhanceSystem,
 		Critic:        criticEnv,
+		CriticTimeout: cfg.CriticTimeout,
 	})
 
 	mux := http.NewServeMux()

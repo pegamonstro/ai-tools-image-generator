@@ -156,6 +156,16 @@ type Options struct {
 	// Tagger, Vocab). Only Tagger availability is checked at submit time for
 	// tag_roundtrip validation.
 	Critic critic.Env
+
+	// CriticTimeout caps each queue-side critic check call — the validating
+	// stage (criticLoop, restart recovery) and the compose frame checks — so
+	// a hung judge releases the worker slot instead of riding the shared
+	// lattice HTTP client's long transport timeout. Deadline-exceeded legs
+	// degrade through critic.Run's existing inert statuses (undetermined /
+	// error), never the render budget. 0 = no queue-side cap (test
+	// constructions; production wiring always passes the loaded config's
+	// CRITIC_TIMEOUT_S, default-clamped like the /api/v1/validate deadline).
+	CriticTimeout time.Duration
 }
 
 type imageInputs struct {
@@ -1548,12 +1558,25 @@ func (m *Manager) persistJob(job storage.Job) {
 	}
 }
 
+// criticCheckCtx bounds one critic check call with the queue-side
+// CriticTimeout when configured. The returned cancel is always non-nil so
+// callers can defer or call it unconditionally.
+func (m *Manager) criticCheckCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	if m.opts.CriticTimeout > 0 {
+		return context.WithTimeout(ctx, m.opts.CriticTimeout)
+	}
+	return ctx, func() {}
+}
+
 // runChecks executes the checklist against the given PNG bytes and returns
 // the results. prompt is the prompt that rendered these bytes — the
 // tag_roundtrip drift reference (it belongs to the attempt, not the
 // compiled checklist: attempt 1 renders the base prompt, retries render
-// mutated prompts).
+// mutated prompts). The check ctx carries the queue-side CriticTimeout cap
+// on top of the caller's ctx so a hung judge cannot hold the worker slot.
 func (m *Manager) runChecks(ctx context.Context, cl critic.Checklist, png []byte, prompt string) []storage.CriticCheck {
+	ctx, cancel := m.criticCheckCtx(ctx)
+	defer cancel()
 	b64 := base64.StdEncoding.EncodeToString(png)
 	return critic.Run(ctx, cl, b64, prompt, m.opts.Critic)
 }

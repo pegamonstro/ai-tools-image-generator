@@ -205,6 +205,60 @@ func criticEnvForTest(pass bool) critic.Env {
 	}
 }
 
+// blockedJudgeEnv returns a critic.Env whose judge never answers before its
+// context is done — the hung-remote shape the queue-side check cap must
+// survive.
+func blockedJudgeEnv() critic.Env {
+	return critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"1girl", "cat"}, nil
+		},
+	}
+}
+
+func TestCriticLoopCheckTimeoutUnclogsWorker(t *testing.T) {
+	// A judge that hangs past the check deadline must not hold the worker
+	// slot: with a tiny injected CriticTimeout the judge call errors at the
+	// deadline, vlm_check lands on undetermined (inert — no fails, not
+	// budget-consuming), and the job resolves done after attempt 1.
+	// Without the cap this test wedges until waitForCriticDone fatals.
+	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
+	m, getCalls := makeTestJob(t, script)
+	m.opts.Critic = blockedJudgeEnv()
+	m.opts.CriticTimeout = 50 * time.Millisecond
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:    "landscape",
+		Fields:   map[string]string{"setting": "a valley"},
+		Size:     "512x512",
+		Seed:     int64Ptr(42),
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"test criterion"`)}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitForCriticDone(t, m, id)
+	if j.Status != "done" {
+		t.Fatalf("status = %s %q, want done (timeout must be inert, not a failure)", j.Status, j.Error)
+	}
+	if j.Critic == nil || j.Critic.Verdict != "indeterminate" {
+		t.Fatalf("verdict = %+v, want indeterminate (deadline-exceeded judge leg)", j.Critic)
+	}
+	if len(getCalls()) != 1 {
+		t.Fatalf("renders = %d, want 1 (timeout must not consume the render budget)", len(getCalls()))
+	}
+	if len(j.Attempts) != 1 || len(j.Attempts[0].Checks) != 1 || j.Attempts[0].Checks[0].Status != "undetermined" {
+		t.Fatalf("attempt checks = %+v, want one undetermined vlm_check", j.Attempts)
+	}
+}
+
 // criticEnvForIndeterminate returns a critic.Env where all checks are undetermined.
 func criticEnvForIndeterminate() critic.Env {
 	return critic.Env{

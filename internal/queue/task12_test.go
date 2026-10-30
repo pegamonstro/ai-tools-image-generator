@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"img-gen/internal/critic"
 	"img-gen/internal/lattice"
@@ -572,6 +573,55 @@ func TestResolveFrameRefFallbackErrorPreservation(t *testing.T) {
 		}
 	})
 }
+
+// --- Queue-side check timeout on the compose path ---------------------------
+
+// TestGIFFrameChecksTimeoutUnclogsCompose verifies the composeGIF frame-check
+// loop applies the queue-side CriticTimeout per frame: a judge hung past the
+// deadline leaves each frame's vlm_check undetermined (deliver keeps
+// recording and assembling) and the parent still finishes — not a hang.
+func TestGIFFrameChecksTimeoutUnclogsCompose(t *testing.T) {
+	cap := &genCapture{}
+	o := composeTestOpts(t, t.TempDir(), cap)
+	o.Critic = blockedJudgeEnv()
+	o.CriticTimeout = 50 * time.Millisecond
+	m := New(o)
+
+	red := b64PNG(t, 8, 8, color.NRGBA{R: 255, A: 255})
+	id, err := m.SubmitGIF(GifRequest{
+		Name: "timeout-compose",
+		Validate: &critic.ValidateSpec{
+			Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"test"`)}},
+			OnFail: "deliver", // deadline-exceeded checks are inert and record
+		},
+		Source: GifSource{Type: "from_frames", Frames: []FrameRef{{B64: red}, {B64: red}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, id, "done")
+	if j.Status != "done" {
+		t.Fatalf("gif parent: %s %q — per-frame cap failed, compose wedged", j.Status, j.Error)
+	}
+	mraw, err := m.opts.Store.ReadSetFile(id, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var man setManifest
+	if err := json.Unmarshal(mraw, &man); err != nil {
+		t.Fatal(err)
+	}
+	if len(man.GIF.FrameChecks) != 2 {
+		t.Fatalf("want 2 frame checks, got %+v", man.GIF.FrameChecks)
+	}
+	for i, fc := range man.GIF.FrameChecks {
+		if len(fc.Checks) != 1 || fc.Checks[0].Op != "vlm_check" || fc.Checks[0].Status != "undetermined" {
+			t.Fatalf("frame %d checks: %+v, want undetermined vlm_check", i, fc.Checks)
+		}
+	}
+}
+
+// --- GIF from_spec children manifest summary -------------------------------
 
 // TestGIFFromSpecChildrenManifestVerify verifies that from_spec GIF children
 // (validated in their own jobs) record the first child's Validate/Attempts on

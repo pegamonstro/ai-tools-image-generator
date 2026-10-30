@@ -119,6 +119,9 @@ type ImageOps struct {
 	// (B2). nil = not configured — SubmitAssetSet refuses transparent
 	// "rembg" assets with the honest validation error.
 	Rembg func(ctx context.Context, imageB64 string) ([]byte, error)
+	// DWPose extracts pose keypoints from an image on the DWPose sidecar.
+	// nil = not configured — character kind validation refuses when needed.
+	DWPose func(ctx context.Context, imageB64 string) ([]float32, error)
 	// Progress polls the in-flight generation's step/total plus the sidecar's
 	// gen id (empty when idle/not running), piggybacked on the same poll. The
 	// sidecar arg routes to the job's engine ("" = default sidecar).

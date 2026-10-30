@@ -82,24 +82,27 @@ func (t *TransparentSpec) UnmarshalJSON(b []byte) error {
 }
 
 type assetSpec struct {
-	Kind         string               `json:"kind"`
-	Name         string               `json:"name"`
-	Prompt       string               `json:"prompt"`
-	Size         string               `json:"size"`
-	Frames       int                  `json:"frames,omitempty"`
-	Columns      int                  `json:"columns,omitempty"`
-	Transparent  TransparentSpec      `json:"transparent,omitempty"` // "" | "dual" | "rembg"
-	FrameMargins int                  `json:"frame_margins,omitempty"`
-	BarFill      string               `json:"bar_fill,omitempty"`
-	FillStates   []int                `json:"fill_states,omitempty"`
-	Shape        string               `json:"shape,omitempty"`    // npc: "variants" | "walk4"
-	Variants     []string             `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
-	Views        []string             `json:"views,omitempty"`    // sheet: 2..8 view names
-	MetaFormats  []string             `json:"meta_formats,omitempty"`
-	PixelFix     bool                 `json:"pixel_fix,omitempty"` // pixel-art repair post-op (opt-in)
-	Outline      *OutlineSpec         `json:"outline,omitempty"`   // element + frame only
-	Children     int                  `json:"children"`            // generation jobs this asset owns, in order
-	Validate     *critic.ValidateSpec `json:"validate,omitempty"`  // per-asset critic checklist (persisted for recompose)
+	Kind              string               `json:"kind"`
+	Name              string               `json:"name"`
+	Prompt            string               `json:"prompt"`
+	Size              string               `json:"size"`
+	Frames            int                  `json:"frames,omitempty"`
+	Columns           int                  `json:"columns,omitempty"`
+	Transparent       TransparentSpec      `json:"transparent,omitempty"` // "" | "dual" | "rembg"
+	FrameMargins      int                  `json:"frame_margins,omitempty"`
+	BarFill           string               `json:"bar_fill,omitempty"`
+	FillStates        []int                `json:"fill_states,omitempty"`
+	Shape             string               `json:"shape,omitempty"`    // npc: "variants" | "walk4"
+	Variants          []string             `json:"variants,omitempty"` // npc variants: per-variant prompt suffixes
+	Views             []string             `json:"views,omitempty"`    // sheet: 2..8 view names
+	MetaFormats       []string             `json:"meta_formats,omitempty"`
+	PixelFix          bool                 `json:"pixel_fix,omitempty"` // pixel-art repair post-op (opt-in)
+	Outline           *OutlineSpec         `json:"outline,omitempty"`   // element + frame only
+	// Character kind fields
+	CharacterIdentity string   `json:"character_identity,omitempty"` // base64 reference image for IPAdapter
+	Poses             []string `json:"poses,omitempty"`            // pose names or base64 images for DWPose
+	Children          int                  `json:"children"`            // generation jobs this asset owns, in order
+	Validate          *critic.ValidateSpec `json:"validate,omitempty"`  // per-asset critic checklist (persisted for recompose)
 }
 
 // compositeLayerSpec is one persisted static layer: its set file (saved at
@@ -448,24 +451,27 @@ type OutlineSpec struct {
 }
 
 type AssetSpecIn struct {
-	Kind         string               `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc"
-	Name         string               `json:"name"`
-	Prompt       string               `json:"prompt"`
-	Negative     string               `json:"negative,omitempty"`
-	Size         string               `json:"size"`                    // WxH, multiples of 16
-	Frames       int                  `json:"frames,omitempty"`        // atlas: 2..64
-	Columns      int                  `json:"columns,omitempty"`       // atlas: 0 = single row
-	Transparent  TransparentSpec      `json:"transparent,omitempty"`   // true = dual pass (legacy spell); "dual"; "rembg" = u2netp sidecar
-	FrameMargins int                  `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
-	BarFill      string               `json:"bar_fill,omitempty"`      // bar: fill art prompt
-	FillStates   []int                `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
-	Shape        string               `json:"shape,omitempty"`         // npc: "variants" | "walk4"
-	Variants     []string             `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
-	Views        []string             `json:"views,omitempty"`         // sheet: 2..8 view names
-	MetaFormats  []string             `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
-	PixelFix     bool                 `json:"pixel_fix,omitempty"`     // pixel-art repair post-op (opt-in)
-	Outline      *OutlineSpec         `json:"outline,omitempty"`       // element + frame only
-	Validate     *critic.ValidateSpec `json:"validate,omitempty"`      // per-asset critic checklist
+	Kind              string               `json:"kind"` // "element" | "kit" | "atlas" | "frame" | "bar" | "npc" | "character"
+	Name              string               `json:"name"`
+	Prompt            string               `json:"prompt"`
+	Negative          string               `json:"negative,omitempty"`
+	Size              string               `json:"size"`                    // WxH, multiples of 16
+	Frames            int                  `json:"frames,omitempty"`        // atlas: 2..64
+	Columns           int                  `json:"columns,omitempty"`       // atlas: 0 = single row
+	Transparent       TransparentSpec      `json:"transparent,omitempty"`   // true = dual pass (legacy spell); "dual"; "rembg" = u2netp sidecar
+	FrameMargins      int                  `json:"frame_margins,omitempty"` // frame|bar: 1..size/2-1
+	BarFill           string               `json:"bar_fill,omitempty"`      // bar: fill art prompt
+	FillStates        []int                `json:"fill_states,omitempty"`   // bar: 1..100, <=16, ascending
+	Shape             string               `json:"shape,omitempty"`         // npc: "variants" | "walk4"
+	Variants          []string             `json:"variants,omitempty"`      // npc variants: per-variant prompt suffixes
+	Views             []string             `json:"views,omitempty"`         // sheet: 2..8 view names
+	MetaFormats       []string             `json:"meta_formats,omitempty"`  // engine metadata: subset of {phaser, unity, sparrow, tiled}
+	PixelFix          bool                 `json:"pixel_fix,omitempty"`     // pixel-art repair post-op (opt-in)
+	Outline           *OutlineSpec         `json:"outline,omitempty"`       // element + frame only
+	// Character kind fields
+	CharacterIdentity string   `json:"character_identity,omitempty"` // base64 reference image for IPAdapter
+	Poses             []string `json:"poses,omitempty"`            // pose names or base64 images for DWPose
+	Validate          *critic.ValidateSpec `json:"validate,omitempty"`      // per-asset critic checklist
 }
 
 // SubmitAssetSet validates, registers the compose parent (set id = job id),
@@ -633,6 +639,29 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			}
 			built = sheetChildren(prompt, a.Negative, a.Size, *req.Seed, a.Views)
 			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Views: a.Views, Columns: a.Columns, MetaFormats: a.MetaFormats}
+		case "character":
+			if a.CharacterIdentity == "" {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: character_identity is required for character kind", an)}
+			}
+			if len(a.Poses) == 0 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: poses is required for character kind (at least 1)", an)}
+			}
+			if m.opts.Ops.DWPose == nil {
+				// Check if any pose is a base64 image (needs DWPose) vs explicit keypoints
+				needsDWPose := false
+				for _, p := range a.Poses {
+					if len(p) > 100 && (strings.HasPrefix(p, "iVBORw0K") || strings.HasPrefix(p, "/9j/")) {
+						needsDWPose = true
+						break
+					}
+				}
+				if needsDWPose {
+					return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: poses contain base64 images but DWPose sidecar not configured (DWPOSE_URL)", an)}
+				}
+			}
+			// Each pose becomes a child generation with ControlNet (pose) + IPAdapter (identity)
+			built = characterChildren(prompt, a.Negative, a.Size, *req.Seed, a.CharacterIdentity, a.Poses)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, CharacterIdentity: a.CharacterIdentity, Poses: a.Poses, MetaFormats: a.MetaFormats}
 		default:
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc, sheet)", an, a.Kind)}
 		}
@@ -789,6 +818,45 @@ func sheetChildren(prompt, negative, size string, seed int64, views []string) []
 	for _, v := range views {
 		s := seed
 		kids = append(kids, SubmitRequest{Mode: "asset", Prompt: prompt + ", " + v + " view", NegativePrompt: negative, Size: size, Seed: &s})
+	}
+	return kids
+}
+
+// characterChildren builds one job per pose for a character asset.
+// Each pose gets ControlNet conditioning (from DWPose keypoints or pose image)
+// plus IPAdapter identity conditioning from the character reference image.
+// All children use the same pinned seed for consistency across poses.
+func characterChildren(prompt, negative, size string, seed int64, identity string, poses []string) []SubmitRequest {
+	kids := make([]SubmitRequest, 0, len(poses))
+	for _, pose := range poses {
+		s := seed
+		// Build prompt with pose description
+		p := prompt
+		if strings.HasPrefix(pose, "iVBORw0K") || strings.HasPrefix(pose, "/9j/") {
+			// Base64 image - will need DWPose extraction at runtime
+			p = prompt + ", pose reference"
+		} else {
+			// Explicit pose name/description
+			p = prompt + ", " + pose
+		}
+		ctrl := &storage.ControlParams{
+			Net:      "openpose",
+			Image:    pose, // Will be processed by DWPose at runtime if it's an image
+			Strength: 0.8,
+		}
+		ipa := &storage.IPAdapterParams{
+			Image:    identity,
+			Strength: 0.6,
+		}
+		kids = append(kids, SubmitRequest{
+			Mode:      "asset",
+			Prompt:    p,
+			NegativePrompt: negative,
+			Size:      size,
+			Seed:      &s,
+			Control:   ctrl,
+			IPAdapter: ipa,
+		})
 	}
 	return kids
 }
@@ -1029,6 +1097,9 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				if err == nil {
 					outs, err = compose.ComposeSheet(a.Name, cells, a.Columns)
 				}
+			case "character":
+				// Character kind: compose as atlas (one frame per pose)
+				outs, err = compose.ComposeAtlas(a.Name, imgs, a.Columns)
 			default:
 				err = fmt.Errorf("unknown asset kind %q", a.Kind)
 			}

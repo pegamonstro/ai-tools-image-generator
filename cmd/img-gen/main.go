@@ -67,6 +67,10 @@ type config struct {
 	// TaggerTimeout bounds each tagger/vocab sidecar call (submit gating
 	// handles availability). Zero/negative parses fall back to the default.
 	TaggerTimeout time.Duration
+	// DWPoseURL is the DWPose sidecar for pose keypoint extraction.
+	DWPoseURL string
+	// DWPoseTimeout bounds each DWPose sidecar call.
+	DWPoseTimeout time.Duration
 	APIToken      string
 	Split9Slice   string
 	CssEmission   string
@@ -105,6 +109,8 @@ func loadConfig() config {
 		CriticTimeout: criticTimeout,
 		TaggerURL:     envOr("TAGGER_URL", ""),
 		TaggerTimeout: tagTimeout,
+		DWPoseURL:     envOr("DWPOSE_URL", ""),
+		DWPoseTimeout: time.Duration(envIntOr("DWPOSE_TIMEOUT_S", 60)) * time.Second,
 		APIToken:      envOr("IMG_GEN_TOKEN", ""),
 		Split9Slice:   envOr("SPLIT_9_SLICE", "false"),
 		CssEmission:   envOr("CSS_EMISSION", "false"),
@@ -137,6 +143,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat.RembgURL = cfg.RembgURL
 	lat.SDXLImageURL = cfg.SDXLURL
 	lat.TaggerURL = cfg.TaggerURL
+	lat.DWPoseURL = cfg.DWPoseURL
 	lat.ImagesViaLattice = cfg.ImageRouting != "direct"
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
 
@@ -154,6 +161,22 @@ func newHandler(cfg config) (http.Handler, error) {
 	var rembgOp func(ctx context.Context, imageB64 string) ([]byte, error)
 	if cfg.RembgURL != "" {
 		rembgOp = lat.Rembg
+	}
+
+	// DWPose is wired only when the sidecar is configured: nil Ops.DWPose must
+	// unambiguously mean "DWPose sidecar not configured" so character kind
+	// validation can refuse pose extraction with the honest error.
+	var dwposeOp func(ctx context.Context, imageB64 string) ([]float32, error)
+	if cfg.DWPoseURL != "" {
+		dwpTimeout := cfg.DWPoseTimeout
+		if dwpTimeout <= 0 {
+			dwpTimeout = 60 * time.Second
+		}
+		dwposeOp = func(ctx context.Context, imageB64 string) ([]float32, error) {
+			dctx, cancel := context.WithTimeout(ctx, dwpTimeout)
+			defer cancel()
+			return lat.DWPose(dctx, imageB64)
+		}
 	}
 
 	// Phase D critic runtime. The judge answers the validate checklist's
@@ -201,6 +224,7 @@ func newHandler(cfg config) (http.Handler, error) {
 			Controlnet: lat.Controlnet,
 			Rife:       rifeOp,
 			Rembg:      rembgOp,
+			DWPose:     dwposeOp,
 			Progress:   lat.Progress,
 			Status:     lat.Status,
 			Result:     lat.Result,

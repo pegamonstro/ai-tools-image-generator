@@ -28,6 +28,7 @@ type Client struct {
 	RembgURL     string // optional rembg u2netp sidecar for POST /segment background removal
 	SDXLImageURL string // optional stable-diffusion.cpp sidecar; spec.Sidecar "sdxl" routes here
 	TaggerURL    string // optional WD14 tagger sidecar for POST /tag and GET /meta
+	DWPoseURL    string // optional DWPose sidecar for POST /pose keypoint extraction
 	HTTP         *http.Client
 	// ImagesViaLattice routes Generate/Edit through the frontend's OpenAI
 	// Images routes (all inference through the lattice) instead of direct
@@ -367,6 +368,40 @@ func (c *Client) Rembg(ctx context.Context, imageB64 string) ([]byte, error) {
 		return nil, fmt.Errorf("rembg sidecar png: %w", err)
 	}
 	return raw, nil
+}
+
+// DWPose extracts pose keypoints from an image on the DWPose sidecar.
+// Returns flattened COCO 17-keypoint array: [x1, y1, conf1, x2, y2, conf2, ...].
+// nil DWPoseURL means the sidecar is unconfigured — callers should validate.
+func (c *Client) DWPose(ctx context.Context, imageB64 string) ([]float32, error) {
+	if c.DWPoseURL == "" {
+		return nil, errors.New("DWPose sidecar not configured (DWPOSE_URL)")
+	}
+	body, err := json.Marshal(map[string]any{"image": imageB64})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.DWPoseURL, "/")+"/pose",
+		bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("dwpose sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("dwpose sidecar: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Keypoints []float32 `json:"keypoints"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("dwpose sidecar body: %w", err)
+	}
+	return out.Keypoints, nil
 }
 
 // statusResp is the sidecar's GET /status payload.

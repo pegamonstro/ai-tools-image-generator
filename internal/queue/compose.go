@@ -100,7 +100,8 @@ type compositeLayerSpec struct {
 }
 
 type gifPayload struct {
-	Frames    []string             `json:"frames,omitempty"` // set-relative source files (from_frames/composite anim)
+	Frames    []string             `json:"frames,omitempty"`  // set-relative source files (from_frames/composite anim)
+	Prompts   []string             `json:"prompts,omitempty"` // per-frame render prompts, aligned with Frames; empty for non-job frames. tag_roundtrip's drift reference for provided-frame checks
 	Composite []compositeLayerSpec `json:"composite,omitempty"`
 	Keyframes *keyframesPayload    `json:"keyframes,omitempty"` // keyframes: resolved anchors as keyframe-%04d.png
 	DelayMS   int                  `json:"delay_ms"`
@@ -287,10 +288,20 @@ func (m *Manager) runCompose(id string) {
 }
 
 // childResult fetches a child's outcome: status, error text, and — when the
-// child succeeded — its stored PNG bytes.
+// child succeeded — its stored PNG bytes. The bytes resolve from the child's
+// ImagePath when it names a stored image: validated children save their
+// attempt renders under attempt ids (criticLoop), so the job id has no file
+// and the chosen attempt is the one ImagePath points at. Plain renders keep
+// the pre-Phase-D convention byte-identical (their ImagePath id IS the job id).
 func (m *Manager) childResult(childID string) (status, errMsg string, png []byte) {
+	imgID := childID
 	m.mu.Lock()
 	j := m.jobs[childID]
+	if j != nil && j.ImagePath != "" {
+		if id, ok := imagePathID(j.ImagePath); ok {
+			imgID = id
+		}
+	}
 	m.mu.Unlock()
 	if j == nil {
 		return "failed", "child job record missing", nil
@@ -302,11 +313,24 @@ func (m *Manager) childResult(childID string) (status, errMsg string, png []byte
 		}
 		return j.Status, msg, nil
 	}
-	b, err := m.opts.Store.ReadImage(childID)
+	b, err := m.opts.Store.ReadImage(imgID)
 	if err != nil {
 		return "failed", err.Error(), nil
 	}
 	return "done", "", b
+}
+
+// imagePathID extracts the stored image id from a job ImagePath, whose shape
+// is always "images/<id>.png" (storage.SaveImage's rel convention, shared by
+// renderAndFinish and finishCritic). ok is false for any other shape, so
+// callers fall back to treating the job id as the image id.
+func imagePathID(rel string) (id string, ok bool) {
+	const prefix, suffix = "images/", ".png"
+	if !strings.HasPrefix(rel, prefix) || !strings.HasSuffix(rel, suffix) {
+		return "", false
+	}
+	id = strings.TrimSuffix(strings.TrimPrefix(rel, prefix), suffix)
+	return id, id != ""
 }
 
 // childrenResults loads a parent's child images in order. specChildren is the
@@ -328,6 +352,17 @@ func (m *Manager) childrenResults(specChildren int, ids []string, logf func(f st
 		imgs[i] = png
 	}
 	return imgs, errs
+}
+
+// childCritic returns a copy of the child job's Critic summary and Attempts.
+// Caller must hold no lock; this acquires m.mu briefly to copy the fields.
+func (m *Manager) childCritic(childID string) (j storage.Job) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cj := m.jobs[childID]; cj != nil {
+		j = *cj
+	}
+	return j
 }
 
 // resolveExportDest applies the delivery fallback chain: explicit dest →
@@ -772,24 +807,34 @@ type setManifest struct {
 }
 
 type manifestAsset struct {
-	Kind     string   `json:"kind"`
-	Name     string   `json:"name"`
-	Prompt   string   `json:"prompt,omitempty"`
-	Size     string   `json:"size,omitempty"`
-	Variants []string `json:"variants,omitempty"`
-	Views    []string `json:"views,omitempty"`
-	Files    []string `json:"files,omitempty"`
-	Error    string   `json:"error,omitempty"`
+	Kind     string                  `json:"kind"`
+	Name     string                  `json:"name"`
+	Prompt   string                  `json:"prompt,omitempty"`
+	Size     string                  `json:"size,omitempty"`
+	Variants []string                `json:"variants,omitempty"`
+	Views    []string                `json:"views,omitempty"`
+	Files    []string                `json:"files,omitempty"`
+	Error    string                  `json:"error,omitempty"`
+	Validate *storage.ValidateState  `json:"validate,omitempty"`
+	Attempts []storage.CriticAttempt `json:"attempts,omitempty"`
+}
+
+type manifestFrameChecks struct {
+	File   string                `json:"file"`
+	Checks []storage.CriticCheck `json:"checks"`
 }
 
 type manifestGIF struct {
-	Name    string   `json:"name"`
-	Files   []string `json:"files,omitempty"`
-	DelayMS int      `json:"delay_ms"`
-	Loop    int      `json:"loop"`
-	Formats []string `json:"formats,omitempty"`
-	WebP    string   `json:"webp,omitempty"` // "ok" | "unavailable: reason"
-	Error   string   `json:"error,omitempty"`
+	Name        string                  `json:"name"`
+	Files       []string                `json:"files,omitempty"`
+	DelayMS     int                     `json:"delay_ms"`
+	Loop        int                     `json:"loop"`
+	Formats     []string                `json:"formats,omitempty"`
+	WebP        string                  `json:"webp,omitempty"` // "ok" | "unavailable: reason"
+	Error       string                  `json:"error,omitempty"`
+	FrameChecks []manifestFrameChecks   `json:"frame_checks,omitempty"`
+	Validate    *storage.ValidateState  `json:"validate,omitempty"`
+	Attempts    []storage.CriticAttempt `json:"attempts,omitempty"`
 }
 
 func (m *Manager) saveManifest(id string, man *setManifest) {
@@ -1008,6 +1053,17 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 			}
 		} else {
 			ok++
+		}
+		// Manifest summary (Task 12.2): record the FIRST child's Critic summary and
+		// Attempts as representative for this asset. Dual siblings share the story.
+		if len(kids) > 0 {
+			first := m.childCritic(kids[0])
+			if first.Critic != nil {
+				ma.Validate = first.Critic
+			}
+			if len(first.Attempts) > 0 {
+				ma.Attempts = first.Attempts
+			}
 		}
 		man.Assets = append(man.Assets, ma)
 	}
@@ -1275,6 +1331,24 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 	return data, nil
 }
 
+// frameSourcePrompt returns the prompt that rendered a job-sourced frame —
+// job.Prompt after its run() resolved enhancement and style — as the
+// tag_roundtrip drift reference the compose side threads into the checklist.
+// Frames from b64/path/set sources have no prompt (tag_roundtrip then
+// verifies nothing: critic.TagDrift's empty-prompt convention), and a job id
+// with no in-memory record (foreign image, old history) resolves to none too.
+func (m *Manager) frameSourcePrompt(ref FrameRef) string {
+	if ref.Job == "" {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j := m.jobs[ref.Job]; j != nil {
+		return j.Prompt
+	}
+	return ""
+}
+
 // SubmitGIF registers the compose parent and queues frame generation when
 // the source is from_spec. from_frames, composite, and keyframes resolve and
 // persist every source into the set at submit time (source-frame-%04d.png;
@@ -1364,6 +1438,7 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 		}
 		id := newID()
 		names := make([]string, 0, len(req.Source.Frames))
+		prompts := make([]string, 0, len(req.Source.Frames))
 		for i, ref := range req.Source.Frames {
 			data, err := m.resolveFrameRef(ref)
 			if err != nil {
@@ -1376,8 +1451,10 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("frame %d: %v", i, err)}
 			}
 			names = append(names, fname)
+			prompts = append(prompts, m.frameSourcePrompt(ref))
 		}
 		spec.GIF.Frames = names
+		spec.GIF.Prompts = prompts
 		// Phase D: validate compile for from_frames (after frame count check).
 		if req.Validate != nil {
 			if _, cerr := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil}); cerr != nil {
@@ -1434,6 +1511,7 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 		}
 		id := newID()
 		names := make([]string, 0, len(cs.Anim))
+		prompts := make([]string, 0, len(cs.Anim))
 		for i, ref := range cs.Anim {
 			data, err := m.resolveFrameRef(ref)
 			if err != nil {
@@ -1446,6 +1524,7 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("anim frame %d: %v", i, err)}
 			}
 			names = append(names, fname)
+			prompts = append(prompts, m.frameSourcePrompt(ref))
 		}
 		statics := make([]compositeLayerSpec, 0, len(cs.Statics))
 		for i, l := range cs.Statics {
@@ -1466,6 +1545,7 @@ func (m *Manager) SubmitGIF(req GifRequest) (string, error) {
 			statics = append(statics, compositeLayerSpec{File: sname, Pos: l.Pos})
 		}
 		spec.GIF.Frames = names
+		spec.GIF.Prompts = prompts
 		spec.GIF.Composite = statics
 		return m.submitComposeParent(id, spec, nil)
 	default:
@@ -1544,6 +1624,20 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 			frames = append(frames, im)
 		}
 	case len(gp.Frames) > 0:
+		// GIF provided-frame checks (Task 12.3): gp.Frames covers from_frames
+		// sources and composite anim frames — keyframes anchors and from_spec
+		// children never land here (anchors interpolate through the RIFE
+		// sidecar, from_spec children validate in their own jobs), and
+		// composite statics are NOT frame-checked (only the base frames are).
+		var cl *critic.Checklist
+		if gp.Validate != nil {
+			compiled, cerr := critic.CompileSpec(*gp.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil})
+			if cerr != nil {
+				m.finish(id, "failed", fmt.Sprintf("compose_error: validate compile: %v", cerr))
+				return
+			}
+			cl = &compiled
+		}
 		for i, name := range gp.Frames {
 			data, err := m.opts.Store.ReadSetFile(id, name)
 			if err != nil {
@@ -1556,6 +1650,29 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 				return
 			}
 			frames = append(frames, im)
+			if cl == nil {
+				continue
+			}
+			// tag_roundtrip's drift reference is the prompt that rendered THIS
+			// frame, persisted per-frame at submit; frames without a source
+			// prompt pass the tag op vacuously. The compiled checklist is
+			// copy-per-frame (slices are shared but Run only reads them).
+			fc := *cl
+			if i < len(gp.Prompts) {
+				fc.Prompt = gp.Prompts[i]
+			}
+			checks := critic.Run(context.Background(), fc, base64.StdEncoding.EncodeToString(data), m.opts.Critic)
+			man.GIF.FrameChecks = append(man.GIF.FrameChecks, manifestFrameChecks{File: name, Checks: checks})
+			// on_fail=fail: the first failing check fails the parent naming
+			// the frame and the op; the deliver default records and assembles.
+			if cl.OnFail == "fail" {
+				for _, c := range checks {
+					if c.Status == "fail" {
+						m.finish(id, "failed", fmt.Sprintf("compose_error: frame %d: %s failed: %s", i, c.Op, c.Reason))
+						return
+					}
+				}
+			}
 		}
 	case len(children) > 0:
 		imgs, errs := m.childrenResults(len(children), children, func(f string, a ...any) { m.log(id, f, a...) })
@@ -1574,6 +1691,17 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 				return
 			}
 			frames = append(frames, im)
+		}
+		// Manifest children summary for GIF from_spec (Task 12.4): record the first
+		// child's Critic summary and Attempts on the GIF manifest.
+		if len(children) > 0 {
+			first := m.childCritic(children[0])
+			if first.Critic != nil {
+				man.GIF.Validate = first.Critic
+			}
+			if len(first.Attempts) > 0 {
+				man.GIF.Attempts = first.Attempts
+			}
 		}
 	default:
 		m.finish(id, "failed", "compose_error: gif spec has neither frames nor children")

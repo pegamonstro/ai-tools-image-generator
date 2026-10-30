@@ -1,6 +1,6 @@
 ---
 name: img-gen-validation
-description: Validate and QA generated images through the img-gen critic checklist — VLM judge (vlm_check), tag round-trip (tag_roundtrip), palette conformance (palette_conform), and tile seam detection (tile_conform). Attach at submit for mutate-then-resample retries, or call /api/v1/validate standalone for one-off audits. Triggers on: validation, QA, critic, checklist, anatomy, tag drift, palette conformance, tileability, mutate-then-resample.
+description: Validate and QA generated images through the img-gen critic checklist — VLM judge (vlm_check), tag round-trip (tag_roundtrip), palette conformance (palette_conform), and tile seam detection (tile_conform). Attach at submit for mutate-then-resample retries, or call /api/v1/validate standalone for one-off audits. Triggers on: validation, QA, critic, checklist, tag drift, palette conformance, tileability, prompt-match, mutate-then-resample.
 ---
 
 # img-gen validation
@@ -17,12 +17,13 @@ img-gen's Phase D critic evaluates images against a checklist of up to 8 checks.
 ## When to attach `validate` at submit vs call `/api/v1/validate` standalone
 
 - **Attach at submit** (`POST /api/v1/jobs`, `/api/v1/asset-sets`, `/api/v1/gifs`): enables mutate-then-resample retries. Attempt 1 renders base prompt + seed; attempt 2 renders mutated prompt, SAME seed; attempt N≥3 renders mutated prompt, seed+(N−2). Best-of-N by score. Verdicts: `pass`, `best_of_n`, `failed`, `indeterminate`. Provenance: `CriticPending`, `CriticNextPrompt`, `Attempts`, `critic_*` tEXt keys, manifest `validate` + `FrameChecks` records.
-- **Call `/api/v1/validate` standalone**: evaluate-only (budget defaults to 0) or explicit budget 1–3 without retries — no mutate loop, single verdict. Use for auditing existing images, CI gates, or when retries are handled externally.
+- **Call `/api/v1/validate` standalone**: single verdict; budget defaults to 0 (evaluate-only) unless explicitly set 1–3 — no mutate loop. Use for auditing existing images, CI gates, or when retries are handled externally.
 
 ## Budget & `on_fail` guidance
 
-- `budget: 0` (or omit + `on_fail: deliver`) → evaluate-only, never retries, never fails the job.
-- `budget: 2` (default), `on_fail: "deliver"` (default) → up to 2 retries, delivers best attempt even if checks fail.
+- `budget: 0` (explicit) → evaluate-only, never retries, never fails the job.
+- omitted (default) → `budget: 2` (mutate-then-resample retries).
+- `budget: 1..3`, `on_fail: "deliver"` (default) → up to N retries, delivers best attempt even if checks fail.
 - `budget: 1..3`, `on_fail: "fail"` → up to N retries; job fails with `verdict: "failed"` if the chosen attempt still has failing checks. Use when pipelines must not ship imperfect frames.
 
 ## Verdict taxonomy
@@ -33,9 +34,8 @@ img-gen's Phase D critic evaluates images against a checklist of up to 8 checks.
 | `best_of_n` | chosen attempt has ≥1 failing check, but `on_fail: "deliver"` (or default) |
 | `failed` | `on_fail: "fail"` AND chosen attempt has ≥1 failing check |
 | `indeterminate` | all checks inert (`undetermined` or `error`) — judge refusal, malformed criterion, timeout, missing tagger/vocab, image decode error. **Never fail-open, never budget-consuming.** |
-| `error` | infra error (not a check status; the sync endpoint returns 400/500 for these) |
 
-Per-check `status`: `pass`, `fail`, `undetermined`, `error`.
+Per-check `status`: `pass`, `fail`, `undetermined`, `error` (inert statuses; the sync endpoint returns HTTP 400/500 for infra errors).
 
 ## Reading attempt provenance
 

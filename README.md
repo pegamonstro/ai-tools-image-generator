@@ -384,7 +384,7 @@ Attach a `validate` object to job submits (`POST /api/v1/jobs`), asset sets (`PO
 
 ### Standalone endpoint
 
-`POST /api/v1/validate` — synchronous, up to 1024×1024. Body: `{image, checks, palette?, budget?}`. Returns `{verdict, checks[]}`. No retries; budget defaults to 0.
+`POST /api/v1/validate` — synchronous, up to 1024×1024 (the shared `compose.RepairMaxDim` bound, same as `/api/v1/repair`). Body: `{image, checks, palette?, budget?}`. Returns `{verdict, checks[]}`. No retries; budget defaults to 0.
 
 ### Verdict taxonomy
 

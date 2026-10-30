@@ -81,10 +81,11 @@ func CompileSpec(spec ValidateSpec, av Availability) (Checklist, error) {
 		cl.Budget = BudgetDefault
 	} else {
 		cl.Budget = *spec.Budget
-		if cl.Budget < 0 {
-			cl.Budget = 0
-		} else if cl.Budget > BudgetMax {
-			cl.Budget = BudgetMax
+		if cl.Budget < 0 || cl.Budget > BudgetMax {
+			// Out-of-range budgets are rejected at submit time (a validation
+			// error), never clamped — a clamped budget would silently change
+			// the caller's retry contract.
+			return Checklist{}, fmt.Errorf("validate budget must be 0..%d (got %d)", BudgetMax, cl.Budget)
 		}
 	}
 	// Normalize empty OnFail to "deliver"

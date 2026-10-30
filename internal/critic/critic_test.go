@@ -17,17 +17,25 @@ func mustCompile(t *testing.T, spec ValidateSpec, av Availability) Checklist {
 	return cl
 }
 
-func TestCompileDefaultsAndClamps(t *testing.T) {
+func TestCompileDefaultsAndBudgetRange(t *testing.T) {
 	cl := mustCompile(t, ValidateSpec{Checks: []CheckSpec{{Op: "tag_roundtrip"}}}, Availability{Tagger: true})
 	if cl.Budget != BudgetDefault || cl.OnFail != "deliver" {
 		t.Fatalf("defaults: %+v", cl)
 	}
-	cl = mustCompile(t, ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(9), OnFail: "fail"}, Availability{})
+	// Budget max (3) is accepted as-is; out-of-range budgets are rejected,
+	// never clamped (F2: submit-time validation contract).
+	cl = mustCompile(t, ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(3), OnFail: "fail"}, Availability{})
 	if cl.Budget != 3 || cl.OnFail != "fail" {
-		t.Fatalf("clamp: %+v", cl)
+		t.Fatalf("budget max: %+v", cl)
 	}
 	if cl := mustCompile(t, ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(0)}, Availability{}); cl.Budget != 0 {
 		t.Fatalf("explicit zero must stay evaluate-only: %+v", cl)
+	}
+	for _, b := range []int{-1, 4, 9} {
+		_, err := CompileSpec(ValidateSpec{Checks: []CheckSpec{{Op: "tile_conform"}}, Budget: ip(b)}, Availability{})
+		if err == nil || !strings.Contains(err.Error(), "validate budget must be 0..3") {
+			t.Fatalf("budget %d: err = %v, want ~\"validate budget must be 0..3\"", b, err)
+		}
 	}
 }
 

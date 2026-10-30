@@ -572,6 +572,24 @@ func TestResolveFrameRefFallbackErrorPreservation(t *testing.T) {
 			t.Fatalf("error should be the original job-id read failure, got %q", err.Error())
 		}
 	})
+
+	t.Run("non-not-found read errors do not trigger the fallback", func(t *testing.T) {
+		// ReadImage on a malformed id fails with "invalid image id" — not a
+		// missing-attempt situation, so no attempt lookup may run even though
+		// the injected record's image file exists.
+		const malformed = "abcdef0123456789a" // 17 chars: fails the 16-hex id shape
+		if _, serr := m.opts.Store.SaveImage("feedface00000000", tinyPNG()); serr != nil {
+			t.Fatal(serr)
+		}
+		inject(malformed, "images/feedface00000000.png")
+		_, err := m.resolveFrameRef(FrameRef{Job: malformed})
+		if err == nil {
+			t.Fatal("unguarded fallback resolved through a non-not-found read error")
+		}
+		if errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "invalid image id") {
+			t.Fatalf("want the original invalid-image-id error, got %v", err)
+		}
+	})
 }
 
 // --- Queue-side check timeout on the compose path ---------------------------

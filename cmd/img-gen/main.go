@@ -160,8 +160,8 @@ func newHandler(cfg config) (http.Handler, error) {
 	// legs wire only when the WD14 sidecar is configured: nil Env.Tagger
 	// unambiguously means "tagger sidecar not configured" so tag_roundtrip
 	// fails submission honestly (the same convention as Rife/Rembg above);
-	// each tagger call gets its own TAGGER_TIMEOUT_S deadline inside the
-	// caller's context.
+	// each tagger call — /tag and the cached /meta vocab fetch alike — gets
+	// its own TAGGER_TIMEOUT_S deadline inside the caller's context.
 	criticEnv := critic.Env{Judge: critic.ChatJudge(lat, cfg.CriticModel)}
 	if cfg.TaggerURL != "" {
 		tagTimeout := cfg.TaggerTimeout
@@ -170,7 +170,11 @@ func newHandler(cfg config) (http.Handler, error) {
 			defer cancel()
 			return lat.Tagger(tctx, imageB64)
 		}
-		criticEnv.Vocab = lat.TaggerVocab
+		criticEnv.Vocab = func(ctx context.Context) ([]string, error) {
+			tctx, cancel := context.WithTimeout(ctx, tagTimeout)
+			defer cancel()
+			return lat.TaggerVocab(tctx)
+		}
 	}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"image"
-	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"img-gen/internal/critic"
 )
 
 func writeGenres(t *testing.T) string {
@@ -727,50 +727,135 @@ func TestLoadConfigCriticEnvs(t *testing.T) {
 }
 
 // TestV1ValidateCriticWiring proves the config-built critic env reaches the
-// v1 sync endpoint: with production-default config (no tagger configured) a
-// deterministic tile check still evaluates and passes. Before the critic env
-// was wired the endpoint ran on a nil-leg env — pre-C2 that panicked.
+// v1 sync endpoint AND that the test discriminates wired from unwired: a
+// vlm_check through the real handler must never land on the nil-leg
+// "error"/"critic judge not configured" shape (an unreachable judge degrades
+// to undetermined instead), while an explicitly unwired v1Deps produces
+// exactly that named error. Dropping critic/criticTimeout from the v1Deps
+// literal in newHandler would flip the wired subtest to the named-error shape
+// and fail here.
 func TestV1ValidateCriticWiring(t *testing.T) {
-	h := newTestHandler(t)
-	srv := httptest.NewServer(h)
-	defer srv.Close()
+	t.Run("wired env — vlm_check never reports the unwired-critic error", func(t *testing.T) {
+		h := newTestHandler(t)
+		srv := httptest.NewServer(h)
+		defer srv.Close()
 
-	img := image.NewNRGBA(image.Rect(0, 0, 4, 4)) // uniform pixels -> tile pass
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		t.Fatal(err)
-	}
-	body := map[string]any{
-		"image":  base64.StdEncoding.EncodeToString(buf.Bytes()),
-		"checks": []map[string]any{{"op": "tile_conform"}},
-	}
-	b, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.Post(srv.URL+"/api/v1/validate", "application/json", bytes.NewReader(b))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
-	}
-	var out struct {
-		Verdict string `json:"verdict"`
-		Checks  []struct {
-			Op     string `json:"op"`
-			Status string `json:"status"`
-		} `json:"checks"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Verdict != "pass" {
-		t.Fatalf("verdict = %q (%+v) — critic env not wired through to the sync endpoint", out.Verdict, out.Checks)
-	}
-	if len(out.Checks) != 1 || out.Checks[0].Op != "tile_conform" || out.Checks[0].Status != "pass" {
-		t.Fatalf("checks = %+v", out.Checks)
-	}
+		// The test handler's mock lattice answers chat with prose the judge
+		// cannot parse, so the wired env lands on "undetermined" — anything
+		// but the nil-env named error.
+		body := map[string]any{
+			"image":  makePNG(4, 4),
+			"checks": []map[string]any{{"op": "vlm_check", "arg": "\"a cat\""}},
+		}
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Post(srv.URL+"/api/v1/validate", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
+		}
+		var out struct {
+			Verdict string `json:"verdict"`
+			Checks  []struct {
+				Op     string `json:"op"`
+				Status string `json:"status"`
+				Reason string `json:"reason"`
+			} `json:"checks"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Checks) != 1 || out.Checks[0].Op != "vlm_check" {
+			t.Fatalf("checks = %+v", out.Checks)
+		}
+		c := out.Checks[0]
+		if c.Status == "error" {
+			t.Fatalf("wired env degraded to the nil-leg shape: %q %q (critic env not wired through v1Deps)", c.Status, c.Reason)
+		}
+		if strings.Contains(c.Reason, "critic judge not configured") {
+			t.Fatalf("wired env reason names the unwired critic: %q", c.Reason)
+		}
+	})
+
+	t.Run("wired env — deterministic tile check passes", func(t *testing.T) {
+		h := newTestHandler(t)
+		srv := httptest.NewServer(h)
+		defer srv.Close()
+
+		// Uniform pixels -> tile pass. This leg proves the handler path works
+		// end to end with production-default config (no tagger configured).
+		body := map[string]any{
+			"image":  makePNG(4, 4),
+			"checks": []map[string]any{{"op": "tile_conform"}},
+		}
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Post(srv.URL+"/api/v1/validate", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
+		}
+		var out struct {
+			Verdict string `json:"verdict"`
+			Checks  []struct {
+				Op     string `json:"op"`
+				Status string `json:"status"`
+			} `json:"checks"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Verdict != "pass" {
+			t.Fatalf("verdict = %q (%+v) — critic env not wired through to the sync endpoint", out.Verdict, out.Checks)
+		}
+		if len(out.Checks) != 1 || out.Checks[0].Op != "tile_conform" || out.Checks[0].Status != "pass" {
+			t.Fatalf("checks = %+v", out.Checks)
+		}
+	})
+
+	t.Run("unwired env — vlm_check names 'critic judge not configured'", func(t *testing.T) {
+		// The comparison shape: a zero critic.Env (what the endpoint degrades
+		// to when the wiring is dropped) must produce the named error, proving
+		// the wired subtest above can tell the two apart.
+		d := &v1Deps{}
+		d.critic = critic.Env{} // explicitly unwired
+		d.criticTimeout = 5 * time.Second
+		img := makePNG(4, 4)
+		body := []byte(`{"image":"` + img + `","checks":[{"op":"vlm_check","arg":"\"a cat\""}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/validate", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		d.handleV1Validate(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+		}
+		var out struct {
+			Checks []struct {
+				Op     string `json:"op"`
+				Status string `json:"status"`
+				Reason string `json:"reason"`
+			} `json:"checks"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Checks) != 1 {
+			t.Fatalf("checks = %+v", out.Checks)
+		}
+		c := out.Checks[0]
+		if c.Op != "vlm_check" || c.Status != "error" || c.Reason != "critic judge not configured" {
+			t.Fatalf("unwired env did not produce the named nil-leg error: %+v", c)
+		}
+	})
 }

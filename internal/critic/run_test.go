@@ -652,10 +652,16 @@ func TestRunNilEnvDefense(t *testing.T) {
 		if len(rs) != 2 {
 			t.Fatalf("got %d results, want 2", len(rs))
 		}
-		if rs[0].Op == "palette_conform" && rs[0].Status != "pass" {
+		if rs[0].Op != "palette_conform" {
+			t.Fatalf("check 0 op = %q, want palette_conform", rs[0].Op)
+		}
+		if rs[0].Status != "pass" {
 			t.Errorf("palette with nil legs: got %+v", rs[0])
 		}
-		if rs[1].Op == "tile_conform" && rs[1].Status != "pass" {
+		if rs[1].Op != "tile_conform" {
+			t.Fatalf("check 1 op = %q, want tile_conform", rs[1].Op)
+		}
+		if rs[1].Status != "pass" {
 			t.Errorf("tile with nil legs: got %+v", rs[1])
 		}
 		if a := Aggregate(rs); a != "pass" {

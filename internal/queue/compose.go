@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -1315,12 +1317,14 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 	case ref.Job != "":
 		// Validated jobs save renders under their chosen-attempt ids, so
 		// images/<jobID>.png does not exist for them. When the direct read
-		// misses, fall back to the job's recorded ImagePath
-		// (images/<attID>.png); the original error is kept when neither the
+		// misses with not-found, fall back to the job's recorded ImagePath
+		// (images/<attID>.png); other read failures (a malformed id shape,
+		// permissions) are no sign the image moved to an attempt id and pass
+		// through untouched. The original error is kept when neither the
 		// direct nor the attempt path resolves — callers still see exactly
 		// the not-found they saw for missing jobs.
 		data, err = m.opts.Store.ReadImage(ref.Job)
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			if att := m.jobChosenAttemptImage(ref.Job); att != "" {
 				attData, attErr := m.opts.Store.ReadImage(att)
 				if attErr == nil {

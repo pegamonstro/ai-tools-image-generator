@@ -220,8 +220,12 @@ func New(opts Options) *Manager {
 // (non-terminal) records split on GenID: one that never learned its sidecar gen
 // id is honestly failed (its result is unreachable), while one that did keeps
 // status "generating" and an attach goroutine re-attaches to the sidecar's
-// persisted result — recovery without regeneration. Terminal records are
-// rehydrated untouched so Get/List/Cancel/Subscribe see the same universe.
+// persisted result — recovery without regeneration. The GenID carve-out: a
+// validated job whose pending attempt is already recorded (criticLoop
+// persists the attempt record before its checks) has its bytes on disk, so it
+// needs no sidecar result at all and routes to attach's resumeCriticChecks
+// even without a gen id. Terminal records are rehydrated untouched so
+// Get/List/Cancel/Subscribe see the same universe.
 func (m *Manager) restore() {
 	hist, err := m.opts.Store.LoadHistory()
 	if err != nil {
@@ -231,7 +235,11 @@ func (m *Manager) restore() {
 	var attachIDs []string
 	for _, j := range hist {
 		if !isTerminal(j.Status) {
-			if j.GenID == "" && j.Mode != "compose" {
+			// The bytes-are-stored critic state: no sidecar contact needed to
+			// resume, so it never takes the honest-fail branch below.
+			criticResume := j.CriticSpec != "" && j.CriticPending != nil && *j.CriticPending > 0 &&
+				len(j.Attempts) >= *j.CriticPending
+			if j.GenID == "" && j.Mode != "compose" && !criticResume {
 				j.Status = "failed"
 				j.Error = "interrupted by a service restart before completion; submit the job again (same seed and params reproduce the image)"
 				j.Step = 0
@@ -305,12 +313,16 @@ const attachFailMsg = "interrupted by a service restart before completion; submi
 // "lost" (idle — one immediate retry covers the sidecar's write-then-respond
 // race); transport errors are retried within the unreachable window.
 //
-// Phase D: when the pending attempt's image is already stored (the
-// process died while running checks), the chain resumes from validation —
-// no sidecar re-attach is needed. Otherwise the recovered render (below,
-// saveRecovered) IS that attempt. Either way the chain then FINALIZES
-// from the attempts recorded so far: further retries are skipped honestly
-// (the attach goroutine holds no re-render inputs), a documented Phase D
+// Phase D: the criticLoop persists each attempt record BEFORE its checks run,
+// so a kill during (or right after) this attempt's checks leaves
+// len(Attempts) == CriticPending with the pending attempt's bytes already
+// stored — the chain then resumes from validation via resumeCriticChecks
+// (production-reachable since the persistence reorder), no sidecar re-attach
+// needed. A kill during the render itself persists len(Attempts) ==
+// pending-1 and keeps the sidecar-attach route below: the recovered render
+// (saveRecovered) IS that attempt. Either way the chain then FINALIZES from
+// the attempts recorded so far: further retries are skipped honestly (the
+// attach goroutine holds no re-render inputs), a documented Phase D
 // limitation. Kill-during-checks recovers the verdict; kill-during-render
 // recovers via the sidecar result first.
 func (m *Manager) attach(id string) {
@@ -334,9 +346,13 @@ func (m *Manager) attach(id string) {
 		m.mu.Unlock()
 	}()
 
-	// Phase D: kill-during-checks path — if we have persisted attempts
-	// >= CriticPending, the pending attempt's image is already stored.
-	// Resume by re-running checks idempotently on the stored attempt bytes.
+	// Phase D: kill-during-checks path — the per-attempt persistence order
+	// makes this state production-real: CriticPending == N with
+	// len(Attempts) == N means the pending attempt's bytes are recorded (its
+	// checks empty mid-checks, or complete but pre-finalize). Resume by
+	// re-running checks idempotently on the stored attempt bytes. A kill
+	// during the RENDER leaves len(Attempts) == pending-1, which fails this
+	// >= test and falls through to the sidecar attach below.
 	if job.CriticSpec != "" && job.CriticPending != nil {
 		pending := *job.CriticPending
 		if len(job.Attempts) >= pending && pending > 0 {
@@ -399,8 +415,10 @@ func (m *Manager) attach(id string) {
 	}
 }
 
-// resumeCriticChecks handles the kill-during-checks recovery path.
-// The pending attempt's image is already stored; re-run its checks
+// resumeCriticChecks handles the kill-during-checks recovery path —
+// production-reachable since criticLoop began persisting each attempt record
+// before its checks: the pending attempt's image is already stored (its checks
+// empty mid-checks, or complete but pre-finalize); re-run the checks
 // idempotently and finalize the chain (no further retries post-restart).
 func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int, ctx context.Context) {
 	// Unmarshal the checklist from CriticSpec.
@@ -516,10 +534,13 @@ func renderParamsKV(job storage.Job, inputs imageInputs) map[string]string {
 // saveRecovered stores the re-attached image and marks the job done, or fails
 // the job if the save itself fails.
 //
-// Phase D: when the job has CriticSpec and CriticPending set, the recovered
-// render completes the pending attempt — record it as a new attempt image
-// (not under the job id!), run its checks, and finalize via finishCritic
-// without further retries (the attach goroutine holds no re-render inputs).
+// Phase D: this is reached only when the pending attempt's bytes are NOT yet
+// recorded (a kill during the render itself, len(Attempts) == pending-1 — a
+// kill during checks never gets here, attach routes those to
+// resumeCriticChecks first). The recovered render completes the pending
+// attempt: record it as a new attempt image (not under the job id!), run its
+// checks, and finalize via finishCritic without further retries (the attach
+// goroutine holds no re-render inputs).
 func (m *Manager) saveRecovered(id string, png []byte, ctx context.Context) {
 	// The re-attached job's record holds the original request params; embed
 	// them alongside the recovered bytes (best-effort, A3).
@@ -1064,7 +1085,7 @@ func (m *Manager) run(id string) {
 	renderer := func(pctx context.Context, prompt string, sp storage.SamplingParams) ([]byte, *int64, error) {
 		return m.dispatch(pctx, id, job, inputs, prompt, spec, sp)
 	}
-	m.criticLoop(ctx, id, job, renderer, job.Prompt /* base */, cl, 1, nil)
+	m.criticLoop(ctx, id, job, renderer, job.Prompt /* base */, cl, 1, nil, inputs)
 }
 
 // dispatch runs the mode-specific op in a goroutine so per-step progress can
@@ -1581,9 +1602,19 @@ func (m *Manager) runChecks(ctx context.Context, cl critic.Checklist, png []byte
 	return critic.Run(ctx, cl, b64, prompt, m.opts.Critic)
 }
 
-// criticLoop implements the Phase D retry policy.
+// criticLoop implements the Phase D retry policy. Per attempt it persists in
+// two steps so a kill anywhere during the chain leaves recovery-usable state:
+// the attempt record lands BEFORE its checks run (with empty checks and
+// CriticPending retained at the attempt number), then the checks result
+// updates the same record (pending still retained). Pending is only cleared
+// at the terminal transitions (finishCritic / cancelAndFinish). A kill during
+// checks therefore persists len(Attempts) == CriticPending with the pending
+// attempt's checks empty — the production state attach's resumeCriticChecks
+// branch recovers from. inputs carries the request's runtime image inputs so
+// the attempt PNG's tEXt params embed the same conditioning provenance the
+// plain path does.
 func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
-	renderer attemptRenderer, base string, cl critic.Checklist, start int, recs []storage.CriticAttempt) {
+	renderer attemptRenderer, base string, cl critic.Checklist, start int, recs []storage.CriticAttempt, inputs imageInputs) {
 
 	onFail := cl.OnFail
 	if onFail == "" {
@@ -1627,23 +1658,36 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 			m.log(id, "seed=%d", *seed)
 		}
 		attID := newID()
-		kv := renderParamsKV(*job, imageInputs{})
+		kv := renderParamsKV(*job, inputs)
 		kv["critic_attempt"] = strconv.Itoa(attempt)
 		_, serr := m.opts.Store.SaveImage(attID, m.withRenderParams(png, kv))
 		if serr != nil {
 			m.cancelAndFinish(id, "failed", serr.Error())
 			return
 		}
+		// Persist the attempt record BEFORE running its checks, CriticPending
+		// retained at this attempt: a kill from here on leaves
+		// len(Attempts) == CriticPending on disk, and the stored image bytes
+		// are already recorded — a restart re-resumes checks on them instead
+		// of re-saving the sidecar's result under a new id (no orphaned
+		// pre-checks PNG, no post-early-persist plain recovery takeover).
+		rec := storage.CriticAttempt{Image: attID, Prompt: prompt, Seed: seed}
+		recs = append(recs, rec)
+		m.mu.Lock()
+		job.Attempts = recs
+		m.mu.Unlock()
+		m.persistJob(*job)
+
 		m.setStatus(id, "validating", "")
 		// Use the job's context so cancellation aborts the check call.
 		// The drift reference is this attempt's own prompt (base for
 		// attempt 1, mutated prompt for retries).
 		checks := m.runChecks(ctx, cl, png, prompt)
-		rec := storage.CriticAttempt{Image: attID, Prompt: prompt, Seed: seed, Checks: checks}
-		recs = append(recs, rec)
+		// Update the just-persisted record in place with the check results and
+		// persist again — CriticPending stays retained until the terminal.
+		recs[len(recs)-1].Checks = checks
 		m.mu.Lock()
 		job.Attempts = recs
-		job.CriticPending = nil
 		m.mu.Unlock()
 		m.persistJob(*job)
 		for _, c := range checks {
@@ -1661,6 +1705,17 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 			mutation = critic.MutatedPrompt(base, checks)
 			if mutation != base {
 				m.log(id, "retry candidate prompt: %q", mutation)
+			} else if seed != nil || job.Seed != nil {
+				// Identical-mutation early-finalize: attempt 2 would render the
+				// base prompt with the very seed this attempt used (the
+				// renderer-pinned or requested seed), so its bytes would be
+				// identical — finalize at the current attempts instead of
+				// spending the budget on them. Verdict = current best.
+				// (Only a seedless render re-rolls, so unseeded jobs still
+				// get their genuine second chance.)
+				m.log(id, "mutation equals base; the retry render would be byte-identical — finalizing after attempt %d", attempt)
+				m.finishCritic(id, job, recs, onFail)
+				return
 			}
 		}
 	}

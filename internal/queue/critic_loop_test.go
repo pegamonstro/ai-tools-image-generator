@@ -156,17 +156,9 @@ func makeFailingChecklist() critic.Checklist {
 }
 
 // makeZeroBudgetChecklist creates a checklist with budget 0 (evaluate only).
-func makeZeroBudgetChecklist(pass bool) critic.Checklist {
-	spec := "test criterion"
-	if pass {
-		return critic.Checklist{
-			Checks: []critic.Check{{Op: "vlm_check", Spec: spec}},
-			Budget: 0,
-			OnFail: "deliver",
-		}
-	}
+func makeZeroBudgetChecklist() critic.Checklist {
 	return critic.Checklist{
-		Checks: []critic.Check{{Op: "vlm_check", Spec: spec}},
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "test criterion"}},
 		Budget: 0,
 		OnFail: "deliver",
 	}
@@ -464,7 +456,7 @@ func TestCriticLoopFailThenMutateThenPass(t *testing.T) {
 }
 
 func TestCriticLoopBudgetZeroFailOnFailDeliver(t *testing.T) {
-	_ = makeZeroBudgetChecklist(false) // Budget=0, OnFail=deliver
+	_ = makeZeroBudgetChecklist() // Budget=0, OnFail=deliver
 
 	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
 
@@ -1507,6 +1499,82 @@ func TestCriticRestoreKillDuringRenderAttempt2(t *testing.T) {
 	}
 }
 
+// TestCriticRestoreNoGenIDMidChecksResumes verifies the restore carve-out:
+// a kill-during-checks job whose progress polls never surfaced a gen id
+// (flaky sidecar progress, or a render finishing inside the first poll
+// window) still resumes — the pending attempt's bytes are recorded, so the
+// sidecar result is irrelevant. Without the carve-out this state honest-fails
+// and discards recoverable work.
+func TestCriticRestoreNoGenIDMidChecksResumes(t *testing.T) {
+	dir := t.TempDir()
+	s, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attempt1ID := "3333333333333333"
+	if _, err := s.SaveImage(attempt1ID, tinyPNG()); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := critic.Checklist{
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+		Budget: 2,
+		OnFail: "deliver",
+	}
+	clBytes, _ := json.Marshal(cl)
+
+	// The production mid-checks shape with NO GenID: pending retained at 1,
+	// one recorded attempt whose checks are still empty.
+	job := storage.Job{
+		ID:            "restore-nogen-midchecks",
+		Genre:         "landscape",
+		Mode:          "generate",
+		Prompt:        "A landscape: a valley.",
+		Size:          "512x512",
+		Seed:          int64Ptr(42),
+		Status:        "generating",
+		CreatedAt:     time.Now().Add(-time.Minute),
+		CriticSpec:    string(clBytes),
+		CriticPending: intPtr(1),
+		// CriticNextPrompt: the base prompt for attempt 1.
+		CriticNextPrompt: "A landscape: a valley.",
+		Attempts: []storage.CriticAttempt{
+			{Image: attempt1ID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42)},
+		},
+	}
+	if err := s.AppendHistory(job); err != nil {
+		t.Fatal(err)
+	}
+
+	resultCalled := false
+	opts := testOptsAt(t, dir)
+	opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+		resultCalled = true
+		return nil, lattice.ErrResultNotFound
+	}
+	opts.Critic = criticEnvForTest(true)
+
+	m := New(opts)
+	j := waitForCriticDone(t, m, "restore-nogen-midchecks")
+
+	if resultCalled {
+		t.Fatal("Result must NOT be called — the stored bytes need no sidecar contact")
+	}
+	if j.Status != "done" {
+		t.Fatalf("status = %q %q, want done (recorded bytes must resume, not honest-fail)", j.Status, j.Error)
+	}
+	if j.Critic == nil || j.Critic.Verdict != "pass" {
+		t.Fatalf("verdict = %+v, want pass (re-run passed)", j.Critic)
+	}
+	if j.Critic.Attempts != 1 || len(j.Attempts) != 1 || j.Attempts[0].Image != attempt1ID {
+		t.Fatalf("attempts = %+v, want the same recorded attempt resumed", j.Attempts)
+	}
+	if j.CriticPending != nil || j.CriticNextPrompt != "" {
+		t.Fatalf("pending fields not cleared on terminal: %v / %q", j.CriticPending, j.CriticNextPrompt)
+	}
+}
+
 // TestCriticRestoreNoGenIDHonestFail verifies that a job killed mid-chain
 // with NO GenID (never learned sidecar gen id) fails honestly with the
 // unchanged restart message.
@@ -1827,6 +1895,323 @@ func TestCancelAndFinishClearsCriticPending(t *testing.T) {
 	}
 	if j.CriticNextPrompt != "" {
 		t.Fatal("CriticNextPrompt must be cleared on cancelled terminal")
+	}
+}
+
+// TestCriticRestoreKillDuringChecksSubmitDriven is the submit-driven variant
+// of the hand-built restore tests. A controllable judge hangs on attempt 2's
+// checks; the test first asserts the persisted production state the
+// persist-before-checks order leaves behind (CriticPending retained at 2,
+// len(Attempts) == 2 with attempt 2's checks still empty), then builds a
+// second Manager over the same store — a real restart. attach must route to
+// resumeCriticChecks: checks re-run idempotently on the stored attempt bytes,
+// recs publish, the chain finalizes, and neither the sidecar (Result) nor the
+// renderer is used again.
+func TestCriticRestoreKillDuringChecksSubmitDriven(t *testing.T) {
+	dir := t.TempDir()
+	s1, err := storage.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var calls []fakeRenderCall // manager-1 render calls
+	judgeCalls := 0
+	attempt2ChecksEntered := make(chan struct{})
+
+	opts1 := Options{
+		Genres: testCatalog(),
+		Store:  s1,
+		Ops: ImageOps{
+			// Slow enough for the 500ms progress ticker to surface the gen id
+			// and persist it, so the restart takes the attach route rather
+			// than the honest-fail one.
+			Generate: func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+				time.Sleep(600 * time.Millisecond)
+				mu.Lock()
+				calls = append(calls, fakeRenderCall{Prompt: prompt, Seed: sp.Seed})
+				mu.Unlock()
+				seed := int64(42)
+				return tinyPNG(), &seed, nil
+			},
+			Progress: func(ctx context.Context, mode, sidecar string) (step, total int, genID string, err error) {
+				return 5, 10, "gen-kill-sim", nil
+			},
+		},
+		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+		Critic: critic.Env{
+			Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+				mu.Lock()
+				judgeCalls++
+				n := judgeCalls
+				mu.Unlock()
+				if n == 1 {
+					// Attempt 1 fails WITH a fix so attempt 2 exists — an
+					// empty fix would trip the identical-mutation finalize.
+					return []critic.VLMScore{{ID: 0, Pass: false, Reason: "no cat", Fix: "add cat"}}, nil
+				}
+				// Attempt 2: hang in the checks — the process-kill moment.
+				close(attempt2ChecksEntered)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+			},
+			Vocab: func(ctx context.Context) ([]string, error) {
+				return []string{"1girl", "cat"}, nil
+			},
+		},
+	}
+	m1 := New(opts1)
+
+	jid, err := m1.Submit(SubmitRequest{
+		Genre:  "landscape",
+		Fields: map[string]string{"setting": "a valley"},
+		Size:   "512x512",
+		Seed:   int64Ptr(42),
+		Validate: &critic.ValidateSpec{
+			Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"must have cat"`)}},
+			Budget: intPtr(2),
+			OnFail: "deliver",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the production kill-during-checks persisted state: the
+	// attempt-2 record is already on disk with EMPTY checks and CriticPending
+	// retained at 2 — persist-before-checks is what makes this state real.
+	var att2ID string
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var found bool
+		if hist, herr := s1.LoadHistory(); herr == nil {
+			for _, j := range hist {
+				if j.ID != jid {
+					continue
+				}
+				if j.GenID != "" && j.CriticPending != nil && *j.CriticPending == 2 &&
+					len(j.Attempts) == 2 && j.Attempts[1].Image != "" && len(j.Attempts[1].Checks) == 0 {
+					att2ID = j.Attempts[1].Image
+					found = true
+				}
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the mid-checks persisted state (pending=2, attempts=2, empty checks) never landed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	<-attempt2ChecksEntered // sanity: the hang really is in the checks
+
+	// "Restart": a second Manager over the same data dir.
+	resultCalled, renderedAgain := false, false
+	m2JudgeCalls := 0
+	opts2 := Options{
+		Genres: testCatalog(),
+		Store:  func() *storage.Store { s, _ := storage.New(dir); return s }(),
+		Ops: ImageOps{
+			Generate: func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+				mu.Lock()
+				renderedAgain = true
+				mu.Unlock()
+				return nil, nil, errors.New("no render after restart")
+			},
+			Result: func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+				mu.Lock()
+				resultCalled = true
+				mu.Unlock()
+				return nil, lattice.ErrResultNotFound
+			},
+		},
+		Chat: func(ctx context.Context, msgs []prompting.Message) (string, error) { return "enhanced", nil },
+		Critic: critic.Env{
+			Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+				mu.Lock()
+				m2JudgeCalls++
+				mu.Unlock()
+				return []critic.VLMScore{{ID: 0, Pass: false, Reason: "no cat", Fix: "add cat"}}, nil
+			},
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+			},
+			Vocab: func(ctx context.Context) ([]string, error) {
+				return []string{"1girl", "cat"}, nil
+			},
+		},
+	}
+	m2 := New(opts2)
+	j := waitForCriticDone(t, m2, jid)
+
+	// The recovery resumed the checks — exactly one idempotent re-run on the
+	// stored bytes, no sidecar result fetch, no re-render.
+	mu.Lock()
+	res, rg := resultCalled, renderedAgain
+	mu.Unlock()
+	if res {
+		t.Fatal("sidecar Result must not be reached on the kill-during-checks recovery path")
+	}
+	if rg {
+		t.Fatal("no render may happen after the restart")
+	}
+	mu.Lock()
+	reruns := m2JudgeCalls
+	mu.Unlock()
+	if reruns != 1 {
+		t.Fatalf("re-run check calls = %d, want 1 (idempotent single resume)", reruns)
+	}
+
+	// Both attempts survive the restart; attempt 2 is the SAME stored image
+	// (no re-save under a new id — the orphaned-PNG window is closed).
+	if j.Status != "done" {
+		t.Fatalf("status = %q %q, want done", j.Status, j.Error)
+	}
+	if j.Critic == nil {
+		t.Fatal("Critic summary missing")
+	}
+	if j.Critic.Verdict != "best_of_n" {
+		t.Fatalf("verdict = %q, want best_of_n (both attempts fail)", j.Critic.Verdict)
+	}
+	if j.Critic.Attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (no further retries post-restart)", j.Critic.Attempts)
+	}
+	if len(j.Attempts) != 2 {
+		t.Fatalf("attempts records = %d, want 2", len(j.Attempts))
+	}
+	if j.Attempts[1].Image != att2ID {
+		t.Fatalf("attempt 2 image = %q, want the pre-restart stored id %q", j.Attempts[1].Image, att2ID)
+	}
+	if len(j.Attempts[1].Checks) != 1 || j.Attempts[1].Checks[0].Status != "fail" {
+		t.Fatalf("attempt 2 re-run checks = %+v, want one fail", j.Attempts[1].Checks)
+	}
+	if j.Attempts[1].Prompt != "A landscape: a valley., add cat" {
+		t.Fatalf("attempt 2 prompt = %q, want the recorded mutation", j.Attempts[1].Prompt)
+	}
+	if j.Attempts[0].Prompt != "A landscape: a valley." {
+		t.Fatalf("attempt 1 prompt = %q, want the base prompt", j.Attempts[0].Prompt)
+	}
+	if j.Attempts[0].Seed == nil || *j.Attempts[0].Seed != 42 || j.Attempts[1].Seed == nil || *j.Attempts[1].Seed != 42 {
+		t.Fatalf("attempt seeds = %v / %v, want 42 / 42", j.Attempts[0].Seed, j.Attempts[1].Seed)
+	}
+	// Attempt 1's stored checks came through the history untouched.
+	if len(j.Attempts[0].Checks) != 1 || j.Attempts[0].Checks[0].Suggestion != "add cat" {
+		t.Fatalf("attempt 1 checks = %+v, want the pre-restart fail with fix", j.Attempts[0].Checks)
+	}
+	// Terminal clears the pending marker.
+	if j.CriticPending != nil || j.CriticNextPrompt != "" {
+		t.Fatalf("pending fields not cleared on terminal: %v / %q", j.CriticPending, j.CriticNextPrompt)
+	}
+
+	// Drain manager 1: the cancel unblocks its hung judge via ctx.Done.
+	if err := m1.Cancel(jid); err != nil {
+		t.Fatalf("draining manager 1: %v", err)
+	}
+	waitFor(t, m1, jid, "cancelled")
+}
+
+// TestCriticLoopIdenticalMutationFinalizesOnOneRender covers the
+// identical-mutation early-finalize: an attempt-1 fail whose only feedback
+// leaves the prompt unchanged (EMPTY fix suggestion here, and no tag_roundtrip
+// to drift — and a pinned seed makes the retry byte-identical) finalizes the
+// chain at the current attempts instead of spending the budget on a second
+// identical render. Verdict = current best (best_of_n), exactly 1 render.
+func TestCriticLoopIdenticalMutationFinalizesOnOneRender(t *testing.T) {
+	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
+
+	m, getCalls := makeTestJob(t, script)
+	m.opts.Critic = critic.Env{
+		Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+			return []critic.VLMScore{{ID: 0, Pass: false, Reason: "composition off-brief", Fix: ""}}, nil
+		},
+		Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+		},
+		Vocab: func(ctx context.Context) ([]string, error) {
+			return []string{"1girl", "cat"}, nil
+		},
+	}
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:  "landscape",
+		Fields: map[string]string{"setting": "a valley"},
+		Size:   "512x512",
+		Seed:   int64Ptr(42),
+		Validate: &critic.ValidateSpec{
+			Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"must have cat"`)}},
+			Budget: intPtr(2), // budget available, but no mutated prompt to spend it on
+			OnFail: "deliver",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	j := waitForCriticDone(t, m, id)
+	if j.Status != "done" {
+		t.Fatalf("status = %q %q, want done", j.Status, j.Error)
+	}
+	if j.Critic == nil {
+		t.Fatal("Critic summary missing")
+	}
+	if j.Critic.Verdict != "best_of_n" {
+		t.Fatalf("verdict = %q, want best_of_n (fail with no new bytes to test)", j.Critic.Verdict)
+	}
+	if j.Critic.Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (identical mutation must not re-render)", j.Critic.Attempts)
+	}
+	if len(getCalls()) != 1 {
+		t.Fatalf("renderer called %d times, want 1", len(getCalls()))
+	}
+}
+
+// TestCriticLoopAttemptTexCarriesConditioning asserts the validated attempt
+// PNG embeds the same render params as the plain path — the control /
+// ip_adapter provenance keys included — with critic_attempt layered on top
+// (F5: attempt tEXt regained input provenance).
+func TestCriticLoopAttemptTexCarriesConditioning(t *testing.T) {
+	script := []fakeRenderResult{{PNG: tinyPNG(), Seed: int64Ptr(42)}}
+
+	m, _ := makeTestJob(t, script)
+	m.opts.Critic = criticEnvForTest(true)
+	m.opts.Models = sdxlCatalog()
+
+	id, err := m.Submit(SubmitRequest{
+		Genre:     "landscape",
+		Fields:    map[string]string{"setting": "a valley"},
+		Size:      "512x512",
+		Model:     "pony",
+		Seed:      int64Ptr(42),
+		Control:   &storage.ControlParams{Net: "pose", Image: "b64ref"},
+		IPAdapter: &storage.IPAdapterParams{Image: "b64ref2"},
+		Validate:  &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"test criterion"`)}}, Budget: intPtr(0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	j := waitForCriticDone(t, m, id)
+	if j.Status != "done" {
+		t.Fatalf("status = %q %q, want done", j.Status, j.Error)
+	}
+	chosenID := strings.TrimSuffix(strings.TrimPrefix(j.ImagePath, "images/"), ".png")
+	data, err := m.opts.Store.ReadImage(chosenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := compose.ScanTextChunks(data)
+	if err != nil {
+		t.Fatalf("scan chunks: %v", err)
+	}
+	if chunks["control"] != "pose/0.70" || chunks["ip_adapter"] != "0.60" {
+		t.Fatalf("conditioning tEXt = %q / %q, want pose/0.70 / 0.60", chunks["control"], chunks["ip_adapter"])
+	}
+	if chunks["critic_attempt"] != "1" {
+		t.Fatalf("critic_attempt = %q, want 1 (1-based)", chunks["critic_attempt"])
 	}
 }
 

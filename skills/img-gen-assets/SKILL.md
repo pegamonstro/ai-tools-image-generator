@@ -67,6 +67,10 @@ element families, sprite groups.
 assets in one set, each with its own prompt, `palette_lock: true`. Delivery
 is Kenney-style separate sprites; no special kind.
 
+## Per-asset validation
+
+Each asset in a set can carry its own `"validate"` field (a `ValidateSpec` with `checks`, `budget`, `on_fail`, `palette`). The checklist compiles once at submit and runs on every child render. Pair `palette_conform` with `palette_lock` on the set: the C3 set palette is computed POST-compose, so per-child targets must be explicit in `validate.palette`. `pixel_fix` makes containment exact by quantizing before the rembg step.
+
 ## NPC sheets
 
 Two shapes, both with every child seeded at the SET seed (pinned — the

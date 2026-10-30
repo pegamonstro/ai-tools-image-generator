@@ -196,6 +196,8 @@ components:
           $ref: "#/components/schemas/ControlParams"
         ip_adapter:
           $ref: "#/components/schemas/IPAdapterParams"
+        validate:
+          $ref: "#/components/schemas/ValidateSpec"
     Job:
       type: object
       required: [id, genre, prompt, fields, size, enhance, status, created_at]
@@ -398,6 +400,8 @@ components:
             color:
               type: string
               description: '#rgb / #rrggbb, or empty / auto for the darkest palette color.'
+        validate:
+          $ref: "#/components/schemas/ValidateSpec"
     RepairRequest:
       type: object
       required: [image]
@@ -442,6 +446,30 @@ components:
           minimum: 0
           maximum: 3
           description: Evaluation budget (0 = evaluate-only, 1..3 = mutate-then-resample attempts). Omitted = default 2.
+    ValidateSpec:
+      type: object
+      properties:
+        checks:
+          type: array
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/CriticCheckSpec"
+          description: Checklist entries (1-8). Each entry specifies an op and optional arg.
+        palette:
+          type: array
+          items:
+            type: string
+            pattern: '^#[0-9a-fA-F]{6}$'
+          description: Target palette for palette_conform (hex colors, e.g. ["#ff0000", "#00ff00"]). Required when checks include palette_conform.
+        budget:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: Evaluation budget (0 = evaluate-only, 1..3 = mutate-then-resample attempts). Omitted = default 2.
+        on_fail:
+          type: string
+          enum: [deliver, fail]
+          description: "deliver" (default) = best-of-N even with fails; "fail" = job fails if chosen attempt has failing checks.
     CriticCheckSpec:
       type: object
       required: [op]
@@ -507,6 +535,8 @@ components:
         model:
           type: string
           description: Catalog key or raw value; fills from_spec frames whose request omits a model
+        validate:
+          $ref: "#/components/schemas/ValidateSpec"
         source: { $ref: "#/components/schemas/GifSource" }
     GifSource:
       type: object

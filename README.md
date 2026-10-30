@@ -360,6 +360,65 @@ Phase C adds pixel post-processing, all in Go inside the compose pipeline:
 
 Default behavior without these fields is unchanged.
 
+## Validation (Phase D)
+
+img-gen can evaluate images against a critic checklist at submit time (mutate-then-resample retries) or via the standalone sync endpoint `POST /api/v1/validate`.
+
+### The `validate` field
+
+Attach a `validate` object to job submits (`POST /api/v1/jobs`), asset sets (`POST /api/v1/asset-sets` — per-asset or top-level), and GIFs (`POST /api/v1/gifs`):
+
+```json
+{
+  "checks": [{"op": "vlm_check", "arg": "\"a cat\""}, {"op": "tag_roundtrip"}],
+  "budget": 2,
+  "on_fail": "deliver",
+  "palette": ["#ff0000", "#00ff00"]
+}
+```
+
+- `checks` (1–8): `vlm_check` (arg = JSON string criterion), `tag_roundtrip`, `palette_conform`, `tile_conform` (optional arg `{"max_ratio": 1.0..2.0}`).
+- `budget` (int 0–3, default 2): 0 = evaluate-only; 1–3 = mutate-then-resample retries (attempt 1 base prompt+seed; 2 mutated prompt+same seed; N≥3 mutated prompt+seed+(N−2)).
+- `on_fail`: `"deliver"` (default, best-of-N) or `"fail"` (job fails if chosen attempt has failing checks).
+- `palette`: target hex colors for `palette_conform` (required when that op is used).
+
+### Standalone endpoint
+
+`POST /api/v1/validate` — synchronous, up to 1024×1024. Body: `{image, checks, palette?, budget?}`. Returns `{verdict, checks[]}`. No retries; budget defaults to 0.
+
+### Verdict taxonomy
+
+| verdict | meaning |
+|---|---|
+| `pass` | chosen attempt has 0 fails, ≥1 relevant check |
+| `best_of_n` | chosen attempt has fails, `on_fail: "deliver"` |
+| `failed` | `on_fail: "fail"` AND chosen attempt has fails |
+| `indeterminate` | all checks inert (`undetermined`/`error`) — never fail-open, never budget-consuming |
+
+Per-check `status`: `pass`, `fail`, `undetermined`, `error`.
+
+### Environment variables
+
+| variable | default | purpose |
+|---|---|---|
+| `CRITIC_MODEL` | `huihui_ai/qwen2.5-vl-abliterated:latest` | VLM judge model tag (passed through lattice chat) |
+| `CRITIC_TIMEOUT_S` | `120` | per-check deadline (queue-side + sync endpoint) |
+| `TAGGER_URL` | (unset) | WD14 tagger sidecar for `tag_roundtrip` (e.g. `http://127.0.0.1:8904`) |
+| `TAGGER_TIMEOUT_S` | `60` | per tagger/vocab call deadline |
+
+### Prerequisites
+
+- Deployed lattice gateway with image-content translation (chat route for VLM judge).
+- WD14 tagger sidecar on port 8904 (`TAGGER_URL`) for `tag_roundtrip`.
+
+### Latency note
+
+Under `OLLAMA_KEEP_ALIVE=1m`, the first validate call after idle incurs ~20–40s cold-start latency while the judge model loads. Subsequent calls within the keep-alive window are fast.
+
+### Post-restart limitation
+
+After a service restart, recovered jobs re-run checks on the stored attempt idempotently and **finalize without further retries** — the documented limitation: post-restart no further retries.
+
 MCP tools: `request_asset_set`, `make_gif`, `read_export`.
 
 Install the packaged agent skills:

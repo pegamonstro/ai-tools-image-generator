@@ -244,4 +244,12 @@ func TestValidateOpenAPISync(t *testing.T) {
 	if !strings.Contains(s, "ValidateResponse") {
 		t.Fatal("openapi.yaml missing ValidateResponse component")
 	}
+	if !strings.Contains(s, "ValidateSpec") {
+		t.Fatal("openapi.yaml missing ValidateSpec component")
+	}
+	// Verify validate field is on the request schemas that accept it.
+	if !strings.Contains(s, "validate:\n          $ref: \"#/components/schemas/ValidateSpec\"") &&
+		!strings.Contains(s, "validate:\n            $ref: \"#/components/schemas/ValidateSpec\"") {
+		t.Fatal("openapi.yaml missing validate field on SubmitRequest/AssetSpecIn/GifRequest")
+	}
 }

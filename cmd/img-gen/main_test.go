@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -663,5 +665,112 @@ func TestLegacyDeleteJob(t *testing.T) {
 	defer del2.Body.Close()
 	if del2.StatusCode != http.StatusNotFound {
 		t.Fatalf("repeat delete = %d", del2.StatusCode)
+	}
+}
+
+// TestLoadConfigCriticEnvs pins the env-derived critic config: CRITIC_MODEL
+// defaults to the full judge model tag (control-plane values pass through
+// verbatim), CRITIC_TIMEOUT_S to 120, TAGGER_URL to empty (the tag ops then
+// fail submission honestly) and TAGGER_TIMEOUT_S to 60.
+func TestLoadConfigCriticEnvs(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		t.Setenv("CRITIC_MODEL", "")
+		t.Setenv("CRITIC_TIMEOUT_S", "")
+		t.Setenv("TAGGER_URL", "")
+		t.Setenv("TAGGER_TIMEOUT_S", "")
+		cfg := loadConfig()
+		if cfg.CriticModel != "huihui_ai/qwen2.5-vl-abliterated:latest" {
+			t.Fatalf("CriticModel = %q", cfg.CriticModel)
+		}
+		if cfg.CriticTimeout != 120*time.Second {
+			t.Fatalf("CriticTimeout = %s", cfg.CriticTimeout)
+		}
+		if cfg.TaggerURL != "" {
+			t.Fatalf("TaggerURL = %q", cfg.TaggerURL)
+		}
+		if cfg.TaggerTimeout != 60*time.Second {
+			t.Fatalf("TaggerTimeout = %s", cfg.TaggerTimeout)
+		}
+	})
+
+	t.Run("overrides", func(t *testing.T) {
+		t.Setenv("CRITIC_MODEL", "huihui_ai/qwen3-vl-abliterated:latest")
+		t.Setenv("CRITIC_TIMEOUT_S", "45")
+		t.Setenv("TAGGER_URL", "http://127.0.0.1:8904")
+		t.Setenv("TAGGER_TIMEOUT_S", "30")
+		cfg := loadConfig()
+		if cfg.CriticModel != "huihui_ai/qwen3-vl-abliterated:latest" {
+			t.Fatalf("CriticModel = %q", cfg.CriticModel)
+		}
+		if cfg.CriticTimeout != 45*time.Second {
+			t.Fatalf("CriticTimeout = %s", cfg.CriticTimeout)
+		}
+		if cfg.TaggerURL != "http://127.0.0.1:8904" {
+			t.Fatalf("TaggerURL = %q", cfg.TaggerURL)
+		}
+		if cfg.TaggerTimeout != 30*time.Second {
+			t.Fatalf("TaggerTimeout = %s", cfg.TaggerTimeout)
+		}
+	})
+
+	t.Run("zero parses fall back to the default", func(t *testing.T) {
+		// 0 would mean an already-expired deadline for the sync validate
+		// call and instant tagger timeouts — non-positive parses are errors,
+		// so they fall back rather than break the servers they set.
+		t.Setenv("CRITIC_TIMEOUT_S", "0")
+		t.Setenv("TAGGER_TIMEOUT_S", "-4")
+		cfg := loadConfig()
+		if cfg.CriticTimeout != 120*time.Second || cfg.TaggerTimeout != 60*time.Second {
+			t.Fatalf("timeouts = %s, %s; want the 120s/60s defaults", cfg.CriticTimeout, cfg.TaggerTimeout)
+		}
+	})
+}
+
+// TestV1ValidateCriticWiring proves the config-built critic env reaches the
+// v1 sync endpoint: with production-default config (no tagger configured) a
+// deterministic tile check still evaluates and passes. Before the critic env
+// was wired the endpoint ran on a nil-leg env — pre-C2 that panicked.
+func TestV1ValidateCriticWiring(t *testing.T) {
+	h := newTestHandler(t)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4)) // uniform pixels -> tile pass
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{
+		"image":  base64.StdEncoding.EncodeToString(buf.Bytes()),
+		"checks": []map[string]any{{"op": "tile_conform"}},
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/v1/validate", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Verdict string `json:"verdict"`
+		Checks  []struct {
+			Op     string `json:"op"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Verdict != "pass" {
+		t.Fatalf("verdict = %q (%+v) — critic env not wired through to the sync endpoint", out.Verdict, out.Checks)
+	}
+	if len(out.Checks) != 1 || out.Checks[0].Op != "tile_conform" || out.Checks[0].Status != "pass" {
+		t.Fatalf("checks = %+v", out.Checks)
 	}
 }

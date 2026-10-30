@@ -98,7 +98,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		if judgeCalls != 1 {
 			t.Fatalf("Judge called %d times, want 1 (batched)", judgeCalls)
@@ -153,7 +153,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		if judgeCalls != 1 {
 			t.Fatalf("Judge called %d times, want 1", judgeCalls)
@@ -186,7 +186,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		// First criterion gets the score (idx 0 exists), second gets "judge omitted criterion"
 		if rs[0].Status != "pass" {
@@ -214,7 +214,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		if rs[0].Status != "fail" || rs[0].Reason != "no cat visible" || rs[0].Suggestion != "add cat to prompt" {
 			t.Errorf("check 0 (fail): got %+v", rs[0])
@@ -238,7 +238,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		// tag_roundtrip should be error (inert)
 		if rs[2].Op != "tag_roundtrip" || rs[2].Status != "error" || !strings.Contains(rs[2].Reason, "vocab fetch failed") {
@@ -260,7 +260,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		if rs[2].Status != "error" || !strings.Contains(rs[2].Reason, "tagger sidecar down") {
 			t.Errorf("check 2 (tagger error): got %+v", rs[2])
@@ -284,16 +284,15 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		// Checklist with prompt tags that include missing red_gloves
 		clWithPrompt := Checklist{
 			Checks: []Check{
 				{Op: "vlm_check", Spec: "ok"},
 				{Op: "tag_roundtrip"},
 			},
-			Prompt: "1girl, red gloves, long hair",
 		}
 
-		rs := Run(ctx, clWithPrompt, base64RedImage(), e)
+		// The drift reference is Run's prompt parameter
+		rs := Run(ctx, clWithPrompt, base64RedImage(), "1girl, red gloves, long hair", e)
 
 		// tag_roundtrip should fail with strengthen suggestion
 		if len(rs) < 2 {
@@ -329,10 +328,10 @@ func TestRun(t *testing.T) {
 				{Op: "vlm_check", Spec: "ok"},
 				{Op: "tag_roundtrip"},
 			},
-			Prompt: "1girl, red gloves", // prompt has tags but vocab is empty
 		}
 
-		rs := Run(ctx, clEmptyVocab, base64RedImage(), e)
+		// The prompt has tags but vocab is empty
+		rs := Run(ctx, clEmptyVocab, base64RedImage(), "1girl, red gloves", e)
 
 		if len(rs) < 2 {
 			t.Fatalf("got %d results, want 2", len(rs))
@@ -359,16 +358,15 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		// Prompt uses tags NOT in vocab
+		// Prompt uses tokens NOT in vocab
 		clUnknownTokens := Checklist{
 			Checks: []Check{
 				{Op: "vlm_check", Spec: "ok"},
 				{Op: "tag_roundtrip"},
 			},
-			Prompt: "unknown_tag, another_unknown",
 		}
 
-		rs := Run(ctx, clUnknownTokens, base64RedImage(), e)
+		rs := Run(ctx, clUnknownTokens, base64RedImage(), "unknown_tag, another_unknown", e)
 
 		if len(rs) < 2 {
 			t.Fatalf("got %d results, want 2", len(rs))
@@ -399,7 +397,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, clNoTarget, base64RedImage(), e)
+		rs := Run(ctx, clNoTarget, base64RedImage(), "", e)
 
 		if rs[0].Op != "palette_conform" || rs[0].Status != "error" || rs[0].Reason != "no target palette" {
 			t.Errorf("palette no target: got %+v", rs[0])
@@ -424,7 +422,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		if rs[0].Status != "pass" {
 			t.Errorf("palette pass: got %+v", rs[0])
@@ -449,7 +447,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		if rs[0].Status != "fail" || rs[0].Suggestion != "palette drift" {
 			t.Errorf("palette fail: got %+v", rs[0])
@@ -473,7 +471,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, base64RedImage(), e)
+		rs := Run(ctx, cl, base64RedImage(), "", e)
 
 		if rs[0].Status != "pass" {
 			t.Errorf("tile pass: got %+v", rs[0])
@@ -518,7 +516,7 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, badTileB64, e)
+		rs := Run(ctx, cl, badTileB64, "", e)
 
 		if rs[0].Status != "fail" {
 			t.Errorf("tile fail: got %+v", rs[0])
@@ -549,10 +547,119 @@ func TestRun(t *testing.T) {
 			},
 		}
 
-		rs := Run(ctx, cl, "not-a-valid-base64", e)
+		rs := Run(ctx, cl, "not-a-valid-base64", "", e)
 
 		if rs[0].Status != "error" || !strings.Contains(rs[0].Reason, "decode") {
 			t.Errorf("image decode error: got %+v", rs[0])
+		}
+	})
+
+	// --- C1: the prompt parameter is the tag op's drift reference ---
+	t.Run("TagPromptParamDrivesDrift", func(t *testing.T) {
+		// Same checklist and image; only the Run prompt differs. The present
+		// tag "1girl" marks the empty-prompt run vacuous-pass and the
+		// drifting-prompt run a fail — proving the parameter (not any
+		// checklist state) carries the drift reference.
+		e := Env{
+			Judge: func(ctx context.Context, criteria []string, imageB64 string) ([]VLMScore, error) {
+				return []VLMScore{{ID: 0, Pass: true, Reason: "ok"}}, nil
+			},
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+			},
+			Vocab: func(ctx context.Context) ([]string, error) {
+				return []string{"1girl", "drift_tag"}, nil
+			},
+		}
+		cl := Checklist{Checks: []Check{{Op: "tag_roundtrip"}}}
+
+		clean := Run(ctx, cl, base64RedImage(), "1girl", e)
+		if clean[0].Status != "pass" {
+			t.Errorf("clean prompt: got %+v", clean[0])
+		}
+		drift := Run(ctx, cl, base64RedImage(), "1girl, drift_tag", e)
+		if drift[0].Status != "fail" {
+			t.Errorf("drifting prompt: got %+v", drift[0])
+		}
+		if drift[0].Suggestion != "strengthen: drift_tag" {
+			t.Errorf("drift suggestion: got %q", drift[0].Suggestion)
+		}
+	})
+}
+
+// TestRunNilEnvDefense pins C2: an unwired Env yields inert error/undetermined
+// statuses, never a panic. vlm_check carries the named-critic error, the tag
+// op errors on its own missing legs, and the deterministic palette/tile ops
+// still evaluate against the image.
+func TestRunNilEnvDefense(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("nil judge -> vlm_check error, not panic", func(t *testing.T) {
+		e := Env{} // no judge wired
+		cl := Checklist{Checks: []Check{
+			{Op: "vlm_check", Spec: "subject present"},
+			{Op: "vlm_check", Spec: "background white"},
+		}}
+		rs := Run(ctx, cl, base64RedImage(), "a cat", e)
+		if len(rs) != 2 {
+			t.Fatalf("got %d results, want 2", len(rs))
+		}
+		for i, r := range rs {
+			if r.Op != "vlm_check" || r.Status != "error" {
+				t.Fatalf("check %d: got %+v", i, r)
+			}
+			if r.Reason != "critic judge not configured" {
+				t.Errorf("check %d reason: got %q", i, r.Reason)
+			}
+		}
+	})
+
+	t.Run("nil tagger and vocab -> tag op error, not panic", func(t *testing.T) {
+		e := Env{} // fully unwired
+		cl := Checklist{Checks: []Check{{Op: "tag_roundtrip"}}}
+		rs := Run(ctx, cl, base64RedImage(), "1girl", e)
+		if len(rs) != 1 {
+			t.Fatalf("got %d results, want 1", len(rs))
+		}
+		if rs[0].Op != "tag_roundtrip" || rs[0].Status != "error" {
+			t.Fatalf("tag op with nil legs: got %+v", rs[0])
+		}
+		if rs[0].Reason == "" || !strings.Contains(rs[0].Reason, "not configured") {
+			t.Errorf("tag op reason: got %q", rs[0].Reason)
+		}
+	})
+
+	t.Run("tagger wired, vocab nil -> tag op error, not panic", func(t *testing.T) {
+		e := Env{
+			Tagger: func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+				return []lattice.TagScore{{Name: "1girl", Score: 0.9}}, nil
+			},
+		}
+		cl := Checklist{Checks: []Check{{Op: "tag_roundtrip"}}}
+		rs := Run(ctx, cl, base64RedImage(), "1girl", e)
+		if len(rs) != 1 || rs[0].Status != "error" || !strings.Contains(rs[0].Reason, "not configured") {
+			t.Fatalf("tag op with nil vocab: got %+v", rs)
+		}
+	})
+
+	t.Run("deterministic ops still evaluate with nil legs", func(t *testing.T) {
+		e := Env{} // fully unwired
+		cl := Checklist{Checks: []Check{
+			{Op: "palette_conform"},
+			{Op: "tile_conform"},
+		}, Target: []string{"#ff0000"}}
+		rs := Run(ctx, cl, base64RedImage(), "", e)
+		if len(rs) != 2 {
+			t.Fatalf("got %d results, want 2", len(rs))
+		}
+		if rs[0].Op == "palette_conform" && rs[0].Status != "pass" {
+			t.Errorf("palette with nil legs: got %+v", rs[0])
+		}
+		if rs[1].Op == "tile_conform" && rs[1].Status != "pass" {
+			t.Errorf("tile with nil legs: got %+v", rs[1])
+		}
+		if a := Aggregate(rs); a != "pass" {
+			t.Errorf("aggregate of deterministic-only passes = %q, want pass", a)
 		}
 	})
 }

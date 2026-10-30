@@ -509,7 +509,10 @@ func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), d.criticTimeout)
 	defer cancel()
-	checks := critic.Run(ctx, cl, req.Image, d.critic)
+	// The sync request carries image + checks but no render prompt — the
+	// standalone call passes "" and tag_roundtrip verifies nothing (the
+	// empty-prompt convention); job-side checks plumb each attempt's prompt.
+	checks := critic.Run(ctx, cl, req.Image, "", d.critic)
 	writeJSON(w, map[string]any{
 		"verdict": critic.Aggregate(checks),
 		"checks":  checks,

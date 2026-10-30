@@ -8,6 +8,10 @@ set -euo pipefail
 #
 #   IMAGE_URL=http://<m6-sidecar>:8899 ./deploy/install-macos.sh
 #
+# Phase D validation envs: TAGGER_URL (WD14 sidecar for tag checks) and
+# CRITIC_MODEL (judge model tag for vlm_check criteria) — see the per-config
+# comments beside them below.
+#
 # Re-run this script after rebuilding bin/img-gen to pick up a new binary
 # (the plist points at the path, so a fresh build is picked up on restart).
 
@@ -36,6 +40,15 @@ RIFE_URL="${RIFE_URL:-}"
 # Optional: the rembg sidecar for background removal (u2netp alpha path).
 #   REMBG_URL=http://<rembg-sidecar>:<port> ./deploy/install-macos.sh
 REMBG_URL="${REMBG_URL:-}"
+# Optional: the WD14 tagger sidecar for the validate checklist's tag checks.
+# Left empty (the default) when no tagger is configured — tag_roundtrip jobs
+# then fail validation instead of silently running:
+#   TAGGER_URL=http://<tagger-sidecar>:<port> ./deploy/install-macos.sh
+TAGGER_URL="${TAGGER_URL:-}"
+# Optional: the full VLM judge model tag answering the validate checklist's
+# vlm_check criteria — a control-plane value, passed through verbatim:
+#   CRITIC_MODEL=<full-model-tag> ./deploy/install-macos.sh
+CRITIC_MODEL="${CRITIC_MODEL:-huihui_ai/qwen2.5-vl-abliterated:latest}"
 # Optional: the model submitted when a request (including generated asset set
 # / GIF children) carries none — a catalog key or raw value. Empty on lattice
 # routing is unroutable (the registry routes by model name), so pass it:
@@ -73,6 +86,8 @@ sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__UPSCALE_URL__|$UPSCALE_URL|g" \
     -e "s|__RIFE_URL__|$RIFE_URL|g" \
     -e "s|__REMBG_URL__|$REMBG_URL|g" \
+    -e "s|__TAGGER_URL__|$TAGGER_URL|g" \
+    -e "s|__CRITIC_MODEL__|$CRITIC_MODEL|g" \
     -e "s|__IMAGE_MODEL__|$IMAGE_MODEL|g" \
     "$TEMPLATE" > "$DEST"
 

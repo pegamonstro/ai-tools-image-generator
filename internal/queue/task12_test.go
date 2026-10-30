@@ -11,15 +11,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/color"
 	"image/png"
+	"io/fs"
 	"strings"
 	"sync"
 	"testing"
 
 	"img-gen/internal/critic"
 	"img-gen/internal/lattice"
+	"img-gen/internal/storage"
 )
 
 func ptrInt(v int) *int { return &v }
@@ -457,7 +460,118 @@ func TestGIFKeyframesNotFrameChecked(t *testing.T) {
 	}
 }
 
-// --- GIF from_spec children manifest summary -------------------------------
+// --- FrameRef resolution for validated jobs (C3) ----------------------------
+
+// TestResolveFrameRefValidatedJobAttemptFallback verifies the C3 fallback: a
+// validated job saves its chosen render under the attempt id, so a FrameRef
+// with that job id resolves through the job's recorded ImagePath instead of
+// the nonexistent images/<jobID>.png.
+func TestResolveFrameRefValidatedJobAttemptFallback(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap)) // judge passes on the first attempt
+	seed := int64(400)
+	jid, err := m.Submit(SubmitRequest{
+		Mode: "asset", Prompt: "frame source", Size: "16x16", Seed: &seed,
+		Validate: &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"ok"`)}}, Budget: ptrInt(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := waitFor(t, m, jid, "done")
+	if j.Status != "done" {
+		t.Fatalf("job: %s %q", j.Status, j.Error)
+	}
+
+	// Precondition: validated jobs have no job-id image — the chosen attempt
+	// id holds the bytes.
+	if _, err := m.opts.Store.ReadImage(jid); err == nil {
+		t.Fatal("precondition violated: images/<jobID>.png exists for a validated job")
+	}
+	attID := strings.TrimSuffix(strings.TrimPrefix(j.ImagePath, "images/"), ".png")
+	if attID == "" || j.ImagePath == "" {
+		t.Fatalf("chosen attempt ImagePath missing: %q", j.ImagePath)
+	}
+	want, err := m.opts.Store.ReadImage(attID)
+	if err != nil {
+		t.Fatalf("chosen attempt unreadable: %v", err)
+	}
+
+	got, err := m.resolveFrameRef(FrameRef{Job: jid})
+	if err != nil {
+		t.Fatalf("fallback failed even though the job record holds ImagePath %q: %v", j.ImagePath, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("fallback resolved the wrong bytes: %d vs %d", len(got), len(want))
+	}
+
+	// The resolved bytes are the attempt PNG, decodable — compose actually
+	// uses them as a frame.
+	if _, err := png.Decode(bytes.NewReader(got)); err != nil {
+		t.Fatalf("resolved frame is not a decodable PNG: %v", err)
+	}
+}
+
+// TestResolveFrameRefFallbackErrorPreservation verifies the fallback never
+// masks the original not-found: a missing job record, a record with no
+// ImagePath, a non-attempt-shaped path, and an attempt file that is itself
+// missing all keep ReadImage's original error (which names the job id).
+func TestResolveFrameRefFallbackErrorPreservation(t *testing.T) {
+	cap := &genCapture{}
+	m := New(composeTestOpts(t, t.TempDir(), cap))
+	const ghostJob = "aabbccddeeff0011"
+
+	inject := func(id, imagePath string) {
+		m.mu.Lock()
+		m.jobs[id] = &storage.Job{ID: id, ImagePath: imagePath}
+		m.mu.Unlock()
+	}
+
+	t.Run("no job record", func(t *testing.T) {
+		_, err := m.resolveFrameRef(FrameRef{Job: ghostJob})
+		if err == nil {
+			t.Fatal("want error for missing job frame source")
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("want the original not-found shape, got %v", err)
+		}
+		if !strings.Contains(err.Error(), ghostJob) {
+			t.Fatalf("error should name the job id, got %q", err.Error())
+		}
+	})
+
+	t.Run("record with empty ImagePath", func(t *testing.T) {
+		inject(ghostJob, "")
+		_, err := m.resolveFrameRef(FrameRef{Job: ghostJob})
+		if err == nil || !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), ghostJob) {
+			t.Fatalf("original not-found not preserved, got %v", err)
+		}
+	})
+
+	t.Run("record with non-attempt-shaped ImagePath", func(t *testing.T) {
+		inject(ghostJob, "images/nested/dir.png")
+		_, err := m.resolveFrameRef(FrameRef{Job: ghostJob})
+		if err == nil || !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), ghostJob) {
+			t.Fatalf("original not-found not preserved, got %v", err)
+		}
+	})
+
+	t.Run("attempt file also missing keeps the job-id error", func(t *testing.T) {
+		inject(ghostJob, "images/deadbeef00000000.png")
+		_, err := m.resolveFrameRef(FrameRef{Job: ghostJob})
+		if err == nil || !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("want not-found, got %v", err)
+		}
+		// The preserved error is the ORIGINAL ReadImage(ref.Job) failure — it
+		// names images/<jobID>.png, not the attempt path (which would have
+		// produced a different path in the message).
+		if !strings.Contains(err.Error(), ghostJob) {
+			t.Fatalf("preserved error must name the job id path, got %q", err.Error())
+		}
+		if strings.Contains(err.Error(), "deadbeef00000000") {
+			t.Fatalf("error should be the original job-id read failure, got %q", err.Error())
+		}
+	})
+}
 
 // TestGIFFromSpecChildrenManifestVerify verifies that from_spec GIF children
 // (validated in their own jobs) record the first child's Validate/Attempts on

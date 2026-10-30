@@ -42,6 +42,18 @@
              substituted by install-macos.sh, for the same reason as __RIFE_URL__. -->
         <key>REMBG_URL</key>
         <string>__REMBG_URL__</string>
+        <!-- Route the validate checklist's tag checks to the WD14 tagger
+             sidecar (POST /tag, GET /meta). Left empty when no tagger is
+             configured — tag_roundtrip then fails submission honestly.
+             Placeholder, substituted by install-macos.sh, for the same
+             reason as __RIFE_URL__. -->
+        <key>TAGGER_URL</key>
+        <string>__TAGGER_URL__</string>
+        <!-- The VLM judge answering the validate checklist's vlm_check
+             criteria: a full control-plane model tag passed through to the
+             lattice chat route verbatim. -->
+        <key>CRITIC_MODEL</key>
+        <string>__CRITIC_MODEL__</string>
         <!-- The model used when a submit (including generated assets/GIF
              children) carries none. The lattice registry routes by model name,
              so model-less routing needs this; a sidecar default on direct. -->

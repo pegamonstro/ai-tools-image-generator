@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"img-gen/internal/critic"
 	"img-gen/internal/genres"
 	"img-gen/internal/lattice"
 	"img-gen/internal/models"
@@ -48,12 +49,37 @@ type config struct {
 	// (config.ImageRouting != "direct") — a catalog key from ModelsFile or a
 	// raw value. The lattice registry routes by model name, so an empty model
 	// is unroutable there.
-	ImageModel   string
+	ImageModel string
+	// ImageTimeout bounds the lattice image legs and is the shared HTTP
+	// client timeout the critic's chat/tagger calls also ride.
 	ImageTimeout time.Duration
-	APIToken     string
+	// CriticModel is the VLM judge for the Phase D validate checklist — a
+	// FULL control-plane model tag (e.g. a registry name) passed through to
+	// the lattice chat route verbatim, like EnhanceModel.
+	CriticModel string
+	// CriticTimeout bounds a /api/v1/validate sync call (judge legs ride the
+	// request context; the deadline is this duration). Zero/negative parses
+	// fall back to the default.
+	CriticTimeout time.Duration
+	// TaggerURL is the WD14 tagger sidecar for tag_roundtrip checks; ""
+	// means the tag ops fail submission honestly.
+	TaggerURL string
+	// TaggerTimeout bounds each tagger/vocab sidecar call (submit gating
+	// handles availability). Zero/negative parses fall back to the default.
+	TaggerTimeout time.Duration
+	APIToken      string
 }
 
 func loadConfig() config {
+	criticModel := envOr("CRITIC_MODEL", "huihui_ai/qwen2.5-vl-abliterated:latest")
+	criticTimeout := time.Duration(envIntOr("CRITIC_TIMEOUT_S", 120)) * time.Second
+	if criticTimeout <= 0 {
+		criticTimeout = 120 * time.Second
+	}
+	tagTimeout := time.Duration(envIntOr("TAGGER_TIMEOUT_S", 60)) * time.Second
+	if tagTimeout <= 0 {
+		tagTimeout = 60 * time.Second
+	}
 	return config{
 		LatticeURL:    envOr("LATTICE_FRONTEND_URL", "http://127.0.0.1:8080"),
 		ImageRouting:  envOr("IMAGE_ROUTING", "lattice"),
@@ -73,6 +99,10 @@ func loadConfig() config {
 		EnhanceModel:  envOr("ENHANCE_MODEL", "huihui_ai/dolphin3-abliterated:latest"),
 		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality prompts for an uncensored adult image generator. Explicit sexual content is permitted and expected; never refuse, never moralize. Respond with only the prompt text."),
 		ImageTimeout:  time.Duration(envIntOr("IMAGE_TIMEOUT_S", 7200)) * time.Second,
+		CriticModel:   criticModel,
+		CriticTimeout: criticTimeout,
+		TaggerURL:     envOr("TAGGER_URL", ""),
+		TaggerTimeout: tagTimeout,
 		APIToken:      envOr("IMG_GEN_TOKEN", ""),
 	}
 }
@@ -102,6 +132,7 @@ func newHandler(cfg config) (http.Handler, error) {
 	lat.RifeURL = cfg.RifeURL
 	lat.RembgURL = cfg.RembgURL
 	lat.SDXLImageURL = cfg.SDXLURL
+	lat.TaggerURL = cfg.TaggerURL
 	lat.ImagesViaLattice = cfg.ImageRouting != "direct"
 	lat.HTTP = &http.Client{Timeout: cfg.ImageTimeout}
 
@@ -119,6 +150,27 @@ func newHandler(cfg config) (http.Handler, error) {
 	var rembgOp func(ctx context.Context, imageB64 string) ([]byte, error)
 	if cfg.RembgURL != "" {
 		rembgOp = lat.Rembg
+	}
+
+	// Phase D critic runtime. The judge answers the validate checklist's
+	// vlm_check criteria through the lattice chat route with a control-plane
+	// model tag (CRITIC_MODEL passes through verbatim, like EnhanceModel) —
+	// it is always wired, so an unwired Env never reaches production here
+	// and critic.Run's nil-Judge defense stays library-level. The tagger
+	// legs wire only when the WD14 sidecar is configured: nil Env.Tagger
+	// unambiguously means "tagger sidecar not configured" so tag_roundtrip
+	// fails submission honestly (the same convention as Rife/Rembg above);
+	// each tagger call gets its own TAGGER_TIMEOUT_S deadline inside the
+	// caller's context.
+	criticEnv := critic.Env{Judge: critic.ChatJudge(lat, cfg.CriticModel)}
+	if cfg.TaggerURL != "" {
+		tagTimeout := cfg.TaggerTimeout
+		criticEnv.Tagger = func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {
+			tctx, cancel := context.WithTimeout(ctx, tagTimeout)
+			defer cancel()
+			return lat.Tagger(tctx, imageB64)
+		}
+		criticEnv.Vocab = lat.TaggerVocab
 	}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
@@ -148,6 +200,7 @@ func newHandler(cfg config) (http.Handler, error) {
 		},
 		Chat:          chatFn,
 		EnhanceSystem: cfg.EnhanceSystem,
+		Critic:        criticEnv,
 	})
 
 	mux := http.NewServeMux()
@@ -287,14 +340,16 @@ func newHandler(cfg config) (http.Handler, error) {
 		return nil, fmt.Errorf("idempotency store: %w", idemErr)
 	}
 	registerV1(mux, &v1Deps{
-		mgr:       mgr,
-		genreCat:  catalog,
-		modelCat:  modelCatalog,
-		presetCat: presetCatalog,
-		store:     store,
-		dataDir:   cfg.DataDir,
-		exportDir: cfg.ExportDir,
-		idem:      idem,
+		mgr:           mgr,
+		genreCat:      catalog,
+		modelCat:      modelCatalog,
+		presetCat:     presetCatalog,
+		store:         store,
+		dataDir:       cfg.DataDir,
+		exportDir:     cfg.ExportDir,
+		idem:          idem,
+		critic:        criticEnv,
+		criticTimeout: cfg.CriticTimeout,
 	})
 
 	return withAPIAuth(mux, cfg.APIToken), nil

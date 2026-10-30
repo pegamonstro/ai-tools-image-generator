@@ -270,17 +270,18 @@ func absInt(x int) int {
 
 // Run executes the checklist in order against the given image.
 // All vlm_check criteria are batched into a single Judge call.
+// prompt is the prompt that rendered this image — the tag_roundtrip drift
+// reference. It is a parameter because prompts resolve per render attempt
+// (base prompt for attempt 1, mutated prompts for retries), so a compiled
+// Checklist cannot carry it; "" (prompt-less images) passes the tag op
+// vacuously via PromptTags' empty-prompt convention.
+// An unwired Env leg degrades to inert error/undetermined statuses, never a
+// panic (C2): vlm_check reports "critic judge not configured", the tag op
+// reports its own missing leg (availability is normally gated at submit, so
+// this is defense in depth for restarted/rehydrated surfaces).
 // Returns a slice of CriticCheck results in the same order as the checklist.
-func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.CriticCheck {
-	if e.Judge == nil {
-		panic("critic: Env.Judge is nil")
-	}
-	if e.Tagger == nil {
-		panic("critic: Env.Tagger is nil")
-	}
-	if e.Vocab == nil {
-		panic("critic: Env.Vocab is nil")
-	}
+func Run(ctx context.Context, cl Checklist, imageB64 string, prompt string, e Env) []storage.CriticCheck {
+	judgeMissing := e.Judge == nil
 
 	var results []storage.CriticCheck
 
@@ -297,7 +298,7 @@ func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.Cr
 	// Batch all vlm_check into one Judge call
 	vlmScores := make([]VLMScore, len(vlmCriteria))
 	vlmErr := error(nil)
-	if len(vlmCriteria) > 0 {
+	if len(vlmCriteria) > 0 && !judgeMissing {
 		vlmScores, vlmErr = e.Judge(ctx, vlmCriteria, imageB64)
 	}
 
@@ -317,10 +318,14 @@ func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.Cr
 					break
 				}
 			}
-			if vlmErr != nil {
+			switch {
+			case judgeMissing:
+				result.Status = "error"
+				result.Reason = "critic judge not configured"
+			case vlmErr != nil:
 				result.Status = "undetermined"
 				result.Reason = strings.TrimSpace(vlmErr.Error())
-			} else if idx >= 0 && idx < len(vlmScores) {
+			case idx >= 0 && idx < len(vlmScores):
 				score := vlmScores[idx]
 				if score.Pass {
 					result.Status = "pass"
@@ -330,13 +335,28 @@ func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.Cr
 					result.Reason = score.Reason
 					result.Suggestion = score.Fix
 				}
-			} else {
+			default:
 				// Judge omitted this criterion
 				result.Status = "undetermined"
 				result.Reason = "judge omitted criterion"
 			}
 
 		case "tag_roundtrip":
+			// Runtime nil legs are "error", not panic: submit gating normally
+			// keeps an unwired tagger away, but a rehydrated manager may face
+			// a persisted checklist after a config change.
+			if e.Vocab == nil {
+				result.Status = "error"
+				result.Reason = "critic vocab not configured"
+				results = append(results, result)
+				continue
+			}
+			if e.Tagger == nil {
+				result.Status = "error"
+				result.Reason = "critic tagger not configured"
+				results = append(results, result)
+				continue
+			}
 			// Fetch vocab first
 			vocabList, vocabErr := e.Vocab(ctx)
 			if vocabErr != nil {
@@ -351,7 +371,7 @@ func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.Cr
 			}
 
 			// Compute required set: prompt tokens that are in vocab
-			requiredTags := PromptTags(cl.Prompt)
+			requiredTags := PromptTags(prompt)
 			requiredCount := 0
 			for _, t := range requiredTags {
 				if vocab[t] {
@@ -368,7 +388,7 @@ func Run(ctx context.Context, cl Checklist, imageB64 string, e Env) []storage.Cr
 				continue
 			}
 
-			missing, _ := TagDrift(cl.Prompt, vocab, tags, TagFloor)
+			missing, _ := TagDrift(prompt, vocab, tags, TagFloor)
 			// known is always true here since vocab fetch succeeded
 			if len(missing) == 0 {
 				if requiredCount == 0 {

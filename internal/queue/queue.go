@@ -414,8 +414,9 @@ func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int, c
 	}
 
 	// Run checks idempotently on the stored bytes (use the attach goroutine's ctx
-	// so cancellation aborts the check call).
-	checks := m.runChecks(ctx, cl, png)
+	// so cancellation aborts the check call). The drift reference is the
+	// pending attempt's own recorded prompt.
+	checks := m.runChecks(ctx, cl, png, attempt.Prompt)
 	m.log(id, "resume: re-ran checks for attempt %d", pending)
 	for _, c := range checks {
 		m.log(id, "check %s(%s): %s %s", c.Op, c.Spec, c.Status, c.Reason)
@@ -544,8 +545,9 @@ func (m *Manager) saveRecovered(id string, png []byte, ctx context.Context) {
 		m.log(id, "recovered attempt %d image from sidecar: %s (%d bytes)", pending, rel, len(png))
 
 		// Run checks on the recovered PNG (use the attach goroutine's ctx so
-		// cancellation aborts the check call).
-		checks := m.runChecks(ctx, cl, png)
+		// cancellation aborts the check call). The drift reference is the
+		// prompt the pending attempt was rendering (CriticNextPrompt).
+		checks := m.runChecks(ctx, cl, png, j.CriticNextPrompt)
 
 		// Get the actual job from the map and update it with the new attempt,
 		// then finalize via finishCritic (no further retries post-restart).
@@ -1546,10 +1548,14 @@ func (m *Manager) persistJob(job storage.Job) {
 	}
 }
 
-// runChecks executes the checklist against the given PNG bytes and returns the results.
-func (m *Manager) runChecks(ctx context.Context, cl critic.Checklist, png []byte) []storage.CriticCheck {
+// runChecks executes the checklist against the given PNG bytes and returns
+// the results. prompt is the prompt that rendered these bytes — the
+// tag_roundtrip drift reference (it belongs to the attempt, not the
+// compiled checklist: attempt 1 renders the base prompt, retries render
+// mutated prompts).
+func (m *Manager) runChecks(ctx context.Context, cl critic.Checklist, png []byte, prompt string) []storage.CriticCheck {
 	b64 := base64.StdEncoding.EncodeToString(png)
-	return critic.Run(ctx, cl, b64, m.opts.Critic)
+	return critic.Run(ctx, cl, b64, prompt, m.opts.Critic)
 }
 
 // criticLoop implements the Phase D retry policy.
@@ -1607,7 +1613,9 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 		}
 		m.setStatus(id, "validating", "")
 		// Use the job's context so cancellation aborts the check call.
-		checks := m.runChecks(ctx, cl, png)
+		// The drift reference is this attempt's own prompt (base for
+		// attempt 1, mutated prompt for retries).
+		checks := m.runChecks(ctx, cl, png, prompt)
 		rec := storage.CriticAttempt{Image: attID, Prompt: prompt, Seed: seed, Checks: checks}
 		recs = append(recs, rec)
 		m.mu.Lock()

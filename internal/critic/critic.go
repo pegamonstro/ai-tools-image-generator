@@ -51,13 +51,14 @@ type Check struct {
 }
 
 // Checklist is the compiled, persisted form (storage.Job.CriticSpec holds its
-// JSON so restarts re-run it idempotently).
+// JSON so restarts re-run it idempotently). It deliberately has no prompt
+// field: prompts resolve per render attempt, so Run carries the prompt that
+// rendered the image as a parameter (tag_roundtrip's drift reference).
 type Checklist struct {
 	Checks []Check  `json:"checks"`
 	Budget int      `json:"budget"`
 	OnFail string   `json:"on_fail"` // "" | "deliver" | "fail"
 	Target []string `json:"target,omitempty"`
-	Prompt string   `json:"prompt,omitempty"` // source prompt for tag_roundtrip
 }
 
 // Availability reports which remote legs are wired (nil Ops/Env functions).

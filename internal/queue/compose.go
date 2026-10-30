@@ -1313,7 +1313,21 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 	var err error
 	switch {
 	case ref.Job != "":
+		// Validated jobs save renders under their chosen-attempt ids, so
+		// images/<jobID>.png does not exist for them. When the direct read
+		// misses, fall back to the job's recorded ImagePath
+		// (images/<attID>.png); the original error is kept when neither the
+		// direct nor the attempt path resolves — callers still see exactly
+		// the not-found they saw for missing jobs.
 		data, err = m.opts.Store.ReadImage(ref.Job)
+		if err != nil {
+			if att := m.jobChosenAttemptImage(ref.Job); att != "" {
+				attData, attErr := m.opts.Store.ReadImage(att)
+				if attErr == nil {
+					data, err = attData, nil
+				}
+			}
+		}
 	case ref.Path != "":
 		if filepath.IsAbs(ref.Path) || strings.Contains(ref.Path, "..") {
 			return nil, fmt.Errorf("path source must be relative to the data directory without '..'")
@@ -1331,9 +1345,35 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 	return data, nil
 }
 
+// jobChosenAttemptImage returns the stored image id behind a job's recorded
+// ImagePath — "images/<id>.png" stripped to <id> — or "" when the job has no
+// in-memory record (foreign image, old history) or its ImagePath is not one
+// image at images/<id>.png. Callers use it to reach a validated job's chosen
+// attempt (that job never has an images/<jobID>.png on disk).
+func (m *Manager) jobChosenAttemptImage(jobID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j := m.jobs[jobID]
+	if j == nil {
+		return ""
+	}
+	if !strings.HasPrefix(j.ImagePath, "images/") || !strings.HasSuffix(j.ImagePath, ".png") {
+		return ""
+	}
+	id := j.ImagePath[len("images/") : len(j.ImagePath)-len(".png")]
+	if id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	return id
+}
+
 // frameSourcePrompt returns the prompt that rendered a job-sourced frame —
 // job.Prompt after its run() resolved enhancement and style — as the
-// tag_roundtrip drift reference the compose side threads into the checklist.
+// tag_roundtrip drift reference the compose side records per frame. For a
+// validated frame job the delivered pixels may come from a mutated retry
+// attempt, while this stays the job's request-era (base) prompt: the drift
+// reference is the request as submitted, and each attempt's own prompt lives
+// in the job's attempt records (which manifest regeneration reads).
 // Frames from b64/path/set sources have no prompt (tag_roundtrip then
 // verifies nothing: critic.TagDrift's empty-prompt convention), and a job id
 // with no in-memory record (foreign image, old history) resolves to none too.
@@ -1654,14 +1694,18 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 				continue
 			}
 			// tag_roundtrip's drift reference is the prompt that rendered THIS
-			// frame, persisted per-frame at submit; frames without a source
-			// prompt pass the tag op vacuously. The compiled checklist is
-			// copy-per-frame (slices are shared but Run only reads them).
-			fc := *cl
+			// frame, persisted per-frame at submit and passed as Run's prompt
+			// parameter (checklists carry no prompt — prompts resolve per
+			// attempt). For validated job frames the pixels may come from a
+			// mutated retry while the recorded prompt is the request as
+			// submitted — the honest drift reference; attempt prompts live in
+			// the child job's records. Frames without a source prompt pass the
+			// tag op vacuously (critic.TagDrift's empty-prompt convention).
+			framePrompt := ""
 			if i < len(gp.Prompts) {
-				fc.Prompt = gp.Prompts[i]
+				framePrompt = gp.Prompts[i]
 			}
-			checks := critic.Run(context.Background(), fc, base64.StdEncoding.EncodeToString(data), m.opts.Critic)
+			checks := critic.Run(context.Background(), *cl, base64.StdEncoding.EncodeToString(data), framePrompt, m.opts.Critic)
 			man.GIF.FrameChecks = append(man.GIF.FrameChecks, manifestFrameChecks{File: name, Checks: checks})
 			// on_fail=fail: the first failing check fails the parent naming
 			// the frame and the op; the deliver default records and assembles.

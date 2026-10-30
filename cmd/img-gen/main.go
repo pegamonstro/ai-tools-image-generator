@@ -68,6 +68,8 @@ type config struct {
 	// handles availability). Zero/negative parses fall back to the default.
 	TaggerTimeout time.Duration
 	APIToken      string
+	Split9Slice   string
+	CssEmission   string
 }
 
 func loadConfig() config {
@@ -204,10 +206,12 @@ func newHandler(cfg config) (http.Handler, error) {
 			Result:     lat.Result,
 			Cancel:     lat.Cancel,
 		},
-		Chat:          chatFn,
-		EnhanceSystem: cfg.EnhanceSystem,
-		Critic:        criticEnv,
-		CriticTimeout: cfg.CriticTimeout,
+		Chat:           chatFn,
+		EnhanceSystem:  cfg.EnhanceSystem,
+		Critic:         criticEnv,
+		CriticTimeout:  cfg.CriticTimeout,
+		Split9Slice:    cfg.Split9Slice,
+		CssEmission:    cfg.CssEmission,
 	})
 
 	mux := http.NewServeMux()

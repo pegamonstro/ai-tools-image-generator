@@ -12,15 +12,16 @@ import (
 
 // Split9SliceConfig holds configuration for split 9-slice mode
 type Split9SliceConfig struct {
-	Enabled string // "true" or "false"
-	Margin  int
-	Format    string // "single" or "split"
+	Enabled    string // "true" or "false"
+	Margin     int
+	Format     string // "single" or "split"
+	CSSPrefix  string // Optional prefix for CSS class names (e.g., asset kind)
 }
 
 // CSSClass represents a CSS class with its properties
 type CSSClass struct {
-	Name     string                 `json:"name"`
-	Properties map[string]string    `json:"properties"`
+	Name       string                 `json:"name"`
+	Properties map[string]string      `json:"properties"`
 }
 
 // CSSManifest represents the complete CSS output for asset sets
@@ -40,7 +41,7 @@ func NewCSSManifest() CSSManifest {
 // AddCSSClass adds a CSS class to the manifest
 func (m *CSSManifest) AddCSSClass(name string, properties map[string]string) {
 	m.Classes = append(m.Classes, CSSClass{
-		Name:     name,
+		Name:       name,
 		Properties: properties,
 	})
 }
@@ -162,15 +163,15 @@ func ComposeFrame(name string, white, black []byte, transparent bool, margins in
 
 		// Create a map of region names to encoded data
 		regionData := map[string][]byte{
-			"top-left": topLeftData,
-			"top":      topData,
-			"top-right": topRightData,
-			"right":    rightData,
+			"top-left":     topLeftData,
+			"top":          topData,
+			"top-right":    topRightData,
+			"right":        rightData,
 			"bottom-right": bottomRightData,
-			"bottom":   bottomData,
-			"bottom-left": bottomLeftData,
-			"left":     leftData,
-			"center":   centerData,
+			"bottom":       bottomData,
+			"bottom-left":  bottomLeftData,
+			"left":         leftData,
+			"center":       centerData,
 		}
 
 		// Create output slice
@@ -192,31 +193,31 @@ func ComposeFrame(name string, white, black []byte, transparent bool, margins in
 		// Generate insets JSON
 		type insetsJSON struct {
 			Layout  string                     `json:"layout"`
-			Margins marginsJSON              `json:"margins"`
+			Margins marginsJSON                `json:"margins"`
 			Insets  map[string]struct {
-				X          int `json:"x"`
-				Y          int `json:"y"`
-				Width      int `json:"width"`
-				Height     int `json:"height"`
+				X      int `json:"x"`
+				Y      int `json:"y"`
+				Width  int `json:"width"`
+				Height int `json:"height"`
 			} `json:"insets"`
 		}
 		insets := insetsJSON{
 			Layout: "nine-slice",
 			Margins: uniformMargins(margin),
 			Insets: map[string]struct {
-				X int `json:"x"`
-				Y int `json:"y"`
-				Width int `json:"width"`
+				X      int `json:"x"`
+				Y      int `json:"y"`
+				Width  int `json:"width"`
 				Height int `json:"height"`
 			}{
-				"top-left": {X: 0, Y: 0, Width: margin, Height: margin},
-				"top": {X: margin, Y: 0, Width: w - 2*margin, Height: margin},
-				"top-right": {X: w - margin, Y: 0, Width: margin, Height: margin},
-				"right": {X: w - margin, Y: margin, Width: margin, Height: h - 2*margin},
+				"top-left":     {X: 0, Y: 0, Width: margin, Height: margin},
+				"top":          {X: margin, Y: 0, Width: w - 2*margin, Height: margin},
+				"top-right":    {X: w - margin, Y: 0, Width: margin, Height: margin},
+				"right":        {X: w - margin, Y: margin, Width: margin, Height: h - 2*margin},
 				"bottom-right": {X: w - margin, Y: h - margin, Width: margin, Height: margin},
-				"bottom": {X: margin, Y: h - margin, Width: w - 2*margin, Height: margin},
-				"bottom-left": {X: 0, Y: h - margin, Width: margin, Height: margin},
-				"left": {X: 0, Y: margin, Width: margin, Height: h - 2*margin},
+				"bottom":       {X: margin, Y: h - margin, Width: w - 2*margin, Height: margin},
+				"bottom-left":  {X: 0, Y: h - margin, Width: margin, Height: margin},
+				"left":         {X: 0, Y: margin, Width: margin, Height: h - 2*margin},
 			},
 		}
 		insetsBytes, err := json.Marshal(insets)
@@ -234,6 +235,9 @@ func ComposeFrame(name string, white, black []byte, transparent bool, margins in
 		cssMan := NewCSSManifest()
 		for regionName := range regionData {
 			className := regionName
+			if splitConfig.CSSPrefix != "" {
+				className = splitConfig.CSSPrefix + "-" + regionName
+			}
 			cssMan.AddCSSClass(className, map[string]string{
 				"background-image": "url('" + name + "-" + regionName + ".png')",
 				"width":           "auto",

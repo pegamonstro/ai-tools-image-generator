@@ -166,6 +166,11 @@ type Options struct {
 	// constructions; production wiring always passes the loaded config's
 	// CRITIC_TIMEOUT_S, default-clamped like the /api/v1/validate deadline).
 	CriticTimeout time.Duration
+
+	// Split9Slice enables split 9-slice mode for frame assets.
+	Split9Slice string
+	// CssEmission enables CSS manifest emission for split 9-slice assets.
+	CssEmission string
 }
 
 type imageInputs struct {

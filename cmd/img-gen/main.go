@@ -41,6 +41,7 @@ type config struct {
 	DataDir       string
 	GenresFile    string
 	ModelsFile    string
+	ProfilesFile  string
 	PresetsFile   string
 	ExportDir     string
 	EnhanceModel  string
@@ -100,6 +101,7 @@ func loadConfig() config {
 		DataDir:       envOr("DATA_DIR", "./data"),
 		GenresFile:    envOr("GENRES_FILE", "./genres.json"),
 		ModelsFile:    envOr("MODELS_FILE", "./models.json"),
+		ProfilesFile:  envOr("PROFILES_FILE", "./models_profiles.yaml"),
 		PresetsFile:   envOr("PRESETS_FILE", "./presets.json"),
 		ExportDir:     envOr("EXPORT_DIR", ""),
 		EnhanceModel:  envOr("ENHANCE_MODEL", "huihui_ai/dolphin3-abliterated:latest"),
@@ -123,6 +125,10 @@ func newHandler(cfg config) (http.Handler, error) {
 		return nil, err
 	}
 	modelCatalog, err := models.Load(cfg.ModelsFile)
+	if err != nil {
+		return nil, err
+	}
+	profileConfig, err := models.LoadProfiles(cfg.ProfilesFile)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +217,7 @@ func newHandler(cfg config) (http.Handler, error) {
 		Genres:           catalog,
 		Presets:          presetCatalog,
 		Models:           modelCatalog,
+		Profiles:         profileConfig,
 		Store:            store,
 		ImagesViaLattice: cfg.ImageRouting != "direct",
 		DefaultModel:     cfg.ImageModel,

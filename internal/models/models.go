@@ -1,9 +1,12 @@
-// Package models loads the local model/LoRA catalog (models.json).
+// Package models loads the local model/LoRA catalog (models.json) and model profiles (models_profiles.yaml).
 package models
 
 import (
 	"encoding/json"
 	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Entry struct {
@@ -16,6 +19,94 @@ type Entry struct {
 type Catalog struct {
 	Models []Entry `json:"models"`
 	Loras  []Entry `json:"loras"`
+}
+
+// ProfileDefaults holds the per-family default sampling parameters.
+type ProfileDefaults struct {
+	PredictionType   string  `json:"prediction_type,omitempty" yaml:"prediction_type,omitempty"`     // "v" for v-pred models
+	CfgRescale       float64 `json:"cfg_rescale,omitempty" yaml:"cfg_rescale,omitempty"`             // CFG rescale for v-pred
+	ScoreTags        string  `json:"score_tags,omitempty" yaml:"score_tags,omitempty"`               // Pony score tags
+	Negative         string  `json:"negative,omitempty" yaml:"negative,omitempty"`                   // Negative prompt
+	PositivePrefix   string  `json:"positive_prefix,omitempty" yaml:"positive_prefix,omitempty"`     // Prefix for positive prompt
+	NegativePrefix   string  `json:"negative_prefix,omitempty" yaml:"negative_prefix,omitempty"`     // Prefix for negative prompt
+	Sampler          string  `json:"sampler,omitempty" yaml:"sampler,omitempty"`                     // Sampler name
+	Steps            int     `json:"steps,omitempty" yaml:"steps,omitempty"`                         // Diffusion steps
+	CfgScale         float64 `json:"cfg_scale,omitempty" yaml:"cfg_scale,omitempty"`                 // CFG scale
+}
+
+type Profile struct {
+	Name       string           `json:"name" yaml:"name"`
+	Models     []string         `json:"models" yaml:"models"`
+	Defaults   ProfileDefaults  `json:"defaults" yaml:"defaults"`
+	Unsupported []string        `json:"unsupported,omitempty" yaml:"unsupported,omitempty"`
+}
+
+type ProfilesConfig struct {
+	Profiles []Profile `json:"profiles" yaml:"profiles"`
+}
+
+func LoadProfiles(path string) (*ProfilesConfig, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return &ProfilesConfig{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var c ProfilesConfig
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ApplyProfile applies the model profile defaults to a request if the model key matches.
+func (c *ProfilesConfig) ApplyProfile(modelKey string, prompt *string, negative *string, sampling *map[string]any) {
+	for _, p := range c.Profiles {
+		for _, m := range p.Models {
+			if strings.EqualFold(m, modelKey) {
+				// Check unsupported
+				for _, u := range p.Unsupported {
+					if strings.EqualFold(u, modelKey) {
+						return // Don't apply unsupported profile
+					}
+				}
+				d := p.Defaults
+				if prompt != nil && d.PositivePrefix != "" {
+					*prompt = d.PositivePrefix + *prompt
+				}
+				if negative != nil {
+					if d.NegativePrefix != "" {
+						*negative = d.NegativePrefix + *negative
+					}
+					if d.Negative != "" {
+						if *negative != "" {
+							*negative += ", "
+						}
+						*negative += d.Negative
+					}
+				}
+				if sampling != nil {
+					if d.PredictionType != "" {
+						(*sampling)["prediction_type"] = d.PredictionType
+					}
+					if d.CfgRescale > 0 {
+						(*sampling)["cfg_rescale"] = d.CfgRescale
+					}
+					if d.Sampler != "" {
+						(*sampling)["sampler"] = d.Sampler
+					}
+					if d.Steps > 0 {
+						(*sampling)["steps"] = d.Steps
+					}
+					if d.CfgScale > 0 {
+						(*sampling)["cfg_scale"] = d.CfgScale
+					}
+				}
+				return
+			}
+		}
+	}
 }
 
 // Load reads a catalog JSON file. A missing file yields an empty catalog

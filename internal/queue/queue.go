@@ -138,6 +138,7 @@ type Options struct {
 	Genres        *genres.Catalog
 	Presets       *presets.Catalog
 	Models        *models.Catalog // catalog keys ("persephone") resolve to mflux values (paths/ids); raw values pass through
+	Profiles      *models.ProfilesConfig // model profiles for per-family defaults
 	Store         *storage.Store
 	Ops           ImageOps
 	Chat          prompting.ChatFunc
@@ -1073,13 +1074,44 @@ func (m *Manager) run(id string) {
 	job.Prompt = prompt
 	m.mu.Unlock()
 
+	// Extract base sampling params before profile application
+	seed, steps, guidance, negative := job.Seed, job.Steps, job.Guidance, job.NegativePrompt
+
+	// Apply model profile defaults (Phase G) — resolves catalog key to profile
+	// and merges positive_prefix, negative_prefix, negative, prediction_type,
+	// cfg_rescale, sampler, steps, cfg_scale into the request.
+	if m.opts.Profiles != nil && job.ModelKey != "" {
+		sampling := map[string]any{}
+		m.opts.Profiles.ApplyProfile(job.ModelKey, &prompt, &negative, &sampling)
+		// Update the job prompt with profile-applied version
+		m.mu.Lock()
+		job.Prompt = prompt
+		m.mu.Unlock()
+		// Merge sampling overrides (only non-zero values)
+		if sp, ok := sampling["steps"].(int); ok && sp > 0 {
+			steps = &sp
+		}
+		if sp, ok := sampling["cfg_scale"].(float64); ok && sp > 0 {
+			guidance = &sp
+		}
+		if sp, ok := sampling["sampler"].(string); ok && sp != "" {
+			// sampler would need to be passed through spec; for now just log
+			m.log(id, "profile suggests sampler: %s", sp)
+		}
+		if sp, ok := sampling["prediction_type"].(string); ok && sp != "" {
+			m.log(id, "profile suggests prediction_type: %s", sp)
+		}
+		if sp, ok := sampling["cfg_rescale"].(float64); ok && sp > 0 {
+			m.log(id, "profile suggests cfg_rescale: %f", sp)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
 	m.cancels[id] = cancel
 	m.mu.Unlock()
 
 	spec := storage.ModelSpec{Model: job.Model, LatticeModel: job.ModelKey, Loras: job.Loras, Sidecar: job.Sidecar}
-	seed, steps, guidance, negative := job.Seed, job.Steps, job.Guidance, job.NegativePrompt
 	if job.CriticSpec == "" {
 		// Pre-existing behavior, verbatim: one render, save, finish.
 		// renderAndFinish takes ownership of ctx/cancel/cancels cleanup.

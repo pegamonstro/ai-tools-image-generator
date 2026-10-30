@@ -114,6 +114,16 @@ var tools = []tool{
 		description: "Fetch one set (asset set or GIF) by id: the job view text, every composed file (images inline as content, JSON as text), and manifest.json.",
 		schema:      `{"type":"object","required":["set_id"],"properties":{"set_id":{"type":"string"}}}`,
 	},
+	{
+		name:        "repair_image",
+		description: "Synchronous pixel-art repair: quantizes a base64 PNG onto its dominant palette (top-64, CIEDE2000-merged) and downscales by the detected grid cell. Pass cell (2..64) to pin the grid cell or omit to auto-detect (fails with 'not a pixel-art grid' on noisy/non-sprite input). Pass colors (1..64, default 32) for palette size. Returns the repaired PNG as base64.",
+		schema:      `{"type":"object","required":["image"],"properties":{"image":{"type":"string","format":"byte","description":"base64-encoded PNG of the pixel-art render (up to 1024x1024)"},"cell":{"type":"integer","minimum":2,"maximum":64,"description":"Explicit grid cell in pixels; omit to auto-detect"},"colors":{"type":"integer","minimum":1,"maximum":64,"default":32,"description":"Number of dominant palette colors to quantize onto"}}}`,
+	},
+	{
+		name:        "validate_image",
+		description: "Synchronous critic checklist evaluation on a single base64 PNG. Runs vlm_check (VLM judge), tag_roundtrip (WD14 tagger), palette_conform, and/or tile_conform checks. Returns verdicts with pass/fail/error status and suggestions. Requires CRITIC_MODEL and optionally TAGGER_URL on the img-gen server.",
+		schema:      `{"type":"object","required":["image","checks"],"properties":{"image":{"type":"string","format":"byte","description":"base64-encoded PNG"},"checks":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["vlm_check","tag_roundtrip","palette_conform","tile_conform"]},"arg":{"type":"string","description":"vlm_check: JSON string criterion; tile_conform: optional {\"max_ratio\": 1.0..2.0}"}},"required":["op"]}},"palette":{"type":"array","items":{"type":"string","format":"byte","description":"hex color (e.g. #ff0000)"},"description":"Target palette for palette_conform; required when palette_conform is used"}}}`,
+	},
 }
 
 func schemaOf(name string) map[string]any {
@@ -284,6 +294,44 @@ func callTool(c mcpcfg, name string, args map[string]any) toolResult {
 		}
 		return c.readExport(id)
 
+	case "repair_image":
+		imageB64, _ := args["image"].(string)
+		if imageB64 == "" {
+			return errResult("image is required")
+		}
+		cell := 0
+		if v, ok := args["cell"].(float64); ok {
+			cell = int(v)
+		}
+		colors := 32
+		if v, ok := args["colors"].(float64); ok {
+			colors = int(v)
+		}
+		return c.rawCall("POST", "/api/v1/repair", map[string]any{
+			"image":  imageB64,
+			"cell":   cell,
+			"colors": colors,
+		})
+
+	case "validate_image":
+		imageB64, _ := args["image"].(string)
+		if imageB64 == "" {
+			return errResult("image is required")
+		}
+		checks := args["checks"]
+		if checks == nil {
+			return errResult("checks is required")
+		}
+		palette := args["palette"]
+		body := map[string]any{
+			"image":  imageB64,
+			"checks": checks,
+		}
+		if palette != nil {
+			body["palette"] = palette
+		}
+		return c.rawCall("POST", "/api/v1/validate", body)
+
 	default:
 		return errResult("unknown tool " + name)
 	}
@@ -314,6 +362,27 @@ func (c mcpcfg) textCall(method, path string, body any) toolResult {
 	raw, err := c.raw(method, path, body)
 	if err != nil {
 		return errResult(err.Error())
+	}
+	// Pass the img-gen JSON through untouched: callers get the exact contract.
+	return toolResult{Content: []content{{Type: "text", Text: string(raw)}}}
+}
+
+func (c mcpcfg) rawCall(method, path string, body any) toolResult {
+	raw, err := c.raw(method, path, body)
+	if err != nil {
+		return errResult(err.Error())
+	}
+	// For image responses (repair), return base64-encoded PNG
+	contentType := ""
+	// Try to detect if it's an image by checking the first few bytes
+	if len(raw) > 8 {
+		// PNG signature: 89 50 4E 47 0D 0A 1A 0A
+		if raw[0] == 0x89 && raw[1] == 0x50 && raw[2] == 0x4E && raw[3] == 0x47 {
+			contentType = "image/png"
+		}
+	}
+	if contentType == "image/png" {
+		return toolResult{Content: []content{{Type: "image", Data: base64.StdEncoding.EncodeToString(raw), MimeType: "image/png"}}}
 	}
 	// Pass the img-gen JSON through untouched: callers get the exact contract.
 	return toolResult{Content: []content{{Type: "text", Text: string(raw)}}}

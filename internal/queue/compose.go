@@ -284,6 +284,8 @@ func (m *Manager) runCompose(id string) {
 		m.composeAssetSet(id, &spec, children)
 	case "gif":
 		m.composeGIF(id, &spec, children)
+	case "tile":
+		m.composeTile(id, &spec, children)
 	default:
 		m.finish(id, "failed", fmt.Sprintf("compose_error: unknown compose kind %q", spec.Kind))
 	}
@@ -588,6 +590,9 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			built = append(elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent),
 				elementChildren(a.BarFill, a.Negative, a.Size, *req.Seed, "")...)
 			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, FrameMargins: a.FrameMargins, BarFill: a.BarFill, FillStates: uniq, MetaFormats: a.MetaFormats}
+		case "tile":
+			built = elementChildren(prompt, a.Negative, a.Size, *req.Seed, a.Transparent)
+			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Transparent: a.Transparent, MetaFormats: a.MetaFormats}
 		case "npc":
 			switch a.Shape {
 			case "variants":
@@ -626,7 +631,7 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			built = sheetChildren(prompt, a.Negative, a.Size, *req.Seed, a.Views)
 			as = assetSpec{Kind: a.Kind, Name: an, Prompt: prompt, Size: a.Size, Views: a.Views, Columns: a.Columns, MetaFormats: a.MetaFormats}
 		default:
-			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc, sheet)", an, a.Kind)}
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc, sheet, tile)", an, a.Kind)}
 		}
 		if a.Transparent == TransparentRembg {
 			switch a.Kind {
@@ -983,7 +988,18 @@ func (m *Manager) composeAssetSet(id string, spec *composeSpec, children []strin
 				if a.Transparent == TransparentDual && len(imgs) == 2 {
 					black = imgs[1]
 				}
-				outs, err = compose.ComposeFrame(a.Name, imgs[0], black, a.Transparent == TransparentDual && len(imgs) == 2, a.FrameMargins)
+						case "frame":
+					black := []byte(nil)
+					if a.Transparent == TransparentDual && len(imgs) == 2 {
+						black = imgs[1]
+					}
+					// Pass configuration for split 9-slice and CSS emission
+					frameConfig := compose.Split9SliceConfig{
+						Enabled:   cfg.Split9Slice == "true",
+						Margin:    a.FrameMargins,
+						Format:    "single", // default to single frame
+					}
+					outs, err = compose.ComposeFrame(a.Name, imgs[0], black, a.Transparent == TransparentDual && len(imgs) == 2, a.FrameMargins, frameConfig)
 			case "bar":
 				fill := imgs[len(imgs)-1]
 				trackBlack := []byte(nil)
@@ -1833,4 +1849,12 @@ func (m *Manager) composeGIF(id string, spec *composeSpec, children []string) {
 	m.saveManifest(id, &man)
 	m.log(id, "compose done: gif %s (%d frames)", spec.Name, len(frames))
 	m.finish(id, "done", "")
+}
+
+func (m *Manager) composeTile(id string, spec *composeSpec, children []string) {
+	// Tile kind: the --circular flag is flag plumbing only in sd.cpp;
+	// the tile asset kind routes through sd-sidecar.py → gateway extension → img-gen compose.
+	// For now, compose as an element kind with tile-aware processing.
+	// The actual tiling/seam handling is deferred to the sidecar pipeline.
+	m.composeAssetSet(id, spec, children)
 }

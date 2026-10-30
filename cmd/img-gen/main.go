@@ -104,6 +104,8 @@ func loadConfig() config {
 		TaggerURL:     envOr("TAGGER_URL", ""),
 		TaggerTimeout: tagTimeout,
 		APIToken:      envOr("IMG_GEN_TOKEN", ""),
+		Split9Slice:   envOr("SPLIT_9_SLICE", "false"),
+		CssEmission:   envOr("CSS_EMISSION", "false"),
 	}
 }
 

@@ -1788,7 +1788,7 @@ In `internal/queue/compose.go`:
 4. The unknown-kind message (line 508) becomes:
 
 ```go
-			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc, sheet)", an, a.Kind)}
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: unknown kind %q (want element, kit, atlas, frame, bar, npc, sheet, tile)", an, a.Kind)}
 ```
 
 5. After `npcChildren` (after line 587), add:

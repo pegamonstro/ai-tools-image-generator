@@ -337,10 +337,10 @@ components:
       properties:
         kind:
           type: string
-          enum: [element, kit, atlas, frame, bar, npc, sheet]
+          enum: [element, kit, atlas, frame, bar, npc, sheet, tile]
           description: >
             frame requires frame_margins; bar requires bar_fill and
-            frame_margins; npc requires shape; sheet requires views
+            frame_margins; npc requires shape; sheet requires views; tile is the circular-flag kind
         name: { type: string }
         prompt: { type: string }
         negative: { type: string }

@@ -51,7 +51,7 @@ func TestPunchNineSlice(t *testing.T) {
 }
 
 func TestComposeFrame(t *testing.T) {
-	outs, err := ComposeFrame("panel", frameInput(t), nil, false, 16)
+		outs, err := ComposeFrame("panel", frameInput(t), nil, false, 16, Split9SliceConfig{Enabled: "false", Margin: 16, Format: "single"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestComposeFrame(t *testing.T) {
 }
 
 func TestComposeFrameTransparentRequiresBothRenders(t *testing.T) {
-	if _, err := ComposeFrame("panel", frameInput(t), nil, true, 16); err == nil {
+	if _, err := ComposeFrame("panel", frameInput(t), nil, true, 16, Split9SliceConfig{Enabled: "true", Margin: 16, Format: "single"}); err == nil {
 		t.Fatal("transparent frame with nil black render must error (UnmixAlpha)")
 	}
 }

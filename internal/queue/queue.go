@@ -368,16 +368,19 @@ func (m *Manager) attach(id string) {
 	var unreachableSince time.Time
 	for {
 		if m.isCancelled(id) {
+			m.clearCriticPending(id)
 			m.finish(id, "cancelled", "")
 			return
 		}
 		if !unreachableSince.IsZero() && time.Since(unreachableSince) > attachUnreachableWindow {
 			m.log(id, "restart recovery gave up: sidecar unreachable for %s", roundDur(attachUnreachableWindow))
+			m.clearCriticPending(id)
 			m.finish(id, "failed", attachFailMsg)
 			return
 		}
 		if time.Now().After(deadline) {
 			m.log(id, "restart recovery exceeded its %s cap", roundDur(attachMaxWait))
+			m.clearCriticPending(id)
 			m.finish(id, "failed", attachFailMsg)
 			return
 		}
@@ -403,6 +406,7 @@ func (m *Manager) attach(id string) {
 				return
 			}
 			m.log(id, "restart recovery gave up: sidecar no longer holds result %s", genID)
+			m.clearCriticPending(id)
 			m.finish(id, "failed", attachFailMsg)
 			return
 		default:
@@ -425,6 +429,7 @@ func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int, c
 	var cl critic.Checklist
 	if err := json.Unmarshal([]byte(job.CriticSpec), &cl); err != nil {
 		m.log(id, "resume: failed to unmarshal critic spec: %v", err)
+		m.clearCriticPending(id)
 		m.finish(id, "failed", "critic: persisted checklist unparsable: "+err.Error())
 		return
 	}
@@ -437,6 +442,7 @@ func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int, c
 	png, err := m.opts.Store.ReadImage(attempt.Image)
 	if err != nil {
 		m.log(id, "resume: failed to read attempt image %s: %v", attempt.Image, err)
+		m.clearCriticPending(id)
 		m.finish(id, "failed", err.Error())
 		return
 	}
@@ -559,6 +565,7 @@ func (m *Manager) saveRecovered(id string, png []byte, ctx context.Context) {
 		var cl critic.Checklist
 		if err := json.Unmarshal([]byte(j.CriticSpec), &cl); err != nil {
 			m.log(id, "saveRecovered: failed to unmarshal critic spec: %v", err)
+			m.clearCriticPending(id)
 			m.finish(id, "failed", "critic: persisted checklist unparsable: "+err.Error())
 			return
 		}
@@ -570,6 +577,7 @@ func (m *Manager) saveRecovered(id string, png []byte, ctx context.Context) {
 		rel, err := m.opts.Store.SaveImage(attID, m.withRenderParams(png, kv))
 		if err != nil {
 			m.log(id, "saving the recovered attempt image failed: %v", err)
+			m.clearCriticPending(id)
 			m.finish(id, "failed", err.Error())
 			return
 		}
@@ -586,6 +594,7 @@ func (m *Manager) saveRecovered(id string, png []byte, ctx context.Context) {
 		job := m.jobs[id]
 		if job == nil {
 			m.mu.Unlock()
+			m.clearCriticPending(id) // no-op when the record is truly gone
 			m.finish(id, "failed", "job disappeared during recovery")
 			return
 		}
@@ -1685,8 +1694,11 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 		checks := m.runChecks(ctx, cl, png, prompt)
 		// Update the just-persisted record in place with the check results and
 		// persist again — CriticPending stays retained until the terminal.
-		recs[len(recs)-1].Checks = checks
+		// The mutation MUST hold m.mu: the record's backing array was already
+		// published above (job.Attempts under lock) and the copies Get/List
+		// hand out share it — mirror finishCritic's in-place Chosen write.
 		m.mu.Lock()
+		recs[len(recs)-1].Checks = checks
 		job.Attempts = recs
 		m.mu.Unlock()
 		m.persistJob(*job)
@@ -1719,6 +1731,23 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 			}
 		}
 	}
+}
+
+// clearCriticPending drops the ghost pending marker under lock so a terminal
+// state reached by a recovery failure path never persists
+// CriticPending/CriticNextPrompt on a terminal job (the Job contract:
+// pending fields are absent on terminal). cancelAndFinish and finishCritic
+// clear the same fields inline on their paths; this covers the plain-finish
+// failure exits of the restart-recovery surface (attach give-ups,
+// resumeCriticChecks and saveRecovered failures). No-op when the job record
+// is already gone.
+func (m *Manager) clearCriticPending(id string) {
+	m.mu.Lock()
+	if job := m.jobs[id]; job != nil {
+		job.CriticPending = nil
+		job.CriticNextPrompt = ""
+	}
+	m.mu.Unlock()
 }
 
 // cancelAndFinish cancels the job's context, removes it from cancels, and finishes.

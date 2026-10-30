@@ -2215,6 +2215,140 @@ func TestCriticLoopAttemptTexCarriesConditioning(t *testing.T) {
 	}
 }
 
+// TestCriticRestoreFailureTerminalsClearPending pins the recovery failure
+// exits: a terminal reached by a resumeCriticChecks / saveRecovered failure
+// never persists the ghost CriticPending / CriticNextPrompt markers (the Job
+// contract: pending fields are absent on terminal jobs).
+func TestCriticRestoreFailureTerminalsClearPending(t *testing.T) {
+	validClBytes, _ := json.Marshal(critic.Checklist{
+		Checks: []critic.Check{{Op: "vlm_check", Spec: "must have cat"}},
+		Budget: 2,
+		OnFail: "deliver",
+	})
+
+	buildJob := func(id, spec string, pending int, status, nextPrompt string, attempts []storage.CriticAttempt) storage.Job {
+		j := storage.Job{
+			ID:            id,
+			Genre:         "landscape",
+			Mode:          "generate",
+			Prompt:        "A landscape: a valley.",
+			Size:          "512x512",
+			Seed:          int64Ptr(42),
+			Status:        status,
+			CreatedAt:     time.Now().Add(-time.Minute),
+			GenID:         "gen42",
+			CriticSpec:    spec,
+			CriticPending: intPtr(pending),
+			Attempts:      attempts,
+		}
+		j.CriticNextPrompt = nextPrompt
+		return j
+	}
+
+	assertCleared := func(t *testing.T, s *storage.Store, id string, j storage.Job) {
+		t.Helper()
+		if j.CriticPending != nil || j.CriticNextPrompt != "" {
+			t.Fatalf("in-memory pending not cleared on failed terminal: %v / %q", j.CriticPending, j.CriticNextPrompt)
+		}
+		hist, err := s.LoadHistory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range hist {
+			if h.ID != id {
+				continue
+			}
+			if h.Status != "failed" {
+				t.Fatalf("persisted record status = %q, want failed", h.Status)
+			}
+			if h.CriticPending != nil || h.CriticNextPrompt != "" {
+				t.Fatalf("persisted terminal record kept ghost pending: %v / %q", h.CriticPending, h.CriticNextPrompt)
+			}
+		}
+	}
+
+	t.Run("resume: unparsable checklist", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := storage.New(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attemptID := "4444444444444444"
+		if _, err := s.SaveImage(attemptID, tinyPNG()); err != nil {
+			t.Fatal(err)
+		}
+		job := buildJob("restore-fail-unparsable", "{not json", 1, "validating",
+			"A landscape: a valley.", []storage.CriticAttempt{{Image: attemptID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42)}})
+		if err := s.AppendHistory(job); err != nil {
+			t.Fatal(err)
+		}
+
+		opts := testOptsAt(t, dir)
+		opts.Critic = criticEnvForTest(true) // must never be reached
+		m := New(opts)
+		j := waitForCriticDone(t, m, job.ID)
+		if j.Status != "failed" || !strings.Contains(j.Error, "unparsable") {
+			t.Fatalf("job = %s %q, want failed with the unparsable-spec error", j.Status, j.Error)
+		}
+		assertCleared(t, s, job.ID, j)
+	})
+
+	t.Run("resume: unreadable attempt image", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := storage.New(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The attempt record references an image that was never saved.
+		job := buildJob("restore-fail-noimage", string(validClBytes), 1, "validating",
+			"A landscape: a valley.", []storage.CriticAttempt{{Image: "5555555555555555", Prompt: "A landscape: a valley.", Seed: int64Ptr(42)}})
+		if err := s.AppendHistory(job); err != nil {
+			t.Fatal(err)
+		}
+
+		opts := testOptsAt(t, dir)
+		opts.Critic = criticEnvForTest(true) // must never be reached
+		m := New(opts)
+		j := waitForCriticDone(t, m, job.ID)
+		if j.Status != "failed" {
+			t.Fatalf("job = %s %q, want failed (attempt bytes missing)", j.Status, j.Error)
+		}
+		assertCleared(t, s, job.ID, j)
+	})
+
+	t.Run("saveRecovered: unparsable checklist", func(t *testing.T) {
+		dir := t.TempDir()
+		s, err := storage.New(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attemptID := "6666666666666666"
+		if _, err := s.SaveImage(attemptID, tinyPNG()); err != nil {
+			t.Fatal(err)
+		}
+		// Kill-during-render shape: pending=2 with one recorded attempt; the
+		// restarted attach recovers the sidecar render and the unparsable
+		// spec fails the recovery.
+		job := buildJob("restore-fail-recovered", "{not json", 2, "generating",
+			"A landscape: a valley., add cat", []storage.CriticAttempt{{Image: attemptID, Prompt: "A landscape: a valley.", Seed: int64Ptr(42)}})
+		if err := s.AppendHistory(job); err != nil {
+			t.Fatal(err)
+		}
+
+		opts := testOptsAt(t, dir)
+		opts.Ops.Result = func(ctx context.Context, mode, genID, sidecar string) ([]byte, error) {
+			return tinyPNG(), nil
+		}
+		opts.Critic = criticEnvForTest(true) // must never be reached
+		m := New(opts)
+		j := waitForCriticDone(t, m, job.ID)
+		if j.Status != "failed" || !strings.Contains(j.Error, "unparsable") {
+			t.Fatalf("job = %s %q, want failed with the unparsable-spec error", j.Status, j.Error)
+		}
+		assertCleared(t, s, job.ID, j)
+	})
+}
+
 // Helper functions
 func int64Ptr(v int64) *int64 { return &v }
 func intPtr(v int) *int       { return &v }

@@ -62,7 +62,7 @@ The op enum (submit-time `validation_error` on unknown op/arg; ops are an enum s
 
 ### `palette_conform{}` — deterministic coherence (Go)
 - Target resolution, in order: the set palette (asset inside a set with `palette_lock`) → the submit-time `validate.palette` array → else submit-time `validation_error` ("palette_conform requires a palette_lock set or an explicit palette") — honest gate, never a skipped check.
-- With `pixel_fix` (render already quantized): every opaque pixel's color must ∈ the target palette — catches post-op drift (outline/resize) after quantization.
+- With `pixel_fix` (render already quantized): every opaque pixel's color must ∈ the target palette — catches post-op drift (outline/resize) after quantization. **DORMANT mode:** the exact-containment branch is unreachable pre-quantization in Phase D (a raw render can never land on palette-exact colors) — its proper home is a post-compose check seam, not the submit-time checklist.
 - Otherwise: ≥ 98% of opaque pixels within CIEDE2000 ΔE ≤ 8 of the target palette.
 - Failure feedback: `"palette drift"`.
 

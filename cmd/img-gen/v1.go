@@ -519,9 +519,6 @@ func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ip is a test helper to take the address of a value (for optional Budget pointer).
-func ip[T any](v T) *T { return &v }
-
 // handleV1AssetSet submits an asset set. wait_seconds > 0 blocks on the
 // parent job; otherwise the caller gets the ids and polls. The set id equals
 // the job id, so GET /api/v1/sets/{id} takes either value.

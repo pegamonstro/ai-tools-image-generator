@@ -366,7 +366,7 @@ img-gen can evaluate images against a critic checklist at submit time (mutate-th
 
 ### The `validate` field
 
-Attach a `validate` object to job submits (`POST /api/v1/jobs`), asset sets (`POST /api/v1/asset-sets` — per-asset or top-level), and GIFs (`POST /api/v1/gifs`):
+Attach a `validate` object to job submits (`POST /api/v1/jobs`), to **each asset spec** of an asset set (`POST /api/v1/asset-sets` — the set request itself has no top-level `validate` field, so one sent there is silently ignored), and to GIFs (`POST /api/v1/gifs`):
 
 ```json
 {
@@ -384,7 +384,7 @@ Attach a `validate` object to job submits (`POST /api/v1/jobs`), asset sets (`PO
 
 ### Standalone endpoint
 
-`POST /api/v1/validate` — synchronous, up to 1024×1024 (the shared `compose.RepairMaxDim` bound, same as `/api/v1/repair`). Body: `{image, checks, palette?, budget?}`. Returns `{verdict, checks[]}`. No retries; budget defaults to 0.
+`POST /api/v1/validate` — synchronous, up to 1024×1024 (the shared `compose.RepairMaxDim` bound, same as `/api/v1/repair`). Body: `{image, checks, palette?, budget?}`. Returns `{verdict, checks[]}`. The budget is **inert on the sync path** — there is no retry loop; budget applies to job retries.
 
 ### Verdict taxonomy
 

@@ -15,7 +15,7 @@ info:
       UI uses. Plain-text errors, byte-identical behavior; do not build against it.
 
     Modes: `generate`, `edit`, `inpaint`, `outpaint`, `blend`, `upscale`, `pose`.
-    Job statuses: `queued`, `enhancing`, `generating`, `done`, `failed`, `cancelled`.
+    Job statuses: `queued`, `enhancing`, `generating`, `validating`, `done`, `failed`, `cancelled`.
 
     Compose jobs (mode `compose`) assemble delivered sets from `asset`-mode
     children via /api/v1/asset-sets and /api/v1/gifs; fetch results with
@@ -242,7 +242,7 @@ components:
           type: string
         status:
           type: string
-          enum: [queued, enhancing, generating, done, failed, cancelled]
+          enum: [queued, enhancing, generating, validating, done, failed, cancelled]
         step:
           type: integer
           description: In-flight diffusion step; present only while generating.
@@ -266,6 +266,34 @@ components:
             Sidecar-side generation id. Present once the sidecar learns the job
             (mid-flight or from history); a restart re-attaches to this
             generation's persisted result instead of failing the job.
+        validate:
+          $ref: "#/components/schemas/ValidateState"
+        attempts:
+          type: array
+          description: >
+            Per-attempt records for validated jobs (attempt 1 first). Each
+            holds the attempt's stored image id, the prompt and seed that
+            rendered it, and the checks run against it; chosen marks the
+            attempt delivered as image_path.
+          items:
+            $ref: "#/components/schemas/CriticAttempt"
+        critic_spec:
+          type: string
+          description: >
+            The compiled checklist JSON (critic.Checklist) persisted with the
+            job so a restart re-runs validation idempotently; absent when the
+            job submitted no validate spec.
+        critic_pending:
+          type: integer
+          description: >
+            1-based attempt currently rendering or under checks (the restart
+            recovery marker, retained until the chain finalizes); absent on
+            terminal jobs.
+        critic_next_prompt:
+          type: string
+          description: >
+            Prompt the pending attempt renders (base prompt for attempt 1,
+            mutated prompt on retries); absent on terminal jobs.
     GenerateAndWaitRequest:
       allOf:
         - $ref: "#/components/schemas/SubmitRequest"
@@ -511,6 +539,65 @@ components:
               suggestion:
                 type: string
                 description: Suggested fix when status is fail (e.g., missing tags, palette drift, seam).
+    ValidateState:
+      type: object
+      description: >
+        A validated job's validation summary (present once the attempt chain
+        resolves — the job's validate field).
+      required: [verdict, attempts]
+      properties:
+        verdict:
+          type: string
+          enum: [pass, best_of_n, failed, indeterminate]
+          description: >
+            pass = chosen attempt has no failing checks and at least one
+            relevant check; best_of_n = chosen attempt still has failing
+            checks but on_fail: deliver; failed = on_fail: fail and the
+            chosen attempt has failing checks; indeterminate = every check
+            inert (undetermined/error).
+        attempts:
+          type: integer
+          description: Number of render attempts the chain evaluated.
+    CriticAttempt:
+      type: object
+      description: One render attempt of a validated job.
+      properties:
+        image:
+          type: string
+          description: Stored image id; serve via GET /api/v1/images/{id}.png.
+        prompt:
+          type: string
+          description: The prompt that rendered this attempt (base or mutated).
+        seed:
+          type: integer
+          format: int64
+          description: Seed this attempt rendered with (sidecar-assigned; absent when unset).
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              op:
+                type: string
+                enum: [vlm_check, tag_roundtrip, palette_conform, tile_conform]
+              spec:
+                type: string
+                description: Criterion for vlm_check; omitted for other ops.
+              status:
+                type: string
+                enum: [pass, fail, undetermined, error]
+              reason:
+                type: string
+              suggestion:
+                type: string
+          description: >
+            Check results for this attempt (same shape as ValidateResponse's
+            checks). Empty while the attempt is mid-checks.
+        chosen:
+          type: boolean
+          description: >
+            True on the attempt delivered as image_path (exactly one across
+            the array when the chain resolved).
     GifRequest:
       type: object
       required: [name, source]

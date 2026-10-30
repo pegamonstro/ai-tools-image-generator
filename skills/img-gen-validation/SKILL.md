@@ -17,7 +17,7 @@ img-gen's Phase D critic evaluates images against a checklist of up to 8 checks.
 ## When to attach `validate` at submit vs call `/api/v1/validate` standalone
 
 - **Attach at submit** (`POST /api/v1/jobs`, `/api/v1/asset-sets`, `/api/v1/gifs`): enables mutate-then-resample retries. Attempt 1 renders base prompt + seed; attempt 2 renders mutated prompt, SAME seed; attempt N≥3 renders mutated prompt, seed+(N−2). Best-of-N by score. Verdicts: `pass`, `best_of_n`, `failed`, `indeterminate`. Provenance: `CriticPending`, `CriticNextPrompt`, `Attempts`, `critic_*` tEXt keys, manifest `validate` + `FrameChecks` records.
-- **Call `/api/v1/validate` standalone**: single verdict; budget defaults to 0 (evaluate-only) unless explicitly set 1–3 — no mutate loop. Use for auditing existing images, CI gates, or when retries are handled externally.
+- **Call `/api/v1/validate` standalone**: single verdict. The budget is **inert on the sync path** — no retry loop; budget applies to job retries. Use for auditing existing images, CI gates, or when retries are handled externally.
 
 ## Budget & `on_fail` guidance
 
@@ -35,11 +35,11 @@ img-gen's Phase D critic evaluates images against a checklist of up to 8 checks.
 | `failed` | `on_fail: "fail"` AND chosen attempt has ≥1 failing check |
 | `indeterminate` | all checks inert (`undetermined` or `error`) — judge refusal, malformed criterion, timeout, missing tagger/vocab, image decode error. **Never fail-open, never budget-consuming.** |
 
-Per-check `status`: `pass`, `fail`, `undetermined`, `error` (inert statuses; the sync endpoint returns HTTP 400/500 for infra errors).
+Per-check `status`: `pass`, `fail`, `undetermined`, `error` (inert statuses; check-time infra failures return `error` within a 200 response — HTTP 400 is only for request-shape failures).
 
 ## Reading attempt provenance
 
-- `attempts[].chosen` — the best attempt index (0-based).
+- `attempts[].chosen` — boolean; true on the delivered attempt (not an index — the `critic_attempt` tEXt numbering is 1-based).
 - `critic_verdict` tEXt key on the chosen PNG — one of `pass|best_of_n|failed|indeterminate`.
 - `critic_attempt` tEXt key — 1-based attempt number.
 - `critic_<op>` tEXt keys — per-check status (`pass|fail|undetermined|error`).

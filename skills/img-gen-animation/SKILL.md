@@ -17,7 +17,7 @@ description: Build animated GIFs with the img-gen service — assemble frames fr
   "request":{"mode":"asset","prompt":"<subject>","size":"64x64","seed":7},
   "count":8}`. Frames get `seed+i` and a frame-index suffix; keep prompts
   style-stable (state the shared style once and describe only per-frame
-  motion). A top-level `"validate"` on the GIF request runs the critic checklist on every `from_spec` frame (state-set QA). Provided frames (`from_frames`, `composite` anim, `keyframes` anchors) are evaluated-only at compose (keyframes anchors excluded from validation — they are the reference).
+  motion). A top-level `"validate"` on the GIF request runs the critic checklist on every `from_spec` frame (state-set QA). Provided frames (`from_frames`, `composite` anim, `keyframes` anchors) are evaluated-only at compose (keyframes anchors excluded from validation — they are the reference). Validation stays evaluate-only by default; `on_fail: "fail"` still fails the parent at compose-time.
 - `keyframes` — smooth in-between motion between 2-16 anchor frames on the
   RIFE sidecar: `{"type":"keyframes","keyframes":{"anchors":[<2-16 frame
   refs>],"multiplier":3}}`. `multiplier` takes 2-10 (default 3) and the

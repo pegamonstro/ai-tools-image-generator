@@ -324,15 +324,20 @@ func (m *Manager) childResult(childID string) (status, errMsg string, png []byte
 
 // imagePathID extracts the stored image id from a job ImagePath, whose shape
 // is always "images/<id>.png" (storage.SaveImage's rel convention, shared by
-// renderAndFinish and finishCritic). ok is false for any other shape, so
-// callers fall back to treating the job id as the image id.
+// renderAndFinish and finishCritic). ok is false for any other shape —
+// including a separator inside the id (a set path, sets/...), which is not a
+// stored job image — so callers fall back to treating the job id as the
+// image id or to no fallback at all, per their contract.
 func imagePathID(rel string) (id string, ok bool) {
 	const prefix, suffix = "images/", ".png"
 	if !strings.HasPrefix(rel, prefix) || !strings.HasSuffix(rel, suffix) {
 		return "", false
 	}
 	id = strings.TrimSuffix(strings.TrimPrefix(rel, prefix), suffix)
-	return id, id != ""
+	if id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
 }
 
 // childrenResults loads a parent's child images in order. specChildren is the
@@ -1350,10 +1355,11 @@ func (m *Manager) resolveFrameRef(ref FrameRef) ([]byte, error) {
 }
 
 // jobChosenAttemptImage returns the stored image id behind a job's recorded
-// ImagePath — "images/<id>.png" stripped to <id> — or "" when the job has no
-// in-memory record (foreign image, old history) or its ImagePath is not one
-// image at images/<id>.png. Callers use it to reach a validated job's chosen
-// attempt (that job never has an images/<jobID>.png on disk).
+// ImagePath — "images/<id>.png" stripped to <id> (via imagePathID, the one
+// ImagePath parser) — or "" when the job has no in-memory record (foreign
+// image, old history) or its ImagePath is not one image at images/<id>.png.
+// Callers use it to reach a validated job's chosen attempt (that job never
+// has an images/<jobID>.png on disk).
 func (m *Manager) jobChosenAttemptImage(jobID string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1361,11 +1367,8 @@ func (m *Manager) jobChosenAttemptImage(jobID string) string {
 	if j == nil {
 		return ""
 	}
-	if !strings.HasPrefix(j.ImagePath, "images/") || !strings.HasSuffix(j.ImagePath, ".png") {
-		return ""
-	}
-	id := j.ImagePath[len("images/") : len(j.ImagePath)-len(".png")]
-	if id == "" || strings.Contains(id, "/") {
+	id, ok := imagePathID(j.ImagePath)
+	if !ok {
 		return ""
 	}
 	return id

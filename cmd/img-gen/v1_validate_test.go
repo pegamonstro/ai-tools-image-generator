@@ -20,6 +20,9 @@ import (
 	"img-gen/internal/lattice"
 )
 
+// ip is a test helper to take the address of a value (for optional Budget pointer).
+func ip[T any](v T) *T { return &v }
+
 // makePNG returns a base64-encoded PNG of the given dimensions.
 func makePNG(w, h int) string {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -250,5 +253,20 @@ func TestValidateOpenAPISync(t *testing.T) {
 	// Verify validate field is on the request schemas that accept it (substring, not indentation-sensitive).
 	if !strings.Contains(s, "validate:") || !strings.Contains(s, "ValidateSpec") {
 		t.Fatal("openapi.yaml missing validate field on SubmitRequest/AssetSpecIn/GifRequest")
+	}
+	// Job response contract: the status enum carries the validating stage and
+	// the Job schema documents the critic bookkeeping (ValidateState summary,
+	// per-attempt records, and the pending-marker fields).
+	if !strings.Contains(s, "enum: [queued, enhancing, generating, validating, done, failed, cancelled]") {
+		t.Fatal("openapi.yaml Job status enum missing validating")
+	}
+	if !strings.Contains(s, "ValidateState") {
+		t.Fatal("openapi.yaml missing ValidateState component (job.validate)")
+	}
+	if !strings.Contains(s, "CriticAttempt") {
+		t.Fatal("openapi.yaml missing CriticAttempt component (job.attempts)")
+	}
+	if !strings.Contains(s, "critic_spec") || !strings.Contains(s, "critic_pending") || !strings.Contains(s, "critic_next_prompt") {
+		t.Fatal("openapi.yaml missing job critic bookkeeping fields (critic_spec/critic_pending/critic_next_prompt)")
 	}
 }

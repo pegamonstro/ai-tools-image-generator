@@ -768,17 +768,24 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		if !validAssetSize(req.Size) {
 			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q for asset (want WxH, both multiples of 16)", req.Size)}
 		}
+		// Character kind: asset children may carry B1 conditioning (identity
+		// lock, pose skeleton); the gate above keeps it off the edit modes,
+		// here it must actually reach dispatch like generate's does.
+		inputs.Control = req.Control
+		inputs.IPAdapter = req.IPAdapter
 	default:
 		return "", &ValidationError{Code: "unknown_mode", Msg: fmt.Sprintf("unknown mode %q", mode)}
 	}
 
-	// B1: control/ip-adapter only ever steer generate runs. The edit-family
-	// modes own their init-image semantics, so the pair is mutually
-	// exclusive with them — a request carrying both is rejected, never
-	// silently deprioritized.
+	// B1: control/ip-adapter only ever steer plain prompt renders. The
+	// edit-family modes own their init-image semantics, so the pair is
+	// mutually exclusive with them (and with inpaint/blend/upscale/pose) — a
+	// request carrying both is rejected, never silently deprioritized. Compose
+	// children render through asset mode, which is the same free-prompt path,
+	// so character-kind pose/identity children carry it there.
 	if req.Control != nil || req.IPAdapter != nil {
-		if mode != "generate" {
-			return "", &ValidationError{Code: "validation_error", Msg: "control and ip_adapter require mode \"generate\""}
+		if mode != "generate" && mode != "asset" {
+			return "", &ValidationError{Code: "validation_error", Msg: `control and ip_adapter require mode "generate"`}
 		}
 		if verr := normalizeConditioning(req.Control, req.IPAdapter); verr != nil {
 			return "", verr
@@ -1111,6 +1118,29 @@ func (m *Manager) run(id string) {
 	m.cancels[id] = cancel
 	m.mu.Unlock()
 
+	// Character kind: a FromPose control carries the raw pose photo; DWPose
+	// extracts the COCO-17 keypoints and the openpose skeleton that actually
+	// conditions the render replaces it here, once, before any attempt (so
+	// critic retries reuse the same skeleton). No DWPose sidecar fails the job
+	// honestly — submit-time validation already gates this path, this backstop
+	// only fires if the sidecar was unwired after submit.
+	if c := inputs.Control; c != nil && c.FromPose && c.Net == "pose" {
+		if m.opts.Ops.DWPose == nil {
+			m.finish(id, "failed", "pose conditioning needs the DWPose sidecar (DWPOSE_URL)")
+			cancel()
+			return
+		}
+		skelB64, derr := m.dwposeSkeleton(ctx, c.Image)
+		if derr != "" {
+			m.finish(id, "failed", derr)
+			cancel()
+			return
+		}
+		m.log(id, "dwpose skeleton ready (%dB)", len(skelB64))
+		c.Image = skelB64
+		inputs.Control = c
+	}
+
 	spec := storage.ModelSpec{Model: job.Model, LatticeModel: job.ModelKey, Loras: job.Loras, Sidecar: job.Sidecar}
 	if job.CriticSpec == "" {
 		// Pre-existing behavior, verbatim: one render, save, finish.
@@ -1135,6 +1165,29 @@ func (m *Manager) run(id string) {
 		return m.dispatch(pctx, id, job, inputs, prompt, spec, sp)
 	}
 	m.criticLoop(ctx, id, job, renderer, job.Prompt /* base */, cl, 1, nil, inputs)
+}
+
+// dwposeSkeleton decodes the pose photo, extracts COCO-17 keypoints through
+// the DWPose sidecar, and renders the openpose skeleton image the pose
+// ControlNet conditions on. The error return is a user-facing message string;
+// empty means success.
+func (m *Manager) dwposeSkeleton(ctx context.Context, poseB64 string) (string, string) {
+	kps, err := m.opts.Ops.DWPose(ctx, poseB64)
+	if err != nil {
+		return "", fmt.Sprintf("dwpose sidecar: %v", err)
+	}
+	// The queue stores pose photos as "data:<mime>;base64,…" or bare base64;
+	// the renderer wants bare base64 — strip an optional data: URL prefix.
+	if i := strings.Index(poseB64, ";base64,"); i >= 0 {
+		poseB64 = poseB64[i+len(";base64,"):]
+	} else if i := strings.Index(poseB64, "base64,"); i >= 0 {
+		poseB64 = poseB64[i+len("base64,"):]
+	}
+	skel, err := compose.PoseSkeleton(poseB64, kps)
+	if err != nil {
+		return "", fmt.Sprintf("pose skeleton: %v", err)
+	}
+	return skel, ""
 }
 
 // dispatch runs the mode-specific op in a goroutine so per-step progress can

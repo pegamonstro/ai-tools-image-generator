@@ -4,6 +4,27 @@
 # Unsupported models are flagged so submit validation can reject honestly.
 
 profiles:
+  # Live-catalog profiles (sd.cpp sdxl engine — no mflux v-pred knobs here).
+  - name: "sdxl-pony"
+    models:
+      - "sdxl-pony"
+    defaults:
+      score_tags: "score_9, score_8_up, score_7_up"
+      negative: "score_6, score_5, score_4, worst quality, low quality, bad anatomy"
+      sampler: "euler_a"
+      steps: 30
+
+  - name: "sdxl-illustrious"
+    models:
+      - "sdxl-illustrious"
+    defaults:
+      positive_prefix: "masterpiece, best quality, "
+      negative: "worst quality, low quality, bad anatomy, bad composition"
+      sampler: "euler_a"
+      steps: 28
+
+  # Family defaults for mflux-sidecar keys (apply when those keys are loaded
+  # into models.json on a gateway host carrying the v-pred engines).
   - name: "pony"
     models:
       - "pony-v6"

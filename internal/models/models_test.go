@@ -77,3 +77,45 @@ func TestLoadParsesSidecar(t *testing.T) {
 		t.Fatalf("sidecar not parsed: %+v", c.Models)
 	}
 }
+
+func TestApplyProfileScoreTags(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "profiles.yaml")
+	if err := os.WriteFile(p, []byte(
+		`profiles:
+  - name: "pony"
+    models: ["sdxl-pony"]
+    defaults:
+      score_tags: "score_9, score_8_up, score_7_up"
+      positive_prefix: "safe "
+      negative: "score_6"
+      steps: 30`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pc, err := LoadProfiles(p)
+	if err != nil {
+		t.Fatalf("LoadProfiles: %v", err)
+	}
+	prompt := "a knight"
+	negative := "blurry"
+	sampling := map[string]any{}
+	pc.ApplyProfile("sdxl-pony", &prompt, &negative, &sampling)
+
+	// score_tags prepends before positive_prefix; prefix lands right after it.
+	want := "score_9, score_8_up, score_7_up, safe a knight"
+	if prompt != want {
+		t.Fatalf("prompt = %q, want %q", prompt, want)
+	}
+	if negative != "blurry, score_6" {
+		t.Fatalf("negative = %q", negative)
+	}
+	if sampling["steps"] != 30 {
+		t.Fatalf("steps = %v", sampling["steps"])
+	}
+
+	// A model without a matching profile is untouched.
+	prompt2 := "untouched"
+	pc.ApplyProfile("sdxl-base", &prompt2, nil, nil)
+	if prompt2 != "untouched" {
+		t.Fatalf("prompt2 = %q", prompt2)
+	}
+}

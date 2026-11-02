@@ -47,6 +47,10 @@ type ControlParams struct {
 	Net      string  `json:"net"`      // "pose" | "depth" | "canny"
 	Image    string  `json:"image"`    // base64: conditioning reference
 	Strength float64 `json:"strength"` // 0 = sidecar default (0.7); else 0.1..1.0
+	// FromPose marks Image as a raw pose photo awaiting DWPose keypoint
+	// extraction + skeleton rendering at run time (character kind children).
+	// Not serialized: it is set by the queue, not by API callers.
+	FromPose bool `json:"-"`
 }
 
 // IPAdapterParams conditions a generate run on an identity reference through

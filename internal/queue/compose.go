@@ -646,6 +646,13 @@ func (m *Manager) SubmitAssetSet(req AssetSetRequest) (string, error) {
 			if len(a.Poses) == 0 {
 				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: poses is required for character kind (at least 1)", an)}
 			}
+			// Character children always carry conditioning (IPAdapter
+			// identity, plus pose ControlNet on image poses), and B1 gates
+			// conditioning to the SDXL-sidecar engine — fail the submit when
+			// the set's model would resolve to anything else.
+			if m.opts.Models == nil || m.opts.Models.LookupSidecar(req.Model) != "sdxl" {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("asset %q: character kind requires an SDXL-sidecar model (catalog key with sidecar \"sdxl\") in the set's model field", an)}
+			}
 			if m.opts.Ops.DWPose == nil {
 				// Check if any pose is a base64 image (needs DWPose) vs explicit keypoints
 				needsDWPose := false
@@ -823,39 +830,43 @@ func sheetChildren(prompt, negative, size string, seed int64, views []string) []
 }
 
 // characterChildren builds one job per pose for a character asset.
-// Each pose gets ControlNet conditioning (from DWPose keypoints or pose image)
-// plus IPAdapter identity conditioning from the character reference image.
-// All children use the same pinned seed for consistency across poses.
+// A pose that is a base64 image gets pose ControlNet conditioning extracted
+// through DWPose at run time plus IPAdapter identity conditioning from the
+// character reference; a named pose rides the prompt (there is no image to
+// steer geometry with) and keeps the IPAdapter identity lock. All children
+// share the same pinned seed for consistency across poses.
 func characterChildren(prompt, negative, size string, seed int64, identity string, poses []string) []SubmitRequest {
 	kids := make([]SubmitRequest, 0, len(poses))
 	for _, pose := range poses {
 		s := seed
-		// Build prompt with pose description
-		p := prompt
+		ipa := &storage.IPAdapterParams{Image: identity, Strength: 0.6}
+		var ctrl *storage.ControlParams
 		if strings.HasPrefix(pose, "iVBORw0K") || strings.HasPrefix(pose, "/9j/") {
-			// Base64 image - will need DWPose extraction at runtime
-			p = prompt + ", pose reference"
-		} else {
-			// Explicit pose name/description
-			p = prompt + ", " + pose
+			// Pose photo: DWPose extracts keypoints at run time and the queue
+			// renders the openpose skeleton that actually conditions the render.
+			ctrl = &storage.ControlParams{Net: "pose", Image: pose, Strength: 0.8, FromPose: true}
+			kids = append(kids, SubmitRequest{
+				// Plain asset renders (generate or asset) may carry
+				// conditioning; child renders use asset mode — free prompt,
+				// engine size, no genre fields.
+				Mode:           "asset",
+				Prompt:         prompt + ", pose reference",
+				NegativePrompt: negative,
+				Size:           size,
+				Seed:           &s,
+				Control:        ctrl,
+				IPAdapter:      ipa,
+			})
+			continue
 		}
-		ctrl := &storage.ControlParams{
-			Net:      "openpose",
-			Image:    pose, // Will be processed by DWPose at runtime if it's an image
-			Strength: 0.8,
-		}
-		ipa := &storage.IPAdapterParams{
-			Image:    identity,
-			Strength: 0.6,
-		}
+		// Named pose description: the pose lives in the prompt.
 		kids = append(kids, SubmitRequest{
-			Mode:      "asset",
-			Prompt:    p,
+			Mode:           "asset",
+			Prompt:         prompt + ", " + pose,
 			NegativePrompt: negative,
-			Size:      size,
-			Seed:      &s,
-			Control:   ctrl,
-			IPAdapter: ipa,
+			Size:           size,
+			Seed:           &s,
+			IPAdapter:      ipa,
 		})
 	}
 	return kids

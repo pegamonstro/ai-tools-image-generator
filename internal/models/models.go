@@ -75,6 +75,11 @@ func (c *ProfilesConfig) ApplyProfile(modelKey string, prompt *string, negative 
 				if prompt != nil && d.PositivePrefix != "" {
 					*prompt = d.PositivePrefix + *prompt
 				}
+				// Score tags sit outermost — Pony models expect them at the
+				// very front of the prompt, ahead of any family prefix.
+				if prompt != nil && d.ScoreTags != "" {
+					*prompt = d.ScoreTags + ", " + *prompt
+				}
 				if negative != nil {
 					if d.NegativePrefix != "" {
 						*negative = d.NegativePrefix + *negative

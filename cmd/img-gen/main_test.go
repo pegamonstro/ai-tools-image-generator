@@ -679,7 +679,9 @@ func TestLoadConfigCriticEnvs(t *testing.T) {
 		t.Setenv("TAGGER_URL", "")
 		t.Setenv("TAGGER_TIMEOUT_S", "")
 		cfg := loadConfig()
-		if cfg.CriticModel != "huihui_ai/qwen2.5-vl-abliterated:latest" {
+		// :7b is the registry's actual tag — the :latest form 404s (see the
+		// loadConfig comment), so the default must route.
+		if cfg.CriticModel != "huihui_ai/qwen2.5-vl-abliterated:7b" {
 			t.Fatalf("CriticModel = %q", cfg.CriticModel)
 		}
 		if cfg.CriticTimeout != 120*time.Second {

@@ -78,7 +78,9 @@ type config struct {
 }
 
 func loadConfig() config {
-	criticModel := envOr("CRITIC_MODEL", "huihui_ai/qwen2.5-vl-abliterated:latest")
+	// The :7b tag is the registry's actual name — the :latest form ollama
+	// 404s, and the critic's model must route or the judge never answers.
+	criticModel := envOr("CRITIC_MODEL", "huihui_ai/qwen2.5-vl-abliterated:7b")
 	criticTimeout := time.Duration(envIntOr("CRITIC_TIMEOUT_S", 120)) * time.Second
 	if criticTimeout <= 0 {
 		criticTimeout = 120 * time.Second

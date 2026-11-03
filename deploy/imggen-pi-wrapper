@@ -1,0 +1,78 @@
+#!/bin/bash
+# imggen — Igor's shell tool into img-gen (:8099 on M1 via tailnet).
+#
+# Igor runs as shell-wrapped LLM calls (~/bin/igor-code et al); this wrapper
+# gives the same shape to image generation: a single command the agent's
+# harness can run, submitting a job and waiting for the deliverable.
+#
+# Usage: imggen [-m model] [-s size] [-g genre] [--fields K=V,K2=V2...] [-n negative] [-o out.png] "prompt"
+#   model  catalog key (default z-image-turbo; sdxl-pony/sdxl-illustrious also live)
+#   genre  landscape|portrait|scene|... (default landscape; scene takes "description")
+#   size   must be in the genre's allowed list (landscape: 1024x576 768x512 512x512)
+#   Fields: -f "setting=misty valley,object=a pine" (genre-required keys! unknown
+#   keys 400); bare "prompt" text joins every field with the genre template.
+#
+# Prints the job id, then the stored image path on success; nonzero exit on failure.
+# Auth: the tailnet link is trusted; the API token env IMG_GEN_TOKEN rides along
+# when the image-gen API auth is (re)enabled.
+
+set -o pipefail
+IMGGEN_URL="${IMG_GEN_URL:-http://100.109.103.124:8099}"
+MODEL="z-image-turbo"
+SIZE=""
+GENRE="landscape"
+FIELDS=""
+NEG=""
+OUT=""
+while getopts "m:s:g:f:n:o:" k; do
+  case $k in
+    m) MODEL="$OPTARG";; s) SIZE="$OPTARG";; g) GENRE="$OPTARG";;
+    f) FIELDS="$OPTARG";; n) NEG="$OPTARG";; o) OUT="$OPTARG";;
+  esac
+done
+shift $((OPTIND-1))
+PROMPT="${1:?usage: imggen [-m model] [-s size] [-g genre] [-f k=v,...] [-n neg] [-o out] prompt}"
+[ -z "$SIZE" ] && SIZE="768x512"
+
+AUTH=()
+[ -n "$IMG_GEN_TOKEN" ] && AUTH=(-H "Authorization: Bearer $IMG_GEN_TOKEN")
+
+# Build fields: any "-f k=v," pairs, plus the raw prompt as the genre's free-text hook.
+jq_fields="$FIELDS" python3 - "$PROMPT" <<'PY' > /tmp/imggen.$$.fields || exit 1
+import json, os, sys
+fields = {}
+spec = os.environ["jq_fields"]
+for pair in spec.split(","):
+    if "=" in pair:
+        k, v = pair.split("=", 1)
+        fields[k.strip()] = v.strip()
+prompt_text = sys.argv[1]
+fields["description"] = prompt_text
+print(json.dumps(fields))
+PY
+
+FIELDS_JSON=$(cat /tmp/imggen.$$.fields)
+BODY=$(jq -n --arg g "$GENRE" --arg s "$SIZE" --arg m "$MODEL" --arg n "$NEG" --argjson f "$FIELDS_JSON" \
+  '{genre: $g, size: $s, mode: "generate", model: $m, enhance: false, fields: $f} + (if $n != "" then {negative_prompt: $n} else {} end)')
+rm -f /tmp/imggen.$$.fields
+
+RESP=$(mktemp)
+curl -s -m 30 -X POST "$IMGGEN_URL/api/jobs" -H "Content-Type: application/json" "${AUTH[@]}" \
+  --data "$BODY" > "$RESP" || { echo "submit failed: $(cat "$RESP")"; exit 2; }
+JID=$(python3 -c "import json,sys; print(json.load(open('$RESP'))['job_id'])" 2>/dev/null)
+[ -z "$JID" ] && { echo "submit failed: $(cat "$RESP")"; exit 2; }
+echo "job_id=$JID"
+
+# Block until the job terminal state (img-gen's own queue owns rendering).
+for _ in $(seq 1 240); do
+  ST=$(curl -s -m 10 "${AUTH[@]}" "$IMGGEN_URL/api/jobs/$JID")
+  STATUS=$(echo "$ST" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])" 2>/dev/null)
+  case "$STATUS" in
+    done) break;;
+    failed|cancelled) echo "job $JID: $STATUS"; echo "$ST" | head -c 400; echo; exit 3;;
+  esac
+  sleep 5
+done
+[ "$STATUS" = "done" ] || { echo "timeout waiting for $JID"; exit 4; }
+curl -s -m 60 "${AUTH[@]}" "$IMGGEN_URL/api/images/$JID.png" -o "${OUT:-/tmp/imggen-$JID.png}" \
+  && echo "image=${OUT:-/tmp/imggen-$JID.png}"

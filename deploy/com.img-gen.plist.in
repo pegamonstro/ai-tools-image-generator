@@ -59,6 +59,21 @@
              so model-less routing needs this; a sidecar default on direct. -->
         <key>IMAGE_MODEL</key>
         <string>__IMAGE_MODEL__</string>
+        <!-- Route pose-photo conditioning to the DWPose sidecar (COCO-17
+             extraction for the character kind). Left empty when no sidecar is
+             configured — pose-image characters then fail submission with the
+             honest error. Placeholder, substituted by install-macos.sh. -->
+        <key>DWPOSE_URL</key>
+        <string>__DWPOSE_URL__</string>
+        <!-- Split frame assets into their 9 regions (compose.go split mode):
+             region PNGs + insets.json instead of one marked PNG. false keeps
+             the legacy shape. -->
+        <key>SPLIT_9_SLICE</key>
+        <string>__SPLIT_9_SLICE__</string>
+        <!-- Emit a CSS manifest (classes per region with background-image urls)
+             alongside split assets. Requires the split above to carry regions. -->
+        <key>CSS_EMISSION</key>
+        <string>__CSS_EMISSION__</string>
     </dict>
 
     <key>RunAtLoad</key>

@@ -46,14 +46,25 @@ REMBG_URL="${REMBG_URL:-}"
 #   TAGGER_URL=http://<tagger-sidecar>:<port> ./deploy/install-macos.sh
 TAGGER_URL="${TAGGER_URL:-}"
 # Optional: the full VLM judge model tag answering the validate checklist's
-# vlm_check criteria — a control-plane value, passed through verbatim:
+# vlm_check criteria — a control-plane value, passed through verbatim. The :7b
+# tag is the registry's actual name (the :latest form 404s):
 #   CRITIC_MODEL=<full-model-tag> ./deploy/install-macos.sh
-CRITIC_MODEL="${CRITIC_MODEL:-huihui_ai/qwen2.5-vl-abliterated:latest}"
+CRITIC_MODEL="${CRITIC_MODEL:-huihui_ai/qwen2.5-vl-abliterated:7b}"
 # Optional: the model submitted when a request (including generated asset set
 # / GIF children) carries none — a catalog key or raw value. Empty on lattice
 # routing is unroutable (the registry routes by model name), so pass it:
 #   IMAGE_MODEL=<catalog-key> ./deploy/install-macos.sh
 IMAGE_MODEL="${IMAGE_MODEL:-}"
+# Optional: the DWPose sidecar for the character kind's pose conditioning.
+# Left empty (the default) when no sidecar is configured — base64 pose
+# characters then fail submission with the honest error:
+#   DWPOSE_URL=http://<dwpose-sidecar>:<port> ./deploy/install-macos.sh
+DWPOSE_URL="${DWPOSE_URL:-}"
+# Optional frame-asset extras (split region PNGs + insets.json; the CSS
+# manifest rides on the split). Defaults keep the legacy single-PNG shape:
+#   SPLIT_9_SLICE=true CSS_EMISSION=true ./deploy/install-macos.sh
+SPLIT_9_SLICE="${SPLIT_9_SLICE:-false}"
+CSS_EMISSION="${CSS_EMISSION:-false}"
 
 if [[ ! -x "$BIN" ]]; then
   echo "error: $BIN is missing or not executable." >&2
@@ -89,6 +100,9 @@ sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__TAGGER_URL__|$TAGGER_URL|g" \
     -e "s|__CRITIC_MODEL__|$CRITIC_MODEL|g" \
     -e "s|__IMAGE_MODEL__|$IMAGE_MODEL|g" \
+    -e "s|__DWPOSE_URL__|$DWPOSE_URL|g" \
+    -e "s|__SPLIT_9_SLICE__|$SPLIT_9_SLICE|g" \
+    -e "s|__CSS_EMISSION__|$CSS_EMISSION|g" \
     "$TEMPLATE" > "$DEST"
 
 launchctl bootstrap "$DOMAIN" "$DEST"

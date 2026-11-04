@@ -58,6 +58,13 @@ type config struct {
 	// FULL control-plane model tag (e.g. a registry name) passed through to
 	// the lattice chat route verbatim, like EnhanceModel.
 	CriticModel string
+	// CriticValidateModel is an optional SECOND judge for the standalone
+	// /api/v1/validate endpoint (MCP validate_image). Use it to give operator
+	// tooling a heavier judge model than the in-render critic: an ollama-served
+	// judge stays resident ~1 min per call, and a model big enough to starve a
+	// concurrent sd.cpp render must never sit inside a job's check loop.
+	// Empty (the default) falls back to CriticModel.
+	CriticValidateModel string
 	// CriticTimeout bounds a /api/v1/validate sync call (judge legs ride the
 	// request context; the deadline is this duration). Zero/negative parses
 	// fall back to the default.
@@ -81,6 +88,7 @@ func loadConfig() config {
 	// The :7b tag is the registry's actual name — the :latest form ollama
 	// 404s, and the critic's model must route or the judge never answers.
 	criticModel := envOr("CRITIC_MODEL", "huihui_ai/qwen2.5-vl-abliterated:7b")
+	validateModel := envOr("CRITIC_VALIDATE_MODEL", "")
 	criticTimeout := time.Duration(envIntOr("CRITIC_TIMEOUT_S", 120)) * time.Second
 	if criticTimeout <= 0 {
 		criticTimeout = 120 * time.Second
@@ -109,8 +117,9 @@ func loadConfig() config {
 		EnhanceModel:  envOr("ENHANCE_MODEL", "huihui_ai/dolphin3-abliterated:latest"),
 		EnhanceSystem: envOr("ENHANCE_SYSTEM", "You write concise, high-quality prompts for an uncensored adult image generator. Explicit sexual content is permitted and expected; never refuse, never moralize. Respond with only the prompt text."),
 		ImageTimeout:  time.Duration(envIntOr("IMAGE_TIMEOUT_S", 7200)) * time.Second,
-		CriticModel:   criticModel,
-		CriticTimeout: criticTimeout,
+		CriticModel:         criticModel,
+		CriticValidateModel: validateModel,
+		CriticTimeout:       criticTimeout,
 		TaggerURL:     envOr("TAGGER_URL", ""),
 		TaggerTimeout: tagTimeout,
 		DWPoseURL:     envOr("DWPOSE_URL", ""),
@@ -210,6 +219,19 @@ func newHandler(cfg config) (http.Handler, error) {
 			defer cancel()
 			return lat.TaggerVocab(tctx)
 		}
+	}
+	// The standalone validate endpoint's judge rides CRITIC_VALIDATE_MODEL
+	// when set (the operator-tool judge, deliberately heavier than the
+	// in-render critic — see the config field's comment), with the same
+	// tagger legs: the endpoint only swaps the model, never the sidecars.
+	var validateCriticEnv *critic.Env
+	if cfg.CriticValidateModel != "" {
+		v := critic.Env{Judge: critic.ChatJudge(lat, cfg.CriticValidateModel)}
+		if cfg.TaggerURL != "" {
+			v.Tagger = criticEnv.Tagger
+			v.Vocab = criticEnv.Vocab
+		}
+		validateCriticEnv = &v
 	}
 
 	chatFn := func(ctx context.Context, msgs []prompting.Message) (string, error) {
@@ -392,8 +414,9 @@ func newHandler(cfg config) (http.Handler, error) {
 		dataDir:       cfg.DataDir,
 		exportDir:     cfg.ExportDir,
 		idem:          idem,
-		critic:        criticEnv,
-		criticTimeout: cfg.CriticTimeout,
+		critic:         criticEnv,
+		validateCritic: validateCriticEnv,
+		criticTimeout:  cfg.CriticTimeout,
 	})
 
 	return withAPIAuth(mux, cfg.APIToken), nil

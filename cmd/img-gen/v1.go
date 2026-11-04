@@ -37,8 +37,9 @@ type v1Deps struct {
 	dataDir       string
 	exportDir     string
 	idem          *idemStore
-	critic        critic.Env
-	criticTimeout time.Duration
+	critic         critic.Env
+	validateCritic *critic.Env
+	criticTimeout  time.Duration
 }
 
 func registerV1(mux *http.ServeMux, d *v1Deps) {
@@ -497,7 +498,13 @@ func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("image is %dx%d; validate supports up to %dx%d", cfg.Width, cfg.Height, compose.RepairMaxDim, compose.RepairMaxDim), "")
 		return
 	}
-	av := critic.Availability{Tagger: d.critic.Tagger != nil}
+	// The standalone endpoint honors CRITIC_VALIDATE_MODEL's heavier judge
+	// when configured; unset, it rides the in-render env verbatim.
+	env := d.critic
+	if d.validateCritic != nil {
+		env = *d.validateCritic
+	}
+	av := critic.Availability{Tagger: env.Tagger != nil}
 	cl, err := critic.CompileSpec(critic.ValidateSpec{
 		Checks:  req.Checks,
 		Palette: req.Palette,
@@ -512,7 +519,7 @@ func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
 	// The sync request carries image + checks but no render prompt — the
 	// standalone call passes "" and tag_roundtrip verifies nothing (the
 	// empty-prompt convention); job-side checks plumb each attempt's prompt.
-	checks := critic.Run(ctx, cl, req.Image, "", d.critic)
+	checks := critic.Run(ctx, cl, req.Image, "", env)
 	writeJSON(w, map[string]any{
 		"verdict": critic.Aggregate(checks),
 		"checks":  checks,

@@ -238,7 +238,11 @@ func New(opts Options) *Manager {
 func (m *Manager) restore() {
 	hist, err := m.opts.Store.LoadHistory()
 	if err != nil {
-		return
+		// Hydrate the partial read anyway: LoadHistory scans line-wise and
+		// stops at the first unreadable record, so the lines before it are
+		// good data — dropping them would make every GET/Cancel/Subscribe
+		// for older jobs a phantom "not found" after a restart.
+		log.Printf("queue: history load stopped early (%v) — hydrating %d readable jobs", err, len(hist))
 	}
 	now := time.Now()
 	var attachIDs []string

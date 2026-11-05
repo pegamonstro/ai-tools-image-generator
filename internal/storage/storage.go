@@ -280,6 +280,10 @@ func (s *Store) LoadHistory() ([]Job, error) {
 	var jobs []Job
 	slot := map[string]int{}
 	sc := bufio.NewScanner(f)
+	// Job records carry megabyte-scale payloads (long prompts, critic attempt
+	// lists, compose specs); the default 64 KB line cap truncates those to a
+	// mid-file "token too long" — the buffer must cover the largest record.
+	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
 	for sc.Scan() {
 		var j Job
 		if err := json.Unmarshal(sc.Bytes(), &j); err != nil {

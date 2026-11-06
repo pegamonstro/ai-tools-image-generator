@@ -9,6 +9,7 @@
   function buildPanel() {
     const host = document.createElement('details');
     host.className = 'csec details';
+    host.dataset.adv = '1';
     host.id = 'refine-panel';
     host.innerHTML = `
       <summary>Refine loop (multi-pass critique + localized retouch)</summary>
@@ -100,6 +101,42 @@
     return cv.toDataURL('image/png').split(',')[1];
   }
 
+  async function rembgCutout(b64) {
+    // Segment-then-retouch: the cutout's alpha mask narrows the inpaint region
+    // from "whole bbox" to "the actual figure inside the bbox".
+    const r = await jsonFetch('/api/v1/segment', {
+      method: 'POST', headers: POSTJSON, body: JSON.stringify({ image: b64 }),
+    });
+    return (r.image || null);
+  }
+
+  function maskFromCutout(cutB64, bbox, w, h) {
+    // White where the cutout is opaque (the subject); intersected with bbox when given.
+    return new Promise((resolve) => {
+      const im = new Image();
+      im.onload = () => {
+        const s = document.createElement('canvas');
+        s.width = w; s.height = h;
+        const sc = s.getContext('2d');
+        sc.drawImage(im, 0, 0, w, h);
+        sc.globalCompositeOperation = 'source-in';
+        sc.fillStyle = '#fff';
+        sc.fillRect(0, 0, w, h);
+        const out = document.createElement('canvas');
+        out.width = w; out.height = h;
+        const oc = out.getContext('2d');
+        oc.fillStyle = '#fff';
+        if (bbox) { const [x, y, bw, bh] = bbox; oc.fillRect(x * w, y * h, bw * w, bh * h); }
+        else oc.fillRect(0, 0, w, h);
+        oc.globalCompositeOperation = 'source-in';
+        oc.drawImage(s, 0, 0, w, h);
+        resolve(out.toDataURL('image/png').split(',')[1]);
+      };
+      im.onerror = () => resolve(null);
+      im.src = 'data:image/png;base64,' + cutB64;
+    });
+  }
+
   async function fetchB64(jobId) {
     const r = await fetch(imgUrl(jobId));
     const b = await r.blob();
@@ -133,7 +170,9 @@
   }
 
   async function refineLoop(firstJobId, body, opts) {
+    const silent = !!(opts && opts.silent);
     let cur = firstJobId;
+    let finalId = firstJobId;
     let basePrompt = body.fields ? (body.fields.description || '') : (body.prompt || '');
     for (let pass = 1; pass <= opts.maxPasses; pass++) {
       const j0 = await jsonFetch('/api/jobs/' + cur);
@@ -145,22 +184,37 @@
       appendLog(new Date(), verdict === 'failed' ? 'failed' : 'info',
         `refine pass ${pass}: verdict=${verdict} fix="${String(fixText).slice(0, 90)}"`);
       if (verdict !== 'failed') {
-        setStatus('Refine: consistent after ' + (pass - 1) + ' correction pass(es).', 'ok');
-        lastImageId = cur;
-        const im = document.getElementById('image');
-        im.src = imgUrl(cur); im.hidden = false;
-        document.getElementById('empty-state').hidden = true;
+        if (!silent) setStatus('Refine: consistent after ' + (pass - 1) + ' correction pass(es).', 'ok');
+        finalId = cur;
+        if (!silent) {
+          lastImageId = cur;
+          const im = document.getElementById('image');
+          im.src = imgUrl(cur); im.hidden = false;
+          document.getElementById('empty-state').hidden = true;
+        }
         break;
       }
       const bbox = parseBBox(r.checks);
-      const segmentOn = document.getElementById('refine-segment') && document.getElementById('refine-segment').checked;
-      if (segmentOn) {
-        const cut = await rembgCutout(b64);
-        if (cut && cut.set_id) appendLog(new Date(), 'info', 'rembg cutout set ' + cut.set_id + ' (figure masked for pass ' + pass + ')');
-      }
+      const segmentOn = opts.segment != null ? opts.segment
+        : !!(document.getElementById('refine-segment') && document.getElementById('refine-segment').checked);
       const w = 512, h = 768;
+      let passMask = maskB64FromBBox(bbox, w, h); // bbox rect, or null when no bbox
+      if (segmentOn) {
+        try {
+          const cut = await rembgCutout(b64);
+          if (cut) {
+            const narrow = await maskFromCutout(cut, bbox, w, h);
+            if (narrow) {
+              passMask = narrow; // subject alpha instead of the whole bbox
+              appendLog(new Date(), 'info', 'rembg cutout masks pass ' + pass + ' (segment-then-retouch)');
+            }
+          }
+        } catch (e) {
+          appendLog(new Date(), 'info', 'segment step skipped: ' + (e.message || e));
+        }
+      }
       const passBody = {
-        mode: bbox ? 'inpaint' : 'edit',
+        mode: passMask ? 'inpaint' : 'edit',
         prompt: 'fix: ' + fixText,
         size: body.size || '512x768',
         image: b64,
@@ -169,26 +223,45 @@
         enhance: false,
         seed: body.seed,
       };
-      if (bbox) passBody.mask = maskB64FromBBox(bbox, w, h);
-      if (bbox) passBody.strength = 0.85;
+      if (passMask) {
+        passBody.mask = passMask;
+        passBody.strength = 0.85;
+      }
       const d = await renderJob(passBody);
       if (d.status !== 'done') {
         showStatus('Refine pass ' + pass + ' failed: ' + humanizeError(new Error(d.error || d.status)), 'err', d.error);
         break;
       }
       cur = d.id;
+      finalId = cur;
       appendLog(new Date(), 'ok', 'refine pass ' + pass + ' produced ' + cur);
-      lastImageId = cur;
-      const im = document.getElementById('image');
-      im.src = imgUrl(cur); im.hidden = false;
-      document.getElementById('empty-state').hidden = true;
+      if (!silent) {
+        lastImageId = cur;
+        const im = document.getElementById('image');
+        im.src = imgUrl(cur); im.hidden = false;
+        document.getElementById('empty-state').hidden = true;
+      }
       showProgress(false);
       refreshLibrarySoon();
     }
-    setStatus('Refine loop finished.', 'ok');
+    if (!silent) setStatus('Refine loop finished.', 'ok');
     refining = false;
     document.getElementById('generate').disabled = false;
+    return { finalId };
   }
+
+  /* One-button workflows (Quick) drive the SAME pipeline through this API:
+     generate -> judge -> segment-then-retouch inpaint -> re-judge. */
+  window.RefineAPI = {
+    renderJob,
+    refineLoop,
+    askJudge,
+    parseBBox,
+    maskB64FromBBox,
+    maskFromCutout,
+    fetchB64,
+    rembgCutout,
+  };
 
   window.__startRefine = async function () {
     const on = document.getElementById('refine-on');

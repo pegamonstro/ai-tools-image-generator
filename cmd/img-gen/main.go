@@ -417,6 +417,7 @@ func newHandler(cfg config) (http.Handler, error) {
 		critic:         criticEnv,
 		validateCritic: validateCriticEnv,
 		criticTimeout:  cfg.CriticTimeout,
+		segment:        lat.Rembg,
 	})
 
 	return withAPIAuth(mux, cfg.APIToken), nil

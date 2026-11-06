@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"image/png"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -40,6 +41,7 @@ type v1Deps struct {
 	critic         critic.Env
 	validateCritic *critic.Env
 	criticTimeout  time.Duration
+	segment        func(context.Context, string) ([]byte, error)
 }
 
 func registerV1(mux *http.ServeMux, d *v1Deps) {
@@ -114,6 +116,33 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 			return
 		}
 		d.handleV1Generate(w, r)
+	})
+
+	mux.HandleFunc("/api/v1/segment", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if d.segment == nil {
+			writeErr(w, http.StatusNotImplemented, "rembg sidecar not configured")
+			return
+		}
+		var in struct {
+			Image string `json:"image"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 80<<20)).Decode(&in); err != nil || in.Image == "" {
+			writeErr(w, http.StatusBadRequest, `need {"image": <base64 png>}`)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+		raw, err := d.segment(ctx, in.Image)
+		if err != nil {
+			log.Printf("v1 segment: %v", err)
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"image": base64.StdEncoding.EncodeToString(raw)})
 	})
 
 	mux.HandleFunc("/api/v1/repair", func(w http.ResponseWriter, r *http.Request) {

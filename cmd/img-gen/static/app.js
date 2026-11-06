@@ -91,17 +91,27 @@ function showStatus(msg, cls, raw) {
 
 /* ---------------- view routing ---------------- */
 function setView(name) {
-  for (const v of ['library', 'compose', 'studio']) {
+  for (const v of ['fast', 'library', 'compose', 'studio']) {
     const elv = $('view-' + v);
     if (elv) elv.hidden = v !== name;
   }
   document.querySelectorAll('.tab').forEach(t =>
     t.setAttribute('aria-selected', String(t.dataset.view === name)));
   location.hash = name;
+  if (name === 'fast' && window.Fast && window.Fast.render) window.Fast.render();
+  if (window.Fast && window.Fast.renderStrip) window.Fast.renderStrip();
 }
 
 /* ---------------- shared image helpers ---------------- */
 function imgUrl(id) { return '/api/images/' + id + '.png'; }
+
+let __libRefreshTimer = null;
+function refreshLibrarySoon() {
+  clearTimeout(__libRefreshTimer);
+  __libRefreshTimer = setTimeout(() => {
+    if (window.Library && window.Library.refresh) window.Library.refresh().catch(() => {});
+  }, 1200);
+}
 function setFileUrl(setId, name) { return '/api/v1/sets/' + setId + '/files/' + encodeURIComponent(name); }
 function readFileAsDataURL(file) {
   return new Promise((resolve, reject) => {
@@ -588,6 +598,16 @@ window.LibraryHooks = {
 };
 
 /* ---------------- boot ---------------- */
+/* ---------------- Simple / Pro interface mode ---------------- */
+function setUIMode(mode) {
+  document.documentElement.dataset.ui = (mode === 'pro') ? 'pro' : 'simple';
+  const seg = $('ui-mode-seg');
+  if (seg) seg.querySelectorAll('.seg-btn').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.ui === mode)));
+  try { localStorage.setItem('imggen-ui', mode); } catch (_) {}
+}
+
+
 async function init() {
   try {
     await loadCatalogs();
@@ -659,9 +679,20 @@ async function init() {
   $('cancel').onclick = () => cancelJob();
   $('clear-log').onclick = clearLog;
   document.querySelectorAll('.tab').forEach(t => t.onclick = () => setView(t.dataset.view));
-  const startView = (location.hash || '#library').slice(1);
-  setView(['library', 'compose', 'studio'].includes(startView) ? startView : 'library');
+  const seg = $('ui-mode-seg');
+  if (seg) seg.querySelectorAll('.seg-btn').forEach(b => b.onclick = () => setUIMode(b.dataset.ui));
+  let uiMode = 'simple';
+  try { uiMode = localStorage.getItem('imggen-ui') || 'simple'; } catch (_) {}
+  setUIMode(uiMode);
+  const startView = (location.hash || '').slice(1);
+  setView(['fast', 'library', 'compose', 'studio'].includes(startView)
+    ? startView : (document.documentElement.dataset.ui === 'pro' ? 'library' : 'fast'));
   window.Library.refresh && window.Library.refresh();
+  window.addEventListener('hashchange', () => {
+    const v = (location.hash || '').slice(1);
+    if (['fast', 'library', 'compose', 'studio'].includes(v) && !document.getElementById('view-' + v).hidden) return;
+    if (['fast', 'library', 'compose', 'studio'].includes(v)) setView(v);
+  });
 }
 init();
 

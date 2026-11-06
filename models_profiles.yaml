@@ -17,6 +17,7 @@ profiles:
   - name: "sdxl-illustrious"
     models:
       - "sdxl-illustrious"
+      - "sdxl-illustrious-v2"
     defaults:
       positive_prefix: "masterpiece, best quality, "
       negative: "worst quality, low quality, bad anatomy, bad composition"

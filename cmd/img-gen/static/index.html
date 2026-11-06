@@ -15,6 +15,7 @@
       <span class="byline">by pegamonstro · Bikini Club</span>
     </div>
     <nav class="tabs" role="tablist" aria-label="Workspaces">
+      <button class="tab" data-view="fast" aria-selected="false">Quick</button>
       <button class="tab" data-view="library" aria-selected="true">Library</button>
       <button class="tab" data-view="compose" aria-selected="false">Compose</button>
       <button class="tab" data-view="studio" aria-selected="false">Studio</button>
@@ -65,6 +66,7 @@
   </main>
 
   <!-- COMPOSE -->
+  <main id="view-fast" class="view" hidden></main>
   <main id="view-compose" class="view" hidden>
     <div class="layout">
       <section class="side">
@@ -227,6 +229,14 @@
         </div>
 
         <div id="gen-controls" class="csec">
+          <div class="seg-row">
+            <div class="seg" id="ui-mode-seg" role="group" aria-label="Interface simplicity">
+              <button class="seg-btn" data-ui="simple" aria-pressed="true">Simple</button>
+              <button class="seg-btn" data-ui="pro" aria-pressed="false">Pro</button>
+            </div>
+            <span class="hint" style="margin:0">One-button workflows; Pro reveals every step.</span>
+          </div>
+          <div id="workflow-strip" class="workflow-strip"></div>
           <h2 class="sec-label">Subject</h2>
           <div class="row">
             <label class="ctrl">Genre
@@ -239,7 +249,7 @@
           <div id="fields" class="fields"></div>
         </div>
 
-        <details id="sampling-controls" class="csec details">
+        <details id="sampling-controls" class="csec details" data-adv>
           <summary>Sampling</summary>
           <div class="details-body">
             <label class="ctrl">Negative prompt
@@ -264,7 +274,7 @@
           </div>
         </details>
 
-        <details class="csec details">
+        <details id="adv-controls" class="csec details" data-adv>
           <summary>Advanced</summary>
           <div class="details-body">
             <label class="ctrl">Model override
@@ -433,5 +443,6 @@
   <script src="studio.js"></script>
   <script src="compose.js"></script>
   <script src="refine.js"></script>
+  <script src="fast.js"></script>
 </body>
 </html>

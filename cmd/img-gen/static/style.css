@@ -287,3 +287,55 @@ button.danger { border-color: #5b2733; color: var(--err); background: transparen
 
 /* the hidden attribute must always win over any display rule */
 [hidden] { display: none !important; }
+
+/* ---------------- Simple / Pro interface mode ---------------- */
+.seg-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.seg {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 999px;
+  padding: 3px; background: var(--panel-2);
+}
+.seg-btn {
+  border: 0; background: transparent; color: var(--mut); font: inherit; font-size: 12px;
+  font-weight: 600; padding: 4px 14px; border-radius: 999px; cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.seg-btn[aria-pressed="true"] { background: var(--acc); color: #fff; }
+.seg-btn:not([aria-pressed="true"]):hover { color: var(--ink); }
+
+/* Simple mode hides every advanced panel behind [data-adv]; Pro reveals all. */
+html[data-ui="simple"] [data-adv] { display: none !important; }
+
+/* One-click workflow strip in the composer (Pro handoff into Quick) */
+.workflow-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.workflow-strip:empty { display: none; }
+.workflow-strip .chip { text-transform: none; }
+
+/* ---------------- Quick workspace ---------------- */
+#view-fast .fast-wrap { max-width: 1180px; margin: 0 auto; padding: 20px 22px; }
+.fast-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px; margin-bottom: 16px;
+}
+.fast-card {
+  display: flex; flex-direction: column; gap: 4px; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); color: var(--ink); padding: 12px 14px; cursor: pointer;
+  font: inherit; transition: border-color .15s, transform .12s;
+}
+.fast-card:hover { border-color: var(--acc); transform: translateY(-1px); }
+.fast-card.sel { border-color: var(--acc); background: linear-gradient(180deg, var(--panel-2), var(--panel)); box-shadow: 0 0 0 1px var(--acc) inset; }
+.fast-card-label { font-weight: 650; font-size: 13px; }
+.fast-card-desc { color: var(--mut); font-size: 11.5px; line-height: 1.35; }
+
+.fast-main { max-width: 640px; }
+.fast-main #fast-meta {
+  color: var(--mut); font-size: 12px; margin: 6px 0 12px;
+  padding: 8px 10px; border: 1px dashed var(--line); border-radius: var(--radius-s);
+  background: var(--panel-2);
+}
+.fast-main button.big { padding: 12px 18px; font-size: 14px; font-weight: 650; }
+.fast-main .fast-hint { color: var(--mut); font-size: 11.5px; margin-top: 10px; }
+.fast-main .fast-hint a { color: var(--acc2); text-decoration: none; }
+
+#fast-out { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: var(--grid-gap); margin-top: 18px; }
+#fast-out .quick-result { cursor: zoom-in; }

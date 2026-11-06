@@ -157,12 +157,25 @@ window.Fast = (function () {
     };
     if (wf.preset) body.preset = wf.preset;
     let first;
+    let poller = null;
     try {
-      first = await RefineAPI.renderJob(body); // 429 cool-downs handled inside
+      first = await RefineAPI.renderJob(body, (jid) => {
+        poller = setInterval(async () => {
+          try {
+            const d = await jsonFetch('/api/jobs/' + jid);
+            const extra = d.step != null ? ' ' + Math.round(d.step * 100) + '%' : '';
+            if (d.status && !['done', 'failed', 'cancelled'].includes(d.status))
+              fastStatus('Rendering — ' + d.status + extra + ' (this takes a few minutes)', 'pending');
+            else clearInterval(poller), (poller = null);
+          } catch (_) { /* transient */ }
+        }, 5000);
+      }); // 429 cool-downs handled inside
     } catch (e) {
+      if (poller) clearInterval(poller);
       fastStatus(humanizeError(e), 'err');
       throw e;
     }
+    if (poller) { clearInterval(poller); poller = null; }
     if (first.status !== 'done') throw new Error(first.error || first.status);
     fastStatus('Rendered ' + first.id + ' — judging…', 'pending');
     appendLog(new Date(), 'ok', 'quick render ' + first.id);

@@ -143,7 +143,7 @@
     return blobToBase64(b);
   }
 
-  async function renderJob(body) {
+  async function renderJob(body, onJob) {
     let res = null;
     for (let k = 0; k < 12 && !res; k++) {
       try {
@@ -159,6 +159,7 @@
       }
     }
     const jid = res.job_id;
+    if (onJob) onJob(jid);
     appendLog(new Date(), 'queued', 'refine pass job ' + jid);
     // wait for terminal via SSE-lite polling (phases are short)
     for (let i = 0; i < 240; i++) {

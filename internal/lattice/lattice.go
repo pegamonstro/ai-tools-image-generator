@@ -262,6 +262,34 @@ func (c *Client) Inpaint(ctx context.Context, prompt, imageB64, maskB64 string) 
 	return png, err
 }
 
+// Fill is the regional-prompting inpaint: it repaints only the masked region
+// of imageB64 while the kept latent clamps to the init figure — the sd.cpp
+// sidecar's /fill (masked img2img). strength is the masked region's denoise
+// strength (0.1..1.0; 1.0 fully repaints the region from prompt+context).
+// A non-sdxl spec routes to the FLUX /fill sidecar and drops the sampling
+// knobs, mirroring Inpaint's legacy contract.
+func (c *Client) Fill(ctx context.Context, prompt, size, imageB64, maskB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+	if spec.Sidecar != "sdxl" {
+		png, err := c.Inpaint(ctx, prompt, imageB64, maskB64)
+		return png, nil, err
+	}
+	w, h, err := parseSize(size)
+	if err != nil {
+		return nil, nil, err
+	}
+	body := map[string]any{
+		"prompt": prompt, "width": w, "height": h,
+		"init_image": imageB64, "mask": maskB64, "strength": strength,
+	}
+	applyModelSpec(body, spec)
+	applyGenParams(body, sp)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return c.postImage(ctx, "/fill", b, spec.Sidecar)
+}
+
 // Blend generates a new image from a prompt plus reference images (base64) and
 // per-reference strengths.
 func (c *Client) Blend(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error) {

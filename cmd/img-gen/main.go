@@ -253,6 +253,7 @@ func newHandler(cfg config) (http.Handler, error) {
 			Blend:      lat.Blend,
 			Upscale:    lat.Upscale,
 			Controlnet: lat.Controlnet,
+			Fill:       lat.Fill,
 			Rife:       rifeOp,
 			Rembg:      rembgOp,
 			DWPose:     dwposeOp,

@@ -32,7 +32,7 @@ type SubmitRequest struct {
 	Style   string            `json:"style"`  // global style preset key (empty = none)
 	Preset  string            `json:"preset"` // character-preset key (empty = none)
 
-	Mode      string    `json:"mode"`      // "generate"(default) | "edit" | "inpaint" | "blend"
+	Mode      string    `json:"mode"`      // "generate"(default) | "edit" | "inpaint" | "blend" | "regional"
 	Batch     int       `json:"batch"`     // >1 fans out to N jobs (handled by SubmitBatch)
 	Prompt    string    `json:"prompt"`    // free-text prompt (non-generate modes)
 	Image     string    `json:"image"`     // base64: edit/inpaint source
@@ -40,6 +40,11 @@ type SubmitRequest struct {
 	Strength  float64   `json:"strength"`  // edit denoise strength (0..1)
 	Images    []string  `json:"images"`    // base64: blend references
 	Strengths []float64 `json:"strengths"` // blend per-reference weights
+
+	// Regions carries the regional-prompting figure regions (mode "regional"):
+	// region 0 renders the canvas, regions 1..N inpaint their rect over the
+	// running image with each figure's own prompt.
+	Regions []storage.RegionSpec `json:"regions,omitempty"`
 
 	// Control/IPAdapter condition generate-mode runs on reference images
 	// (B1): SDXL-sidecar models only, mutually exclusive with the
@@ -111,6 +116,11 @@ type ImageOps struct {
 	Blend      func(ctx context.Context, prompt, size string, imagesB64 []string, strengths []float64) ([]byte, error)
 	Upscale    func(ctx context.Context, imageB64 string) ([]byte, error)
 	Controlnet func(ctx context.Context, prompt, size, imageB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
+	// Fill repaints only the masked region (white = repaint, black = keep)
+	// with the region's own prompt — the regional-prompting inpaint. nil
+	// means the mode "regional" path is unconfigured: submit-time validation
+	// refuses regional jobs with the honest error instead of dispatching.
+	Fill func(ctx context.Context, prompt, size, imageB64, maskB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error)
 	// Rife interpolates anchor frames on the RIFE sidecar (frame animation).
 	// nil means the sidecar is unconfigured (RIFE_URL unset): submit-time
 	// validation reports that honestly instead of dispatching the job.
@@ -749,6 +759,49 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 			return "", &ValidationError{Code: "validation_error", Msg: "image is required for upscale"}
 		}
 		inputs.Image = req.Image
+	case "regional":
+		if m.opts.Ops.Fill == nil {
+			return "", &ValidationError{Code: "validation_error", Msg: "regional is not available: no fill-enabled sidecar is configured (FILL or SDXL_URL)"}
+		}
+		if len(req.Regions) < 2 {
+			return "", &ValidationError{Code: "validation_error", Msg: "regional needs at least two regions: regions[0] renders the canvas, regions[n>=1] inpaints its rect"}
+		}
+		if strings.TrimSpace(req.Regions[0].Prompt) == "" {
+			return "", &ValidationError{Code: "validation_error", Msg: "regions[0].prompt (the base region) is required"}
+		}
+		if req.Size == "" {
+			req.Size = "512x768"
+		}
+		if !validSize(req.Size) {
+			return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q", req.Size)}
+		}
+		w, h, _ := strings.Cut(req.Size, "x")
+		canvasW, _ := strconv.Atoi(w)
+		canvasH, _ := strconv.Atoi(h)
+		for i, r := range req.Regions[1:] {
+			if strings.TrimSpace(r.Prompt) == "" {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("regions[%d].prompt is required", i+1)}
+			}
+			x, y, rw, rh := r.Rect[0], r.Rect[1], r.Rect[2], r.Rect[3]
+			if x < 0 || y < 0 || rw <= 0 || rh <= 0 || x+rw > canvasW || y+rh > canvasH {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("regions[%d].rect [%d,%d,%d,%d] falls outside the %dx%d canvas", i+1, x, y, rw, rh, canvasW, canvasH)}
+			}
+			if r.Strength == 0 {
+				req.Regions[i+1].Strength = 1.0
+			} else if r.Strength < 0.1 || r.Strength > 1.0 {
+				return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("regions[%d].strength must be 0 (default 1.0) or 0.1..1.0, got %v", i+1, r.Strength)}
+			}
+			if r.ExcludeOccupancy && m.opts.Ops.Rembg == nil {
+				return "", &ValidationError{Code: "validation_error", Msg: "exclude_occupancy needs the rembg sidecar (REMBG_URL)"}
+			}
+		}
+		// The base region drives the job's prompt display and the critic's
+		// drift reference; enhance would rewrite only figure A's wording, so
+		// it is refused rather than silently narrowed.
+		if req.Enhance {
+			return "", &ValidationError{Code: "validation_error", Msg: "enhance is not supported on regional jobs (each region carries its own full prompt)"}
+		}
+		req.Prompt = req.Regions[0].Prompt
 	case "pose":
 		if strings.TrimSpace(req.Prompt) == "" {
 			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for pose"}
@@ -838,8 +891,15 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 	}
 	resolveModelValues(m, &req)
 
-	if req.Sidecar == "sdxl" && mode != "generate" && mode != "edit" && mode != "asset" {
+	if req.Sidecar == "sdxl" && mode != "generate" && mode != "edit" && mode != "asset" && mode != "regional" {
 		return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("mode %s is not supported on engine sdxl", mode)}
+	}
+
+	// Regional is an SDXL-sidecar feature (the masked-inpaint fill endpoint);
+	// a FLUX-sidecar regional would repaint regions with a different engine
+	// than the base render — refused, never silently mixed.
+	if mode == "regional" && req.Sidecar != "sdxl" {
+		return "", &ValidationError{Code: "validation_error", Msg: "engine unsupported for regional: regional applies to SDXL-sidecar models only"}
 	}
 
 	// Conditioning is an SDXL-sidecar engine feature (B1): a non-SDXL model
@@ -887,6 +947,7 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		Steps:          req.Steps,
 		Guidance:       req.Guidance,
 		NegativePrompt: req.NegativePrompt,
+		Regions:        req.Regions,
 		ComposeParent:  req.ComposeParent,
 		Status:         "queued",
 		CreatedAt:      time.Now(),
@@ -894,7 +955,7 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 	}
 	m.mu.Lock()
 	m.jobs[id] = job
-	if mode != "generate" && mode != "asset" {
+	if mode != "generate" && mode != "asset" && mode != "regional" {
 		m.inputs[id] = inputs
 	} else if inputs.Control != nil || inputs.IPAdapter != nil {
 		// B1: generate with conditioning — the references are runtime-only
@@ -1146,6 +1207,16 @@ func (m *Manager) run(id string) {
 	}
 
 	spec := storage.ModelSpec{Model: job.Model, LatticeModel: job.ModelKey, Loras: job.Loras, Sidecar: job.Sidecar}
+	if job.Mode == "regional" {
+		regionalSP := storage.SamplingParams{Seed: seed, Steps: steps, Guidance: guidance, NegativePrompt: negative}
+		render := func(pctx context.Context, prompt string, sp storage.SamplingParams) ([]byte, *int64, error) {
+			return m.regionalPipeline(pctx, id, job, inputs, spec, sp)
+		}
+		if job.CriticSpec == "" {
+			m.renderAndFinishOp(ctx, id, job, inputs, render, job.Prompt, regionalSP, cancel)
+			return
+		}
+	}
 	if job.CriticSpec == "" {
 		// Pre-existing behavior, verbatim: one render, save, finish.
 		// renderAndFinish takes ownership of ctx/cancel/cancels cleanup.
@@ -1166,6 +1237,9 @@ func (m *Manager) run(id string) {
 		return
 	}
 	renderer := func(pctx context.Context, prompt string, sp storage.SamplingParams) ([]byte, *int64, error) {
+		if job.Mode == "regional" {
+			return m.regionalPipeline(pctx, id, job, inputs, spec, sp)
+		}
 		return m.dispatch(pctx, id, job, inputs, prompt, spec, sp)
 	}
 	m.criticLoop(ctx, id, job, renderer, job.Prompt /* base */, cl, 1, nil, inputs)
@@ -1623,9 +1697,19 @@ func contains(xs []string, x string) bool {
 // renderAndFinish is the pre-existing render tail, extracted verbatim so the
 // non-validated path is byte-identical to the old run().
 func (m *Manager) renderAndFinish(ctx context.Context, id string, job *storage.Job, inputs imageInputs, prompt string, spec storage.ModelSpec, sp storage.SamplingParams, cancel context.CancelFunc) {
+	m.renderAndFinishOp(ctx, id, job, inputs, func(pctx context.Context, prompt string, sp storage.SamplingParams) ([]byte, *int64, error) {
+		return m.dispatch(pctx, id, job, inputs, prompt, spec, sp)
+	}, prompt, sp, cancel)
+}
+
+// renderAndFinishOp owns the ctx/cancel bookkeeping around one render closure
+// run (plain path) or pipeline (regional), then saves the result and finishes.
+func (m *Manager) renderAndFinishOp(ctx context.Context, id string, job *storage.Job, inputs imageInputs,
+	render func(context.Context, string, storage.SamplingParams) ([]byte, *int64, error),
+	prompt string, sp storage.SamplingParams, cancel context.CancelFunc) {
 	m.setStatus(id, "generating", "")
 	start := time.Now()
-	png, seed, err := m.dispatch(ctx, id, job, inputs, prompt, spec, sp)
+	png, seed, err := render(ctx, prompt, sp)
 	cancel()
 	m.mu.Lock()
 	delete(m.cancels, id)

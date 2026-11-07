@@ -93,6 +93,22 @@ type ValidateState struct {
 	Attempts int    `json:"attempts"`
 }
 
+// RegionSpec is one figure's prompt region on a regional job. Region 0 (the
+// base region) renders the canvas; regions 1..N inpaint their rect over the
+// running image, each seeing the previous stage's result — so figure N is
+// painted in visual context of what came before (regional prompting by
+// masked img2img).
+type RegionSpec struct {
+	Prompt   string  `json:"prompt"`
+	Rect     [4]int  `json:"rect"`                  // x, y, w, h in output pixels; base region ignores (always full canvas)
+	Strength float64 `json:"strength,omitempty"`    // fill denoise; 0 -> 1.0 (full repaint)
+	// ExcludeOccupancy subtracts the running image's subject silhouette
+	// (rembg, dilated) from the fill mask, so the region repaints only the
+	// space A does not own — the safe variant when the rect would cut through
+	// the base figure.
+	ExcludeOccupancy bool `json:"exclude_occupancy,omitempty"`
+}
+
 type Job struct {
 	ID             string            `json:"id"`
 	Genre          string            `json:"genre"`
@@ -112,6 +128,7 @@ type Job struct {
 	Steps          *int              `json:"steps,omitempty"`           // requested diffusion steps (nil = default)
 	Guidance       *float64          `json:"guidance,omitempty"`        // requested guidance (nil = default)
 	NegativePrompt string            `json:"negative_prompt,omitempty"` // requested negative prompt ("" = none)
+	Regions        []RegionSpec      `json:"regions,omitempty"`         // regional jobs: figure prompt regions (0 = base)
 	Status         string            `json:"status"`
 	Step           int               `json:"step,omitempty"`  // in-flight diffusion step; zeroed at finish (transient)
 	Total          int               `json:"total,omitempty"` // total diffusion steps; zeroed at finish (transient)

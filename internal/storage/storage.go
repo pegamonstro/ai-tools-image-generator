@@ -247,6 +247,10 @@ func (s *Store) DeleteHistory(id string) error {
 	defer f.Close()
 	var kept []byte
 	sc := bufio.NewScanner(f)
+	// DeleteHistory rescans the whole file regardless of which id is being
+	// removed, so a megabyte-scale record (long prompts, critic attempts,
+	// compose specs) breaks the default 64KB cap and every delete fails.
+	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
 	for sc.Scan() {
 		var j Job
 		if err := json.Unmarshal(sc.Bytes(), &j); err != nil {

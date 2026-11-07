@@ -680,3 +680,61 @@ func (c *Client) Chat(ctx context.Context, model string, messages []prompting.Me
 	}
 	return cr.Choices[0].Message.Content, nil
 }
+
+// VisionCount asks a multimodal chat model (the same :7b VL judge, via the
+// gateway's OpenAI-style chat route) how many distinct human figures the image
+// shows. vlm_check judges stay pass/fail-shaped and proved agreeable on
+// figure-presence criteria, so figure counting rides this dedicated shape: a
+// short bare-number reply with a tight token budget. -1 when the reply parses
+// to no number (never a false confidence).
+func (c *Client) VisionCount(ctx context.Context, model, imageB64 string) (int, error) {
+	b, err := json.Marshal(map[string]any{
+		"model": model,
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": "How many distinct human figures are visible in this image? Reply with only a number."},
+				{"type": "image_url", "image_url": map[string]string{"url": "data:image/png;base64," + imageB64}},
+			},
+		}},
+		"max_tokens": 10,
+	})
+	if err != nil {
+		return -1, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/chat/completions", bytes.NewReader(b))
+	if err != nil {
+		return -1, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return -1, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return -1, fmt.Errorf("lattice vision count: %s: %s", resp.Status, msg)
+	}
+	var cr chatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return -1, err
+	}
+	if len(cr.Choices) == 0 {
+		return -1, fmt.Errorf("lattice vision count: empty choices")
+	}
+	digits := ""
+	for _, ch := range cr.Choices[0].Message.Content {
+		if ch >= '0' && ch <= '9' {
+			digits += string(ch)
+		}
+	}
+	if digits == "" {
+		return -1, nil
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil {
+		return -1, nil
+	}
+	return n, nil
+}

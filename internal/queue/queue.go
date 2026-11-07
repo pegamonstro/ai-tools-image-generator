@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"log"
 	"strconv"
 	"strings"
@@ -472,8 +473,13 @@ func (m *Manager) resumeCriticChecks(id string, job *storage.Job, pending int, c
 
 	// Run checks idempotently on the stored bytes (use the attach goroutine's ctx
 	// so cancellation aborts the check call). The drift reference is the
-	// pending attempt's own recorded prompt.
-	checks := m.runChecks(ctx, cl, png, attempt.Prompt)
+	// pending attempt's own recorded prompt. Regional jobs judge per-region
+	// crops, mirroring the live criticLoop path.
+	var regions []storage.RegionSpec
+	if job.Mode == "regional" {
+		regions = job.Regions
+	}
+	checks := m.runChecksRegions(id, ctx, cl, png, attempt.Prompt, regions)
 	m.log(id, "resume: re-ran checks for attempt %d", pending)
 	for _, c := range checks {
 		m.log(id, "check %s(%s): %s %s", c.Op, c.Spec, c.Status, c.Reason)
@@ -609,7 +615,12 @@ func (m *Manager) saveRecovered(id string, png []byte, ctx context.Context) {
 		// Run checks on the recovered PNG (use the attach goroutine's ctx so
 		// cancellation aborts the check call). The drift reference is the
 		// prompt the pending attempt was rendering (CriticNextPrompt).
-		checks := m.runChecks(ctx, cl, png, j.CriticNextPrompt)
+		// Regional jobs judge per-region crops, mirroring the live path.
+		var regions []storage.RegionSpec
+		if j.Mode == "regional" {
+			regions = j.Regions
+		}
+		checks := m.runChecksRegions(id, ctx, cl, png, j.CriticNextPrompt, regions)
 
 		// Get the actual job from the map and update it with the new attempt,
 		// then finalize via finishCritic (no further retries post-restart).
@@ -911,8 +922,8 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 	// Phase D: validate is an opt-in checklist on jobs that render images.
 	var criticSpecJSON string
 	if req.Validate != nil {
-		if mode != "generate" && mode != "asset" {
-			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("validate is supported on generate and asset jobs, not %q", mode)}
+		if mode != "generate" && mode != "asset" && mode != "regional" {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("validate is supported on generate, asset and regional jobs, not %q", mode)}
 		}
 		cl, err := critic.CompileSpec(*req.Validate, critic.Availability{Tagger: m.opts.Critic.Tagger != nil})
 		if err != nil {
@@ -1786,10 +1797,45 @@ func (m *Manager) criticCheckCtx(ctx context.Context) (context.Context, context.
 // mutated prompts). The check ctx carries the queue-side CriticTimeout cap
 // on top of the caller's ctx so a hung judge cannot hold the worker slot.
 func (m *Manager) runChecks(ctx context.Context, cl critic.Checklist, png []byte, prompt string) []storage.CriticCheck {
-	ctx, cancel := m.criticCheckCtx(ctx)
-	defer cancel()
-	b64 := base64.StdEncoding.EncodeToString(png)
-	return critic.Run(ctx, cl, b64, prompt, m.opts.Critic)
+	return m.runChecksRegions("", ctx, cl, png, prompt, nil)
+}
+
+// runChecksRegions is runChecks with regional per-figure judging: with
+// regions set, the checklist runs once on the whole canvas (the base region)
+// and once per fill region against a crop of that region's rect, so a failure
+// names the figure that broke ([region N] prefixes on the check spec). Crops
+// that fail to decode degrade to the full canvas rather than dropping checks.
+func (m *Manager) runChecksRegions(id string, ctx context.Context, cl critic.Checklist, png []byte, prompt string, regions []storage.RegionSpec) []storage.CriticCheck {
+	if len(regions) == 0 {
+		ctx, cancel := m.criticCheckCtx(ctx)
+		defer cancel()
+		b64 := base64.StdEncoding.EncodeToString(png)
+		return critic.Run(ctx, cl, b64, prompt, m.opts.Critic)
+	}
+	legs := make([][]byte, 0, len(regions))
+	legs = append(legs, png)
+	for i, r := range regions[1:] {
+		crop, err := compose.CropRect(png, image.Rect(r.Rect[0], r.Rect[1], r.Rect[0]+r.Rect[2], r.Rect[1]+r.Rect[3]))
+		if err != nil {
+			m.log(id, "region %d crop failed (%v) — judging the full canvas instead", i+2, err)
+			crop = png
+		}
+		legs = append(legs, crop)
+	}
+	merged := make([]storage.CriticCheck, 0, (len(cl.Checks)+1)*len(legs))
+	for i, leg := range legs {
+		checkCtx, cancel := m.criticCheckCtx(ctx)
+		b64 := base64.StdEncoding.EncodeToString(leg)
+		checks := critic.Run(checkCtx, cl, b64, prompt, m.opts.Critic)
+		cancel()
+		for j := range checks {
+			if i > 0 {
+				checks[j].Spec = fmt.Sprintf("[region %d] %s", i+1, checks[j].Spec)
+			}
+		}
+		merged = append(merged, checks...)
+	}
+	return merged
 }
 
 // criticLoop implements the Phase D retry policy. Per attempt it persists in
@@ -1871,8 +1917,13 @@ func (m *Manager) criticLoop(ctx context.Context, id string, job *storage.Job,
 		m.setStatus(id, "validating", "")
 		// Use the job's context so cancellation aborts the check call.
 		// The drift reference is this attempt's own prompt (base for
-		// attempt 1, mutated prompt for retries).
-		checks := m.runChecks(ctx, cl, png, prompt)
+		// attempt 1, mutated prompt for retries). Regional jobs additionally
+		// judge per-region crops so a failure names the figure that broke.
+		var regions []storage.RegionSpec
+		if job.Mode == "regional" {
+			regions = job.Regions
+		}
+		checks := m.runChecksRegions(id, ctx, cl, png, prompt, regions)
 		// Update the just-persisted record in place with the check results and
 		// persist again — CriticPending stays retained until the terminal.
 		// The mutation MUST hold m.mu: the record's backing array was already

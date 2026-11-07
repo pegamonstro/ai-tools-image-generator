@@ -69,6 +69,11 @@ type Env struct {
 	Judge  Judge
 	Tagger func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error)
 	Vocab  func(ctx context.Context) ([]string, error)
+	// Count asks a multimodal model how many distinct human figures the image
+	// shows — the region-retry presence gate for regional jobs (vlm_check
+	// judges proved agreeable on figure-presence criteria; a bare-number
+	// vision count does not). Unwired = the gate stays off.
+	Count func(ctx context.Context, imageB64 string) (int, error)
 }
 
 func CompileSpec(spec ValidateSpec, av Availability) (Checklist, error) {

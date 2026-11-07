@@ -13,6 +13,26 @@
     'bandright': { label: 'B beside A (occupancy-safe, right band)', rect: (w, h) => [Math.round(w * 0.6), Math.round(h * 0.1), Math.round(w * 0.36), Math.round(h * 0.9)], exclude: true },
   };
 
+  /* Recipes from the 2026-11-07 judged campaign: per-position mask strategy
+     (wide rect vs occupancy-safe band) matters more than prompt wording. */
+  const RECIPES = {
+    'doggy': { layout: 'right', label: 'Rear entry — chaise',
+      base: 'a breathtaking adult woman in her 30s poised on all fours on a plush chaise lounge at the left side of the frame, back arched, camera from behind and slightly left, compact figure in the left third, full body visible',
+      b: 'a muscular man in his 30s standing close behind the woman on the chaise, pressing against her from behind, full body, side profile' },
+    'lap': { layout: 'behind', label: 'Lap sit',
+      base: 'a breathtaking adult woman in her 30s seated upright with thighs together as if hovering on a seat behind her, compact figure in the left third, knees toward the right, full body visible',
+      b: 'a man in his 30s seated upright directly behind the woman, his chest behind her back, his arms wrapped around her waist, full body' },
+    'cowgirl': { layout: 'bandright', label: 'Cowgirl — chaise',
+      base: 'a breathtaking adult woman in her 30s kneeling astride on a velvet chaise, upright dominant pose, compact figure occupying the left third of the frame, facing left, full body visible',
+      b: 'a muscular man in his 30s lying on his back on the velvet chaise beneath and to the right of the kneeling woman, his head propped on the armrest, full figure' },
+    'spooning': { layout: 'behind', label: 'Spooning',
+      base: 'an adult woman lying on her side on a chaise, knees drawn up, curled in the left half of the frame, back facing right, camera from the foot of the chaise, full body visible',
+      b: 'a man in his 30s lying curled directly behind the woman, his chest against her back, wrapped around her, side-lying embrace, full figure' },
+    'missionary': { layout: 'right', label: 'Missionary — side view',
+      base: 'an adult woman lying on a bed of rumpled sheets, hips raised, head at the left edge of the frame, viewed from the side at bed level, compact figure in the left half, full body visible',
+      b: 'a man in his 30s over the woman, kneeling upright on the bed holding his weight on his arms, above and behind her hips on the right side of the frame, full figure' },
+  };
+
   function buildPanel() {
     const host = document.createElement('details');
     host.className = 'csec details';
@@ -21,6 +41,14 @@
     host.innerHTML = `
       <summary>Compose two figures (regional prompts)</summary>
       <div class="details-body">
+        <div class="row">
+          <label class="ctrl">Recipe
+            <select id="duo-recipe"><option value="">— custom —</option></select>
+          </label>
+          <label class="ctrl" style="flex:1">Style prefix (both figures)
+            <input type="text" id="duo-style" placeholder="e.g. flat 1980s pulp-noir cartoon pin-up style, bold clean ink outlines and flat cel fills">
+          </label>
+        </div>
         <div class="row">
           <label class="ctrl" style="flex:1">Figure A (base) prompt
             <textarea id="duo-base" rows="3" placeholder="the woman kneeling upright on the chaise, compact in the left third, full body visible"></textarea>
@@ -71,6 +99,22 @@
       o.value = key; o.textContent = l.label;
       sel.appendChild(o);
     }
+    const recipeSel = document.getElementById('duo-recipe');
+    for (const [key, r] of Object.entries(RECIPES)) {
+      const o = document.createElement('option');
+      o.value = key; o.textContent = r.label;
+      recipeSel.appendChild(o);
+    }
+    recipeSel.onchange = () => {
+      const r = RECIPES[recipeSel.value];
+      if (!r) return;
+      const style = (document.getElementById('duo-style') || { value: '' }).value.trim();
+      const withPrefix = p => style ? style + ' ' + p : p;
+      document.getElementById('duo-base').value = withPrefix(r.base);
+      document.getElementById('duo-b').value = withPrefix(r.b);
+      document.getElementById('duo-layout').value = r.layout;
+      document.getElementById('duo-layout').onchange();
+    };
     // app.js loads the model catalog asynchronously; fill on arrival.
     const fillModels = () => {
       const modelSel = document.getElementById('duo-model');

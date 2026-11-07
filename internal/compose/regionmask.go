@@ -6,8 +6,30 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 )
+
+// CropRect decodes a PNG and returns the rect region re-encoded. Regional
+// per-figure judging crops each fill region out of the attempt so a check
+// grades one figure instead of guessing from the composite.
+func CropRect(data []byte, rect image.Rectangle) ([]byte, error) {
+	raw, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	clip := raw.Bounds().Intersect(rect)
+	if clip.Empty() {
+		return nil, fmt.Errorf("crop rect %v falls outside the %v canvas", rect, raw.Bounds())
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, clip.Dx(), clip.Dy()))
+	draw.Draw(dst, dst.Bounds(), raw, clip.Min, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, dst); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 // RegionMask builds a same-size fill mask PNG (base64): white inside rects
 // (repaint), black elsewhere (keep). sd.cpp's masked img2img clamps every

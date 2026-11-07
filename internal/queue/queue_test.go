@@ -1732,7 +1732,7 @@ func TestSubmitValidateEditModeRejected(t *testing.T) {
 	if !errors.As(err, &verr) {
 		t.Fatalf("want ValidationError, got %v", err)
 	}
-	wantMsg := `validate is supported on generate and asset jobs, not "edit"`
+	wantMsg := `validate is supported on generate, asset and regional jobs, not "edit"`
 	if verr.Code != "validation_error" || verr.Msg != wantMsg {
 		t.Fatalf("error = %q, want %q", verr.Msg, wantMsg)
 	}
@@ -1753,7 +1753,7 @@ func TestSubmitValidateInpaintModeRejected(t *testing.T) {
 	if !errors.As(err, &verr) {
 		t.Fatalf("want ValidationError, got %v", err)
 	}
-	wantMsg := `validate is supported on generate and asset jobs, not "inpaint"`
+	wantMsg := `validate is supported on generate, asset and regional jobs, not "inpaint"`
 	if verr.Code != "validation_error" || verr.Msg != wantMsg {
 		t.Fatalf("error = %q, want %q", verr.Msg, wantMsg)
 	}

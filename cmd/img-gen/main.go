@@ -65,6 +65,11 @@ type config struct {
 	// concurrent sd.cpp render must never sit inside a job's check loop.
 	// Empty (the default) falls back to CriticModel.
 	CriticValidateModel string
+	// CriticCountModel is an optional multimodal model tag for figure-counting
+	// (the regional pipeline's presence gate: a regional render missing its
+	// second figure gets one seed-bumped, occupancy-flipped retry). Same
+	// control-plane-tag semantics as CriticModel; empty disables the gate.
+	CriticCountModel string
 	// CriticTimeout bounds a /api/v1/validate sync call (judge legs ride the
 	// request context; the deadline is this duration). Zero/negative parses
 	// fall back to the default.
@@ -89,6 +94,7 @@ func loadConfig() config {
 	// 404s, and the critic's model must route or the judge never answers.
 	criticModel := envOr("CRITIC_MODEL", "huihui_ai/qwen2.5-vl-abliterated:7b")
 	validateModel := envOr("CRITIC_VALIDATE_MODEL", "")
+	countModel := envOr("CRITIC_COUNT_MODEL", "")
 	criticTimeout := time.Duration(envIntOr("CRITIC_TIMEOUT_S", 120)) * time.Second
 	if criticTimeout <= 0 {
 		criticTimeout = 120 * time.Second
@@ -119,6 +125,7 @@ func loadConfig() config {
 		ImageTimeout:  time.Duration(envIntOr("IMAGE_TIMEOUT_S", 7200)) * time.Second,
 		CriticModel:         criticModel,
 		CriticValidateModel: validateModel,
+		CriticCountModel:    countModel,
 		CriticTimeout:       criticTimeout,
 		TaggerURL:     envOr("TAGGER_URL", ""),
 		TaggerTimeout: tagTimeout,
@@ -207,6 +214,11 @@ func newHandler(cfg config) (http.Handler, error) {
 	// each tagger call — /tag and the cached /meta vocab fetch alike — gets
 	// its own TAGGER_TIMEOUT_S deadline inside the caller's context.
 	criticEnv := critic.Env{Judge: critic.ChatJudge(lat, cfg.CriticModel)}
+	if cfg.CriticCountModel != "" {
+		criticEnv.Count = func(ctx context.Context, imageB64 string) (int, error) {
+			return lat.VisionCount(ctx, cfg.CriticCountModel, imageB64)
+		}
+	}
 	if cfg.TaggerURL != "" {
 		tagTimeout := cfg.TaggerTimeout
 		criticEnv.Tagger = func(ctx context.Context, imageB64 string) ([]lattice.TagScore, error) {

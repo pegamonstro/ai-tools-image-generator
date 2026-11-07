@@ -4,18 +4,34 @@ import (
 	"context"
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"img-gen/internal/critic"
 	"img-gen/internal/models"
 	"img-gen/internal/storage"
 )
+
+
+// canvasPNG builds a WxH solid-color PNG for stub ops.
+func canvasPNG(t *testing.T, c color.RGBA, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(img, img.Bounds(), &image.Uniform{c}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
 
 // regionalTestPNG builds a small solid-color PNG for stub ops.
 func regionalTestPNG(t *testing.T, c color.RGBA) []byte {
@@ -358,4 +374,139 @@ func TestRegionalFillFailureFailsJob(t *testing.T) {
 	}
 	j, _ := m.Get(id)
 	t.Fatalf("job not failed after deadline: %+v", j)
+}
+
+func TestRegionalPresenceGateRetries(t *testing.T) {
+	opts := testOptsAt(t, t.TempDir())
+	opts.Models = regionalModelCatalog()
+	basePNG := regionalTestPNG(t, color.RGBA{40, 0, 0, 255})
+	fillPNG := regionalTestPNG(t, color.RGBA{0, 40, 0, 255})
+	var mu sync.Mutex
+	generates, fills := 0, 0
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		mu.Lock()
+		generates++
+		mu.Unlock()
+		seed := sp.Seed
+		return basePNG, seed, nil
+	}
+	opts.Ops.Fill = func(ctx context.Context, prompt, size, imageB64, maskB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		mu.Lock()
+		fills++
+		mu.Unlock()
+		return fillPNG, nil, nil
+	}
+	opts.Ops.Rembg = func(ctx context.Context, imageB64 string) ([]byte, error) {
+		return basePNG, nil // opaque stand-in silhouette
+	}
+	opts.Critic.Count = func(ctx context.Context, imageB64 string) (int, error) {
+		return 1, nil // always missing figure B: gate must fire exactly once
+	}
+	m := New(opts)
+	req := regionalRequest()
+	req.Seed = int64p(900)
+	id, err := m.Submit(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		j, _ := m.Get(id)
+		if j.Status == "done" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	j, _ := m.Get(id)
+	if j.Status != "done" {
+		t.Fatalf("job not done: %+v (err %q)", j.Status, j.Error)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if generates != 2 || fills != 2 {
+		t.Fatalf("want exactly one retry (2 generate/2 fill got), got %d generate %d fill", generates, fills)
+	}
+}
+
+func TestRegionalPresenceGateOffWithoutCount(t *testing.T) {
+	m, fills, bases := regionalTestManager(t)
+	req := regionalRequest()
+	id, err := m.Submit(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		j, _ := m.Get(id)
+		if j.Status == "done" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(*bases) != 1 || len(*fills) != 1 {
+		t.Fatalf("gate-off must run exactly one pipeline, got bases=%d fills=%d", len(*bases), len(*fills))
+	}
+}
+
+func TestRegionalValidateJudgesPerRegionCrops(t *testing.T) {
+	// full-canvas base and fill images; the judge must receive the full
+	// canvas once and a [212x700] region crop once
+	basePNG := canvasPNG(t, color.RGBA{40, 0, 0, 255}, 512, 768)
+	fillPNG := canvasPNG(t, color.RGBA{0, 40, 0, 255}, 512, 768)
+	var mu sync.Mutex
+	seen := [][2]int{} // decoded PNG dims the judge received, in call order
+	opts := testOptsAt(t, t.TempDir())
+	opts.Models = regionalModelCatalog()
+	opts.Ops.Generate = func(ctx context.Context, prompt, size string, ctrl *storage.ControlParams, ipa *storage.IPAdapterParams, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		return basePNG, sp.Seed, nil
+	}
+	opts.Ops.Fill = func(ctx context.Context, prompt, size, imageB64, maskB64 string, strength float64, spec storage.ModelSpec, sp storage.SamplingParams) ([]byte, *int64, error) {
+		return fillPNG, nil, nil
+	}
+	// the judge must see the full canvas once and the region crop once
+	opts.Critic.Judge = func(ctx context.Context, criteria []string, imageB64 string) ([]critic.VLMScore, error) {
+		raw, err := base64.StdEncoding.DecodeString(imageB64)
+		if err != nil {
+			t.Errorf("judge payload: %v", err)
+		}
+		img, _, err := image.Decode(bytes.NewReader(raw))
+		if err != nil {
+			t.Errorf("judge payload decode: %v", err)
+		}
+		mu.Lock()
+		seen = append(seen, [2]int{img.Bounds().Dx(), img.Bounds().Dy()})
+		mu.Unlock()
+		scores := make([]critic.VLMScore, len(criteria))
+		for i := range criteria {
+			scores[i] = critic.VLMScore{ID: i, Pass: true, Reason: "ok"}
+		}
+		return scores, nil
+	}
+	m := New(opts)
+	req := regionalRequest()
+	req.Validate = &critic.ValidateSpec{Checks: []critic.CheckSpec{{Op: "vlm_check", Arg: json.RawMessage(`"anatomy ok"`)}}}
+	id, err := m.Submit(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		j, _ := m.Get(id)
+		if j.Status == "done" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	j, _ := m.Get(id)
+	if j.Status != "done" {
+		t.Fatalf("job not done: %+v", j)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("judge saw %d legs, want 2 (base + region crop): %v", len(seen), seen)
+	}
+	if seen[0] != [2]int{512, 768} || seen[1] != [2]int{212, 700} {
+		t.Fatalf("judge legs = %v, want [512x768] then [212x700])", seen)
+	}
 }

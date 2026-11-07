@@ -154,3 +154,61 @@ func TestChatJudgeNilCheck(t *testing.T) {
 		t.Error("non-nil Judge should return false for isNil()")
 	}
 }
+
+func TestChatJudgeBboxPropagatedToFix(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": `[{"id":0,"pass":false,"reason":"region bad","fix":"widen the fix region","bbox":[0.1,0.2,0.3,0.4]}]`}}},
+		})
+	}))
+	defer ts.Close()
+	judge := ChatJudge(lattice.New(ts.URL), "judge:7b")
+	scores, err := judge(context.Background(), []string{"locate the worst region"}, "QUJD")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(scores[0].Fix, "bbox") {
+		t.Errorf("bbox not appended to fix: %q", scores[0].Fix)
+	}
+}
+
+func TestChatJudgeSalvagesRawJSONInFix(t *testing.T) {
+	// The observed failure: model embeds literal {"bbox":...} inside the fix
+	// string, breaking JSON validity of the whole reply.
+	raw := `[{"id":0,"pass":false,"reason":"fused limbs","fix":"Correct the anatomy; {"bbox":[0.05,0.31,0.42,0.55]}"}]`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": raw}}},
+		})
+	}))
+	defer ts.Close()
+	judge := ChatJudge(lattice.New(ts.URL), "judge:7b")
+	scores, err := judge(context.Background(), []string{"locate the worst region"}, "QUJD")
+	if err != nil {
+		t.Fatalf("salvage failed: %v", err)
+	}
+	if scores[0].Pass != false {
+		t.Errorf("pass flag lost: %+v", scores[0])
+	}
+	if !strings.Contains(scores[0].Fix, "bbox") {
+		t.Errorf("bbox lost in salvage: %q", scores[0].Fix)
+	}
+}
+
+func TestChatJudgeSalvagesSingleObjectShape(t *testing.T) {
+	raw := `{"id":0,"pass":true,"reason":"clean"}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": raw}}},
+		})
+	}))
+	defer ts.Close()
+	judge := ChatJudge(lattice.New(ts.URL), "judge:7b")
+	scores, err := judge(context.Background(), []string{"c"}, "QUJD")
+	if err != nil {
+		t.Fatalf("single-object shape failed: %v", err)
+	}
+	if len(scores) != 1 || !scores[0].Pass {
+		t.Errorf("single object mismatch: %+v", scores)
+	}
+}

@@ -3,8 +3,11 @@ package queue
 import (
 	"context"
 	"crypto/rand"
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"image/color"
+	"image/png"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +37,8 @@ type SubmitRequest struct {
 	Preset  string            `json:"preset"` // character-preset key (empty = none)
 
 	Mode      string    `json:"mode"`      // "generate"(default) | "edit" | "inpaint" | "blend" | "regional"
+	Direction string    `json:"direction,omitempty"` // outpaint: which borders to expand
+	ExpandPx  int       `json:"expand_px,omitempty"` // outpaint: ring thickness px
 	Batch     int       `json:"batch"`     // >1 fans out to N jobs (handled by SubmitBatch)
 	Prompt    string    `json:"prompt"`    // free-text prompt (non-generate modes)
 	Image     string    `json:"image"`     // base64: edit/inpaint source
@@ -748,11 +753,40 @@ func (m *Manager) submitOne(req SubmitRequest, batchID string) (string, error) {
 		if strings.TrimSpace(req.Prompt) == "" {
 			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("prompt is required for %s", mode)}
 		}
-		if strings.TrimSpace(req.Image) == "" || strings.TrimSpace(req.Mask) == "" {
-			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("image and mask are required for %s", mode)}
+		if strings.TrimSpace(req.Image) == "" {
+			return "", &ValidationError{Code: "validation_error", Msg: fmt.Sprintf("image is required for %s", mode)}
+		}
+		if mode == "inpaint" && strings.TrimSpace(req.Mask) == "" {
+			return "", &ValidationError{Code: "validation_error", Msg: "mask is required for inpaint"}
 		}
 		inputs.Image = req.Image
 		inputs.Mask = req.Mask
+		if mode == "outpaint" && strings.TrimSpace(req.Mask) == "" {
+			// Client sent direction/expand_px (the composer's shape): synthesize
+			// the expansion ring mask instead of rejecting the request.
+			if !validSize(req.Size) {
+				return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q", req.Size)}
+			}
+			w, h, perr := parseSizePair(req.Size)
+			if perr != nil {
+				return "", &ValidationError{Code: "invalid_size", Msg: fmt.Sprintf("invalid size %q", req.Size)}
+			}
+			e := req.ExpandPx
+			if e <= 0 {
+				e = 128
+			}
+			if e > w/3 {
+				e = w / 3
+			}
+			if e > h/3 {
+				e = h / 3
+			}
+			m, merr := buildOutpaintMask(w, h, req.Direction, e)
+			if merr != nil {
+				return "", &ValidationError{Code: "validation_error", Msg: merr.Error()}
+			}
+			inputs.Mask = m
+		}
 	case "blend":
 		if strings.TrimSpace(req.Prompt) == "" {
 			return "", &ValidationError{Code: "validation_error", Msg: "prompt is required for blend"}
@@ -996,6 +1030,20 @@ func validSize(size string) bool {
 	wi, err1 := strconv.Atoi(w)
 	hi, err2 := strconv.Atoi(h)
 	return err1 == nil && err2 == nil && wi > 0 && hi > 0
+}
+
+// parseSizePair decodes "WxH" into two ints. Mirror of validSize's parse.
+func parseSizePair(size string) (int, int, error) {
+	w, h, ok := strings.Cut(size, "x")
+	if !ok {
+		return 0, 0, fmt.Errorf("bad size %q", size)
+	}
+	wi, e1 := strconv.Atoi(w)
+	hi, e2 := strconv.Atoi(h)
+	if e1 != nil || e2 != nil || wi <= 0 || hi <= 0 {
+		return 0, 0, fmt.Errorf("bad size %q", size)
+	}
+	return wi, hi, nil
 }
 
 // validAssetSize is validSize plus the engines' 16px latent granularity —
@@ -2058,4 +2106,47 @@ func (m *Manager) finishCritic(id string, job *storage.Job, recs []storage.Criti
 	}
 	m.log(id, "critic verdict %s after %d attempt(s), attempt %d chosen", verdict, len(recs), best+1)
 	m.cancelAndFinish(id, "done", "")
+}
+
+// buildOutpaintMask renders the outpaint expansion mask as base64 PNG:
+// white (repaint) ring of e px on the requested borders, black interior.
+// direction: all|left|right|top|bottom|left+right|left+right+top+bottom ("" = all).
+func buildOutpaintMask(w, h int, direction string, e int) (string, error) {
+	l, r_, t, b := true, true, true, true
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "", "all":
+	case "left":
+		r_, b = false, false
+	case "right":
+		l, b = false, false
+	case "top":
+		r_, b = false, false
+	case "bottom":
+		l, r_ = false, false
+	case "left+right", "right+left":
+		t, b = false, false
+	case "top+bottom", "bottom+top":
+		l, r_ = false, false
+	case "left+right+top+bottom", "all+top+bottom":
+		l, r_, t, b = true, true, true, true
+	default:
+		return "", fmt.Errorf("unknown outpaint direction %q", direction)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var c [4]uint8
+			if (l && x < e) || (r_ && x >= w-e) || (t && y < e) || (b && y >= h-e) {
+				c = [4]uint8{255, 255, 255, 255}
+			} else {
+				c = [4]uint8{0, 0, 0, 255}
+			}
+			img.SetRGBA(x, y, color.RGBA{c[0], c[1], c[2], c[3]})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
 }

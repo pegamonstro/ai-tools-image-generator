@@ -1,10 +1,13 @@
 package queue
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -644,10 +647,37 @@ func TestOutpaintJobCompletes(t *testing.T) {
 	}
 }
 
-func TestSubmitOutpaintMissingMask(t *testing.T) {
+func TestOutpaintMaskSynthesis(t *testing.T) {
+	// The composer sends direction/expand_px without a mask; the queue now
+	// synthesizes the expansion ring instead of rejecting the request.
 	m := New(testOpts(t))
-	if _, err := m.Submit(SubmitRequest{Mode: "outpaint", Prompt: "x", Image: "aW1n"}); err == nil {
-		t.Fatal("expected error for outpaint without mask")
+	if _, err := m.Submit(SubmitRequest{Mode: "outpaint", Prompt: "extend the scene", Image: "aW1n", Size: "512x512", Direction: "all", ExpandPx: 64}); err != nil {
+		t.Fatalf("outpaint without mask should synthesize one: %v", err)
+	}
+	// the synthesized mask: left border white, interior black
+	mask, err := buildOutpaintMask(256, 256, "left", 32)
+	if err != nil {
+		t.Fatalf("mask synth: %v", err)
+	}
+	raw, derr := base64.StdEncoding.DecodeString(mask)
+	if derr != nil {
+		t.Fatalf("mask is not base64: %v", derr)
+	}
+	img, _, derr2 := image.Decode(bytes.NewReader(raw))
+	if derr2 != nil {
+		t.Fatalf("mask is not a png: %v", derr2)
+	}
+	if !isWhite(img, 8, 128) {
+		t.Fatal("expected white repaint border on the left edge")
+	}
+	if !isBlack(img, 128, 128) {
+		t.Fatal("expected black keep-interior at center")
+	}
+	if _, err := m.Submit(SubmitRequest{Mode: "inpaint", Prompt: "x", Image: "aW1n"}); err == nil {
+		t.Fatal("expected inpaint without mask to still fail")
+	}
+	if _, err := m.Submit(SubmitRequest{Mode: "outpaint", Prompt: "x", Image: "aW1n", Size: "512x512", Direction: "diagonal", ExpandPx: 64}); err == nil {
+		t.Fatal("expected unknown direction to fail")
 	}
 }
 
@@ -1797,4 +1827,13 @@ func TestSubmitValidateAssetModeAllowed(t *testing.T) {
 	if j.CriticSpec == "" {
 		t.Fatal("asset job missing CriticSpec")
 	}
+}
+
+func isWhite(img image.Image, x, y int) bool {
+	r, g, b, _ := img.At(x, y).RGBA()
+	return r > 60000 && g > 60000 && b > 60000
+}
+func isBlack(img image.Image, x, y int) bool {
+	r, g, b, _ := img.At(x, y).RGBA()
+	return r < 8000 && g < 8000 && b < 8000
 }

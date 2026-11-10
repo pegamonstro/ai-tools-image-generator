@@ -30,14 +30,14 @@ import (
 // main.go keep byte-identical behavior; all contract changes land here.
 
 type v1Deps struct {
-	mgr           *queue.Manager
-	genreCat      *genres.Catalog
-	modelCat      *models.Catalog
-	presetCat     *presets.Catalog
-	store         *storage.Store
-	dataDir       string
-	exportDir     string
-	idem          *idemStore
+	mgr            *queue.Manager
+	genreCat       *genres.Catalog
+	modelCat       *models.Catalog
+	presetCat      *presets.Catalog
+	store          *storage.Store
+	dataDir        string
+	exportDir      string
+	idem           *idemStore
 	critic         critic.Env
 	validateCritic *critic.Env
 	criticTimeout  time.Duration
@@ -549,6 +549,15 @@ func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
 	// standalone call passes "" and tag_roundtrip verifies nothing (the
 	// empty-prompt convention); job-side checks plumb each attempt's prompt.
 	checks := critic.Run(ctx, cl, req.Image, "", env)
+	if critic.Aggregate(checks) == "indeterminate" {
+		// Judge-call hiccup (under load the VLM leg occasionally fails whole
+		// batches): one quiet retry, same image, so callers see real verdicts
+		// instead of gluing their own retry loops.
+		checks2 := critic.Run(ctx, cl, req.Image, "", env)
+		if a2 := critic.Aggregate(checks2); a2 == "pass" || a2 == "failed" {
+			checks = checks2
+		}
+	}
 	writeJSON(w, map[string]any{
 		"verdict": critic.Aggregate(checks),
 		"checks":  checks,

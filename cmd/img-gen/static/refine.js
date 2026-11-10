@@ -54,27 +54,32 @@
   }
 
   function askJudge(imageB64, originalPrompt, passNo) {
-    // Two vlm_checks: (a) the fix text, (b) a region bbox as JSON inside the fix field.
+    // ONE concise combined check: concise wording keeps the critic in the
+    // parseable single-object reply shape (long compound criteria drift into
+    // array replies the parser can't read), and the server salvages corrupted
+    // replies + propagates a dedicated bbox field into the fix text.
     return jsonFetch('/api/v1/validate', {
       method: 'POST',
       headers: POSTJSON,
       body: JSON.stringify({
         image: imageB64,
         checks: [
-          { op: 'vlm_check', arg: 'Does this image match the request and look anatomically/visually consistent (no blur, overlaps, fused limbs, wrong proportions, impossible geometry)? Answer pass only if fully consistent. In the fix field put a one-sentence correction prompt for the worst defect.' },
-          { op: 'vlm_check', arg: 'Ignore correctness. Locate the single worst artifact region. In the fix field put ONLY a JSON object {"bbox":[x,y,w,h]} with normalized 0..1 floats of that region. Nothing else.' },
+          { op: 'vlm_check', arg: 'Are the figures anatomically and visually consistent (no blur, no overlaps, no fused or extra limbs, natural proportions)? Answer pass if fully consistent. In the fix field put a one-sentence correction and the region {"bbox":[x,y,w,h]}.' },
         ],
       }),
     });
   }
 
   function parseBBox(checks) {
-    const c = checks && checks[1];
+    const c = checks && (checks[1] || checks[0]); // combined single-check carries the bbox in fix
     const t = (c && (c.fix || c.reason) || '');
     const m = t.match(/\{[^}]*\}/);
     if (!m) return null;
     try {
-      const j = JSON.parse(m[0]);
+      let j;
+      try { j = JSON.parse(m[0]); } catch (_) {
+        j = JSON.parse(m[0].replace(/'/g, '"')); // critic may emit single-quoted dicts
+      }
       const b = j.bbox;
       if (!Array.isArray(b) || b.length !== 4) return null;
       let [x, y, w, h] = b.map(Number);

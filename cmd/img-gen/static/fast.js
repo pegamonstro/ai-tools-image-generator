@@ -29,6 +29,8 @@ window.Fast = (function () {
 
   let wf = WORKFLOWS[0];
   let running = false;
+  let styleFamily = 'comic';
+  try { styleFamily = localStorage.getItem('imggen-style') || 'comic'; } catch (_) {} // comic | photoreal — swaps the noir style skin over the same workflows
 
   function view() { return document.getElementById('view-fast'); }
 
@@ -49,6 +51,12 @@ window.Fast = (function () {
           <label class="ctrl">What do you want to see?
             <textarea id="fast-prompt" rows="3" placeholder="describe it in your own words — the pipeline handles the rest"></textarea>
           </label>
+          <div class="seg-row" id="fast-style-row">
+            <div class="seg" id="fast-style-seg" role="group" aria-label="Rendering style">
+              <button class="seg-btn" data-style="comic" aria-pressed="${styleFamily === 'comic'}">Comic noir</button>
+              <button class="seg-btn" data-style="photoreal" aria-pressed="${styleFamily === 'photoreal'}">Photoreal</button>
+            </div>
+          </div>
           <div class="fast-meta" id="fast-meta">${wf.kind === 'kit-mini'
             ? 'Two small assets, palette lock, cutout badge included, one set in the Library.'
             : 'Identity LoRA · uncensored · enhance · auto-refine (judge → segment-then-retouch) · photon-grade preset'}</div>
@@ -66,6 +74,12 @@ window.Fast = (function () {
       };
     });
     $('fast-go').onclick = run;
+    const seg = $('fast-style-seg');
+    if (seg) seg.querySelectorAll('.seg-btn').forEach(b => b.onclick = () => {
+      styleFamily = b.dataset.style;
+      try { localStorage.setItem('imggen-style', styleFamily); } catch (_) {}
+      render();
+    });
     $('fast-audit').onclick = (e) => { e.preventDefault(); setView('compose'); };
     const saved = (window.__fastPrompt || '').trim();
     if (saved) $('fast-prompt').value = saved;
@@ -156,6 +170,15 @@ window.Fast = (function () {
       batch: 1,
     };
     if (wf.preset) body.preset = wf.preset;
+    if (styleFamily === 'photoreal') {
+      body.fields.description += ' Photorealistic photographic rendering, 35mm film grain, natural skin texture, real light discipline.';
+      const negs = (body.negative_prompt || '').split(',');
+      negs.push('cartoon', 'anime', 'comic art', 'illustration', 'cel shading', 'ink outlines');
+      body.negative_prompt = negs.join(',').replace(/\s*,\s*/g, ',').trim();
+    } else {
+      body.negative_prompt += ', photorealistic photograph, 3d render';
+    }
+    body.negative_prompt = Array.from(new Set(body.negative_prompt.split(',').map(t => t.trim()).filter(Boolean))).join(',');
     let first;
     let poller = null;
     try {

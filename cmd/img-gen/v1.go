@@ -179,7 +179,7 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 			return
 		}
 		var req repairRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<20)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 96<<20)).Decode(&req); err != nil {
 			writeV1Err(w, http.StatusBadRequest, "validation_error", "bad body: "+err.Error(), "")
 			return
 		}
@@ -532,7 +532,7 @@ type validateRequest struct {
 // handleV1Validate evaluates a checklist against an image synchronously.
 func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
 	var req validateRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<20)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 96<<20)).Decode(&req); err != nil {
 		writeV1Err(w, http.StatusBadRequest, "validation_error", "bad body: "+err.Error(), "")
 		return
 	}
@@ -550,9 +550,9 @@ func (d *v1Deps) handleV1Validate(w http.ResponseWriter, r *http.Request) {
 		writeV1Err(w, http.StatusBadRequest, "validation_error", "image is not a PNG", "")
 		return
 	}
-	if cfg.Width > compose.RepairMaxDim || cfg.Height > compose.RepairMaxDim {
+	if cfg.Width > compose.ValidateMaxDim || cfg.Height > compose.ValidateMaxDim {
 		writeV1Err(w, http.StatusBadRequest, "validation_error",
-			fmt.Sprintf("image is %dx%d; validate supports up to %dx%d", cfg.Width, cfg.Height, compose.RepairMaxDim, compose.RepairMaxDim), "")
+			fmt.Sprintf("image is %dx%d; validate supports up to %dx%d", cfg.Width, cfg.Height, compose.ValidateMaxDim, compose.ValidateMaxDim), "")
 		return
 	}
 	// The standalone endpoint honors CRITIC_VALIDATE_MODEL's heavier judge

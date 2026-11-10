@@ -20,6 +20,7 @@ const (
 	RepairMaxColors     = 64
 	RepairDefaultColors = 32
 	RepairMaxDim        = 1024
+	ValidateMaxDim      = 6144
 )
 
 // DetectGridCell estimates the pixel-art cell size of img by

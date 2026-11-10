@@ -401,6 +401,38 @@ func (c *Client) Rembg(ctx context.Context, imageB64 string) ([]byte, error) {
 // DWPose extracts pose keypoints from an image on the DWPose sidecar.
 // Returns flattened COCO 17-keypoint array: [x1, y1, conf1, x2, y2, conf2, ...].
 // nil DWPoseURL means the sidecar is unconfigured — callers should validate.
+// Hands runs the DWPose sidecar's /hands detector over imageB64 and returns
+// normalized [x, y, w, h] boxes around the detected hands (may be empty —
+// detection is content- and threshold-dependent). Best-effort callers degrade
+// to their prior mask logic when the list is empty.
+func (c *Client) Hands(ctx context.Context, imageB64 string) ([][]float64, error) {
+	body, err := json.Marshal(map[string]any{"image": imageB64})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.DWPoseURL, "/")+"/hands",
+		bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("dwpose sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("dwpose sidecar: HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Boxes [][]float64 `json:"boxes"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("dwpose hands body: %w", err)
+	}
+	return out.Boxes, nil
+}
+
 func (c *Client) DWPose(ctx context.Context, imageB64 string) ([]float32, error) {
 	if c.DWPoseURL == "" {
 		return nil, errors.New("DWPose sidecar not configured (DWPOSE_URL)")

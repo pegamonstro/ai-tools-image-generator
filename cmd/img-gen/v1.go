@@ -42,6 +42,7 @@ type v1Deps struct {
 	validateCritic *critic.Env
 	criticTimeout  time.Duration
 	segment        func(context.Context, string) ([]byte, error)
+	hands          func(context.Context, string) ([][]float64, error)
 }
 
 func registerV1(mux *http.ServeMux, d *v1Deps) {
@@ -116,6 +117,33 @@ func registerV1(mux *http.ServeMux, d *v1Deps) {
 			return
 		}
 		d.handleV1Generate(w, r)
+	})
+
+	mux.HandleFunc("/api/v1/hands", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if d.hands == nil {
+			writeErr(w, http.StatusNotImplemented, "dwpose sidecar not configured")
+			return
+		}
+		var in struct {
+			Image string `json:"image"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 80<<20)).Decode(&in); err != nil || in.Image == "" {
+			writeErr(w, http.StatusBadRequest, `need {"image": <base64 png>}`)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+		defer cancel()
+		boxes, err := d.hands(ctx, in.Image)
+		if err != nil {
+			log.Printf("v1 hands: %v", err)
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"boxes": boxes})
 	})
 
 	mux.HandleFunc("/api/v1/segment", func(w http.ResponseWriter, r *http.Request) {

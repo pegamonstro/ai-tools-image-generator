@@ -175,6 +175,11 @@ window.Fast = (function () {
       const negs = (body.negative_prompt || '').split(',');
       negs.push('cartoon', 'anime', 'comic art', 'illustration', 'cel shading', 'ink outlines');
       body.negative_prompt = negs.join(',').replace(/\s*,\s*/g, ',').trim();
+      // ③ balance profile: at photoreal high-res the uncensored LoRA softens
+      // to 0.6, fncb trims to 0.8 — the measured proportion-failure balance.
+      body.loras = (body.loras || []).map(l =>
+        l.name === 'uncensored' ? { name: 'uncensored', scale: 0.6 } :
+        l.name === 'fncb' ? { name: 'fncb', scale: 0.8 } : l);
     } else {
       body.negative_prompt += ', photorealistic photograph, 3d render';
     }

@@ -72,7 +72,7 @@
 
   function parseBBox(checks) {
     const c = checks && (checks[1] || checks[0]); // combined single-check carries the bbox in fix
-    const t = (c && (c.fix || c.reason) || '');
+    const t = (c && (c.fix || c.suggestion || c.reason) || '');
     const m = t.match(/\{[^}]*\}/);
     if (!m) return null;
     try {
@@ -115,6 +115,22 @@
     return (r.image || null);
   }
 
+  function boxesToMask(boxes, w, h) {
+    // white union of normalized [x, y, w, h] boxes on black
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#fff';
+    for (const b of boxes) {
+      const [x, y, bw, bh] = b;
+      ctx.fillRect(Math.max(0, x * w), Math.max(0, y * h),
+                   Math.min(w, bw * w), Math.min(h, bh * h));
+    }
+    return cv.toDataURL('image/png').split(',')[1];
+  }
+
   function maskFromCutout(cutB64, bbox, w, h) {
     // White where the cutout is opaque (the subject); intersected with bbox when given.
     return new Promise((resolve) => {
@@ -140,6 +156,43 @@
       im.onerror = () => resolve(null);
       im.src = 'data:image/png;base64,' + cutB64;
     });
+  }
+
+  async function handBoxes(jobId) {
+    // ④ best-effort hand regions from the DWPose sidecar's WholeBody hand
+    // joints; empty list means "not detected this render".
+    try {
+      const imgB64 = await fetchB64(jobId);
+      const r = await jsonFetch('/api/v1/hands', {
+        method: 'POST', headers: POSTJSON,
+        body: JSON.stringify({ image: imgB64 }),
+      });
+      return r.boxes || [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async function upscaleFor(jobId) {
+    // ① Judge-after-upscale: judge the Real-ESRGAN detail-restored variant so
+    // hand/limb detail isn't hidden by the 512px base; pass-verdicts deliver
+    // the upscaled file as the final artifact.
+    try {
+      const imgB64 = await fetchB64(jobId);
+      const res = await jsonFetch('/api/jobs', {
+        method: 'POST', headers: POSTJSON,
+        body: JSON.stringify({ mode: 'upscale', image: imgB64 }),
+      });
+      const upJid = res.job_id || (res.job_ids && res.job_ids[0]);
+      if (!upJid) return null;
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const d = await jsonFetch('/api/jobs/' + upJid);
+        if (d.status === 'done' && d.image_path) return upJid;
+        if (['failed', 'cancelled'].includes(d.status)) return null;
+      }
+    } catch (_) { /* upscale leg unavailable: judge the base as before */ }
+    return null;
   }
 
   async function fetchB64(jobId) {
@@ -182,7 +235,8 @@
     let basePrompt = body.fields ? (body.fields.description || '') : (body.prompt || '');
     for (let pass = 1; pass <= opts.maxPasses; pass++) {
       const j0 = await jsonFetch('/api/jobs/' + cur);
-      const b64 = await fetchB64(cur);
+      const upId = await upscaleFor(cur); // judge the detail-restored variant
+      const b64 = await fetchB64(upId || cur);
       const r = await askJudge(b64, basePrompt, pass);
       const verdict = r.verdict;
       const failChecks = (r.checks || []).filter(c => c.status === 'fail');
@@ -191,7 +245,7 @@
         `refine pass ${pass}: verdict=${verdict} fix="${String(fixText).slice(0, 90)}"`);
       if (verdict !== 'failed') {
         if (!silent) setStatus('Refine: consistent after ' + (pass - 1) + ' correction pass(es).', 'ok');
-        finalId = cur;
+        finalId = upId || cur; // deliver the detail-restored image when we had one
         if (!silent) {
           lastImageId = cur;
           const im = document.getElementById('image');
@@ -229,9 +283,25 @@
         enhance: false,
         seed: body.seed,
       };
+      const classes = String((r && r.checks && r.checks[0] && r.checks[0].reason) || '');
+      if (/hand-error|finger-error/i.test(classes)) {
+        // ④ hand boxes from the pose sidecar, unioned with the judge bbox:
+        // every detected hand gets its own repaint region.
+        try {
+          const boxes = await handBoxes(cur);
+          if (boxes.length) {
+            passMask = boxesToMask(boxes, 512, 768);
+            appendLog(new Date(), 'info', 'hand-region masks: ' + boxes.length);
+          }
+        } catch (_) { /* fall back to the judge bbox mask */ }
+      }
       if (passMask) {
         passBody.mask = passMask;
-        passBody.strength = 0.85;
+        // ② class-aware repaint strength: hands need near-total repaint,
+        // fusion wants a careful rebuild.
+        if (/hand-error|finger-error/i.test(classes)) passBody.strength = 0.9;
+        else if (/torso-blend|limb-fusion/i.test(classes)) passBody.strength = 0.8;
+        else passBody.strength = 0.85;
       }
       const d = await renderJob(passBody);
       if (d.status !== 'done') {
